@@ -1,0 +1,53 @@
+# v0.3.0 delivery checks
+
+Date: 2026-10-15. Target: this Windows x64 PC. Development SDK: .NET 10.0.402, installed locally under `.tools/dotnet`; UI packages: Avalonia 12.1.4.
+
+- Release solution build: zero warnings/errors.
+- Core test suite: 15 passed. Existing quota/auth/config checks plus manual project order, hiding/showing without dropping metadata, persistence/reload, old settings without a visibility field, and safely encoded Claude local-folder links.
+- Live read-only Codex profile check: Ready, two allowance windows. Uses app-server without creating threads or model requests.
+- Live read-only Claude profile check: Ready, two allowance windows. Uses selected existing subscription credentials in memory; no credentials copied to Hub settings or shown in reports.
+- Packaged self-contained executable: rendered dark usage window and light Accounts settings window, exited successfully in isolated demo mode. Visual review confirms visible remaining percentages, reset times, last refresh state, scrolling and left-category/single-column settings.
+- Lifecycle checks passed: tray startup hides the window, closing keeps the app alive, reopening restores the window, and launching a second instance brings the existing instance forward. A startup/activation race caught by this check was corrected before delivery.
+- Portable output: executable, README and MIT license, plus ZIP. Native debug symbols excluded. The app runs from the self-contained output without a globally installed .NET runtime.
+- v0.2 refinement: renamed AI SubHub; compact rows measured at 82 logical pixels for two quota windows, down from roughly 250. Three demo accounts fit inside the default 740 × 460 window. Dark/light render inspection confirms persistent Add account buttons and inline quota rows. Each account has four launch choices: Windows Terminal, PowerShell, VS Code project folder and its matching desktop app. Installed Claude/Codex desktop apps were detected through Windows registration. Desktop options retain their own login and do not apply the selected CLI profile.
+
+Interactive provider login, launches into real AI sessions/VS Code, Windows logon startup and operation through an actual quota exhaustion/reset have not been exercised end-to-end. These are implemented and require user review in their own workflow; no real account was signed out, no API-key billing was used, and Windows startup remains opt-in. macOS/Linux are outside this delivery.
+
+## v0.3 redesign
+
+- Baseline reproduced the oversized settings screen: 800 × 650. New settings is 600 × 320, with flat 39-pixel account rows, narrow navigation and compact outline buttons. All three demo accounts fit together; no cards or repeated path paragraphs.
+- Accounts, Projects, General, Tools and About were rendered and checked for row visibility and content fit at the default settings size. Dark and light account screens were visually inspected.
+- Account edit dialog rendered at 460 × 149. Names/profile paths remain editable; sign-in/removal actions are available through the account row menu.
+- Main window reduced to 740 × 420 by removing the global project picker. Three usage accounts still fit. Launch menus contain visible projects in stored order, each with four launch targets; a synthetic hidden project is excluded but remains in Settings.
+- Project preferences survive save/reload. Existing settings default all old projects to visible. Hiding does not remove files or shortcuts, and showing restores the stored position.
+- Claude chat Projects integration was explicitly deferred. No private app/session storage is accessed. Claude Desktop's local Code-folder launch is a separate documented deep link. Codex Desktop folder selection remains a labelled manual step.
+
+Ignored `artifacts/checks` holds sanitized local smoke reports and demo PNGs, not account identities or credentials. Source remains uncommitted on `codex/windows-mvp`; there is no remote or public release.
+
+## 0.4.0 — 2026-10-15
+
+- Release build: zero warnings/errors; all 21 tests passed. Added tests for within-provider movement across interleaved records, boundary controls, unchanged profile metadata after settings reload, lowest allowance/reset pairing, stale/failed/expired readings, safe unavailable states and bounded tooltip overflow.
+- Published self-contained Windows x64 EXE and portable ZIP.
+- Isolated actual TrayIcon tooltip report: three demo accounts, 121 UTF-16 characters; shows lowest remaining percentages and corresponding countdowns.
+- Accounts settings visual/report: 600×320, three 39px rows; all rows/content fit with up/down controls. Boundary arrows disabled per provider. Main window remains 420px high with all three 82px demo account rows fitting.
+- Synthetic smoke reports do not read real credentials or alter real settings.
+
+## 0.5.0 — 2026-10-15
+
+- Release build: zero warnings/errors, all 27 tests passed. Plan tests cover Claude Pro/Max tiers, unknown values, Codex base64url plan claims, malformed tokens and missing profiles.
+- Main and Accounts settings screenshots verified compact plan tags immediately after names. Main remains 740×420 with three 82px rows; Settings remains 600×320 with three 39px rows, all rows/content fit.
+- No extra provider requests or token persistence introduced. Plan metadata is a saved-login label, not a live billing assertion.
+
+## 0.6.0 — 2026-10-16
+
+- Root configuration check failed before the fix: AI SubHub Live=false, prodPort=null, devPort=null, and no scripts/start-server.ps1. No AI.SubHub process after the owner's reboot. CoreHub's logon task was enabled/running.
+- Added a production-only adapter and in-process loopback health endpoint. Build has zero warnings/errors; all 28 tests pass, including read-only health routing and endpoint shutdown with process lifetime.
+- Authoritative CoreHub project #14 configured Live=true, prodPort=4200 (next available CoreHub production port), devPort=null. No CoreHub source changes or new scheduled tasks.
+- CoreHub authenticated companion prod-start launched the production 0.6.0 EXE with --tray --health-port 4200 in the user's interactive session (session 1). GET /api/health returned app/version/status.
+- CoreHub prod-stop removed both the tray process and listening port; subsequent prod-start/prod-restart left exactly one healthy production process. The local direct /servers/prod/start route is intentionally blocked by CoreHub's production-data middleware; used its supported authenticated companion operations without exposing credentials.
+- Standalone Windows Run registration removed, StartWithWindows=false; startup owner shown as CoreHub. Existing account/project metadata preserved.
+- Checked CoreHub's enabled logon trigger and autostart configuration. No forced reboot; actual reboot confirmation remains for the next normal PC restart.
+
+### Correction: native AppData verification and recovery
+
+The earlier metadata-preservation statement compared files through Codex package redirection and missed the native empty settings. A detached native WMI check reproduced the precise issue: native AppData had 0 accounts/0 projects; Codex LocalCache had 3/4. Stopped only AI SubHub through CoreHub, backed up the empty native file, restored all metadata and disabled standalone startup, leaving the original source intact. A native production UI smoke rendered all 3 accounts (82px rows, all fit) with successful Claude/Codex usage; it retained four projects, including two hidden entries, with original order. Restarted through CoreHub, health reports 0.6.0, and opened its window for review. Configuration recovery only; no new application build/version.

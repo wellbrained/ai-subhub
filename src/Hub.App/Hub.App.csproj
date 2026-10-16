@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>AI.SubHub</AssemblyName>
+    <Product>AI SubHub</Product>
+    <Title>AI SubHub</Title>
+    <ApplicationIcon>Assets/hub.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
+    <ProjectReference Include="../Hub.Core/Hub.Core.csproj" />
+    <AvaloniaResource Include="Assets/**" />
+  </ItemGroup>
+</Project>
