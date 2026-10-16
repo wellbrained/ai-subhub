@@ -42,7 +42,7 @@ public static class SubscriptionPlan
         catch (Exception ex) when (ex is FormatException or JsonException) { return "Plan unknown"; }
     }
 
-    private static string Label(string? value) => value?.ToLowerInvariant() switch
+    public static string Label(string? value) => value?.ToLowerInvariant() switch
     { "free" => "Free", "pro" => "Pro", "plus" => "Plus", "max" => "Max", "team" => "Team", "business" => "Business", "enterprise" => "Enterprise", "edu" => "Edu", "go" => "Go", _ => "Plan unknown" };
     private static string? Text(JsonElement root, string key) => root.ValueKind == JsonValueKind.Object && root.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
     private static bool Object(JsonElement root, string key, out JsonElement value)

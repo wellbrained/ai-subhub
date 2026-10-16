@@ -32,6 +32,9 @@ public sealed class App : Application
             _window = new MainWindow(_controller);
             desktop.MainWindow = _window;
             Program.OnActivation(() => Dispatcher.UIThread.Post(ShowWindow));
+            var activatable = this.TryGetFeature<IActivatableLifetime>();
+            if (activatable is not null)
+                activatable.Activated += (_, e) => { if (e.Kind == ActivationKind.Reopen) ShowWindow(); };
             _window.Closing += (_, e) => { e.Cancel = true; _window.Hide(); };
             var menu = new NativeMenu();
             var show = new NativeMenuItem("Open AI SubHub");
@@ -100,6 +103,7 @@ public sealed class App : Application
     public void ShowWindow()
     {
         if (_window is null) return;
+        this.TryGetFeature<IActivatableLifetime>()?.TryLeaveBackground();
         _window.Show(); _window.WindowState = WindowState.Normal; _window.Activate();
     }
 

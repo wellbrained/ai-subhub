@@ -62,7 +62,7 @@ public sealed class MainWindow : Window
         _refresh.Content = _hub.IsRefreshing ? "Refreshing…" : "Refresh";
         _refresh.IsEnabled = !_hub.IsRefreshing && !_hub.IsDemo;
         ToolTip.SetTip(_refresh, _hub.IsDemo ? "Demo readings are simulated." : _hub.IsRefreshing ? "A refresh is already running." : "Request fresh usage readings.");
-        _notice.Text = _hub.Notice ?? (_hub.IsDemo ? "Demo · Simulated readings" : $"v0.10.0 · Refresh every {_hub.Settings.RefreshMinutes}m · Close to tray");
+        _notice.Text = _hub.Notice ?? (_hub.IsDemo ? "Demo · Simulated readings" : $"v0.12.0 · Refresh every {_hub.Settings.RefreshMinutes}m · Close to tray");
         _accounts.Children.Clear(); _accountRows.Clear(); _launchMenus.Clear();
         foreach (var provider in Enum.GetValues<ProviderKind>())
         {
@@ -143,15 +143,20 @@ public sealed class MainWindow : Window
         var targets = new List<Control>();
         var cli = _hub.Launcher.Executable(account.Provider) is not null;
         var folderExists = _hub.IsDemo || Directory.Exists(project.Directory);
-        Add("Windows Terminal", () => _hub.Launcher.Launch(account, project.Directory, target: TerminalTarget.WindowsTerminal), cli && Executables.Find("wt") is not null, "Run this account's CLI in this folder using Windows Terminal.");
-        Add("PowerShell", () => _hub.Launcher.Launch(account, project.Directory, target: TerminalTarget.PowerShell), cli, "Run this account's CLI in this folder using PowerShell.");
+        if (OperatingSystem.IsMacOS())
+            Add("Terminal.app", () => _hub.Launcher.Launch(account, project.Directory, target: TerminalTarget.MacTerminal), cli, "Run this account's CLI in this folder using Terminal.");
+        else
+        {
+            Add("Windows Terminal", () => _hub.Launcher.Launch(account, project.Directory, target: TerminalTarget.WindowsTerminal), cli && Executables.Find("wt") is not null, "Run this account's CLI in this folder using Windows Terminal.");
+            Add("PowerShell", () => _hub.Launcher.Launch(account, project.Directory, target: TerminalTarget.PowerShell), cli, "Run this account's CLI in this folder using PowerShell.");
+        }
         targets.Add(new Separator());
-        Add("VS Code", () => _hub.Launcher.OpenCode(project.Directory), Executables.Find("code") is not null, "Open this folder in VS Code. Its extension login is separate from the CLI profile.");
+        Add("VS Code", () => _hub.Launcher.OpenCode(project.Directory), Executables.Find("code") is not null || OperatingSystem.IsMacOS() && MacPlatform.AppBundle("Visual Studio Code") is not null, "Open this folder in VS Code. Its extension login is separate from the CLI profile.");
         var desktop = _hub.DesktopApplications.GetValueOrDefault(account.Provider);
         if (account.Provider == ProviderKind.Claude)
             Add("Claude Desktop · local folder", () => _hub.Launcher.OpenClaudeDesktopFolder(project.Directory), desktop is not null, "Open this local folder in Claude Code inside Desktop, using Desktop's login. Claude asks you to confirm the folder. This is not a Claude chat Project.");
         else
-            Add("Codex Desktop · choose folder there", () => { desktop!.Launch(); _hub.Notice = $"Codex Desktop opened. Choose {project.Label} there."; Render(); }, desktop is not null, "Open Codex Desktop with its own login. Windows folder navigation is not available through a verified interface; select this folder inside the app.");
+            Add("Codex Desktop · choose folder there", () => { desktop!.Launch(); _hub.Notice = $"Codex Desktop opened. Choose {project.Label} there."; Render(); }, desktop is not null, "Open Codex Desktop with its own login. Automatic folder navigation is not enabled for this target; select this folder inside the app.");
         return targets;
 
         void Add(string label, Action action, bool enabled, string hint)

@@ -93,3 +93,7 @@ Unknown manual-reset metadata is omitted entirely from account tooltips as well 
 ### Column alignment refinement (0.10)
 
 All usage rows now share the same fixed label/percentage/reset columns (56/92/108px) and flexible bar column. Percentage/reset text aligns to the left edge of its column, so starts stay identical even when text lengths differ. A 12px gap follows each bar (8px grid gap + 4px bar right margin); ordinary gaps are 8px. Window size remains unchanged.
+
+## macOS version (0.11)
+
+The owner agreed to the same compact features/design, menu-bar integration and native Mac launch targets, with unsigned test .app packages first. Both Apple Silicon and Intel packages are built because test hardware is not yet confirmed. Shared UI, quotas, ordering/visibility, styles and caching remain common; platform details and pending native validation are in [macOS](macos.md).

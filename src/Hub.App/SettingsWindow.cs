@@ -169,7 +169,7 @@ public sealed class SettingsWindow : Window
         var interval = new NumericUpDown { Minimum = 1, Maximum = 60, Value = _hub.Settings.RefreshMinutes, Increment = 1, FormatString = "0", MinHeight = 26, FontSize = 12, Padding = new Thickness(6, 3) };
         interval.ValueChanged += (_, _) => { if (interval.Value is { } minutes) { _hub.Settings.RefreshMinutes = (int)minutes; Safe(_hub.Save); } };
         ToolTip.SetTip(interval, "Minutes between refreshes. Errors and provider rate limits increase the delay."); Field("Refresh (minutes)", interval);
-        var terminal = Choice(["Windows Terminal", "PowerShell"], _hub.Settings.Terminal);
+        var terminal = Choice(OperatingSystem.IsMacOS() ? ["Terminal.app"] : ["Windows Terminal", "PowerShell"], OperatingSystem.IsMacOS() ? "Terminal.app" : _hub.Settings.Terminal);
         terminal.SelectionChanged += (_, _) => { if (terminal.SelectedItem is string selected) { _hub.Settings.Terminal = selected; Safe(_hub.Save); } };
         ToolTip.SetTip(terminal, "Default terminal for sign-in. The Launch menu lets you choose per session."); Field("Sign-in terminal", terminal);
         var startup = new CheckBox { Content = "Enabled", IsChecked = _hub.Settings.StartWithWindows, IsEnabled = !_hub.IsDemo, FontSize = 12, MinHeight = 26 };
@@ -179,7 +179,7 @@ public sealed class SettingsWindow : Window
             Safe(() => _hub.SetStartup(startup.IsChecked == true));
             startup.IsChecked = _hub.Settings.StartWithWindows;
         };
-        ToolTip.SetTip(startup, _hub.IsDemo ? "Startup changes are disabled in demo mode." : "Open in the tray when you sign in to Windows. No administrator rights needed."); Field("Start with Windows", startup);
+        ToolTip.SetTip(startup, _hub.IsDemo ? "Startup changes are disabled in demo mode." : "Open in the tray or menu bar when you sign in. No administrator rights needed."); Field(OperatingSystem.IsMacOS() ? "Start at login" : "Start with Windows", startup);
         _body.Children.Add(Ui.Text("Close the main window to keep running. Exit from the tray menu.", 11, true));
     }
 
@@ -194,7 +194,7 @@ public sealed class SettingsWindow : Window
             var save = Ui.Button("Save", () =>
             {
                 var value = string.IsNullOrWhiteSpace(path.Text) ? null : path.Text.Trim().Trim('"');
-                if (value is not null && (!File.Exists(value) || !new[] { ".exe", ".cmd", ".bat" }.Contains(Path.GetExtension(value), StringComparer.OrdinalIgnoreCase))) { Error("Choose an existing .exe, .cmd or .bat, or leave empty."); return; }
+                if (value is not null && (!File.Exists(value) || OperatingSystem.IsWindows() && !new[] { ".exe", ".cmd", ".bat" }.Contains(Path.GetExtension(value), StringComparer.OrdinalIgnoreCase))) { Error("Choose an existing CLI executable, or leave empty."); return; }
                 if (provider == ProviderKind.Claude) _hub.Settings.ClaudeExecutable = value; else _hub.Settings.CodexExecutable = value;
                 Safe(_hub.Save); Render();
             });
@@ -208,7 +208,7 @@ public sealed class SettingsWindow : Window
     private void About()
     {
         Header("AI SubHub");
-        _body.Children.Add(Ui.Text("Version 0.10.0 · Free and open source · MIT", 12, true));
+        _body.Children.Add(Ui.Text("Version 0.12.0 · Free and open source · MIT", 12, true));
         _body.Children.Add(Ui.Text("Usage goes directly to your providers. No SubHub account, backend or telemetry.", 12));
         _body.Children.Add(Ui.Text("Claude usage uses an unofficial endpoint; provider changes can interrupt it. Logins stay with the CLIs.", 11, true));
         _body.Children.Add(Ui.Text("Settings location", 12)); _body.Children.Add(Clipped(_hub.Store.DirectoryPath, _hub.Store.DirectoryPath, 11, true));
@@ -248,7 +248,7 @@ public sealed class SettingsWindow : Window
     {
         try { action(); _error.IsVisible = false; }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception or System.Security.SecurityException)
-        { Error(ex is InvalidOperationException ? ex.Message : "Could not save. Check folder and Windows permissions."); }
+        { Error(ex is InvalidOperationException ? ex.Message : "Could not save. Check folder permissions."); }
     }
 
     public object LayoutReport()

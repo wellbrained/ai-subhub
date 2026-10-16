@@ -25,7 +25,7 @@ public sealed class HubController : IDisposable
     public HubController(bool demo)
     {
         IsDemo = demo;
-        var root = demo ? Path.Combine(Path.GetTempPath(), "ai-subhub-demo") : UserDataPaths.Resolve(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+        var root = demo ? Path.Combine(Path.GetTempPath(), "ai-subhub-demo") : UserDataPaths.Current();
         Store = new SettingsStore(root);
         Settings = demo ? DemoSettings() : Store.Load();
         Notice = Store.LoadWarning;
@@ -48,7 +48,7 @@ public sealed class HubController : IDisposable
         if (!IsDemo && Settings.StartWithWindows)
         {
             try { SetStartup(true); }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Security.SecurityException) { Notice = "Windows startup could not be updated. Disable and re-enable it in Settings → General."; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Security.SecurityException) { Notice = "Login startup could not be updated. Disable and re-enable it in Settings → General."; }
         }
         _timer.Tick += async (_, _) => { await RefreshAsync(false); Changed?.Invoke(); };
         _timer.Start();
@@ -83,9 +83,14 @@ public sealed class HubController : IDisposable
     public void SetStartup(bool enabled)
     {
         if (IsDemo) return;
-        if (!OperatingSystem.IsWindows()) throw new InvalidOperationException("Windows startup is supported only on Windows.");
+
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("The app executable path could not be found.");
         if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Enable startup from the portable executable, rather than dotnet run.");
+        if (OperatingSystem.IsMacOS())
+        {
+            MacPlatform.SetStartup(enabled, executable); Settings.StartWithWindows = enabled; Save(); return;
+        }
+        if (!OperatingSystem.IsWindows()) throw new InvalidOperationException("Login startup is not supported on this platform.");
         using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
         key.DeleteValue("AISubscriptionHub", false); // Migration-only cleanup of the previous startup identifier.
         if (enabled) key.SetValue("AISubHub", $"\"{executable}\" --tray");
@@ -145,7 +150,7 @@ public sealed class HubController : IDisposable
     {
         Plans.Clear();
         foreach (var account in Settings.Accounts)
-            Plans[account.Id] = IsDemo ? account.Provider == ProviderKind.Claude ? "Pro" : "Plus" : SubscriptionPlan.Read(account);
+            Plans[account.Id] = IsDemo ? account.Provider == ProviderKind.Claude ? "Pro" : "Plus" : Results.GetValueOrDefault(account.Id)?.PlanLabel ?? SubscriptionPlan.Read(account);
     }
     public void Dispose() { _timer.Stop(); _stop.Cancel(); _stop.Dispose(); _http.Dispose(); }
 

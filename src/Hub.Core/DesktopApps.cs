@@ -7,6 +7,10 @@ public sealed record DesktopApplication(string AppId)
 {
     public void Launch()
     {
+        if (OperatingSystem.IsMacOS() && Directory.Exists(AppId) && AppId.EndsWith(".app", StringComparison.Ordinal))
+        {
+            Process.Start(MacPlatform.Open(AppId))?.Dispose(); return;
+        }
         if (AppId.Contains('!') && !Path.IsPathRooted(AppId))
         {
             var start = new ProcessStartInfo("explorer.exe") { UseShellExecute = false };
@@ -23,6 +27,13 @@ public static class DesktopApps
 {
     public static async Task<IReadOnlyDictionary<ProviderKind, DesktopApplication>> DiscoverAsync(CancellationToken ct)
     {
+        if (OperatingSystem.IsMacOS())
+        {
+            var found = new Dictionary<ProviderKind, DesktopApplication>();
+            foreach (var provider in Enum.GetValues<ProviderKind>())
+                if (MacPlatform.AppBundle(provider.ToString()) is { } bundle) found[provider] = new(bundle);
+            return found;
+        }
         // Query Windows registration, not CLI credentials or application databases.
         const string script = """
             $ErrorActionPreference = 'SilentlyContinue'

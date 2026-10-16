@@ -12,7 +12,7 @@ public sealed record QuotaWindow(string Label, double UsedPercent, DateTimeOffse
     public double RemainingPercent => Math.Clamp(100 - UsedPercent, 0, 100);
 }
 public sealed record UsageSnapshot(DateTimeOffset FetchedAt, IReadOnlyList<QuotaWindow> Windows);
-public sealed record UsageResult(UsageState State, string Message, UsageSnapshot? Snapshot = null, TimeSpan? RetryAfter = null, string? AccountEmail = null, ResetAvailability? Resets = null);
+public sealed record UsageResult(UsageState State, string Message, UsageSnapshot? Snapshot = null, TimeSpan? RetryAfter = null, string? AccountEmail = null, ResetAvailability? Resets = null, string? PlanLabel = null);
 public sealed record ResetAvailability(int AvailableCount, DateTimeOffset? EarliestExpiry);
 public sealed record CachedReading(Guid AccountId, UsageSnapshot Snapshot);
 

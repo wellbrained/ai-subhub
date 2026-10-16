@@ -5,8 +5,8 @@
     <Product>AI SubHub</Product>
     <Title>AI SubHub</Title>
     <ApplicationIcon>Assets/hub.ico</ApplicationIcon>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
-    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <ApplicationManifest Condition="$([MSBuild]::IsOSPlatform('Windows')) and !$(RuntimeIdentifier.StartsWith('osx'))">app.manifest</ApplicationManifest>
+    <BuiltInComInteropSupport Condition="$([MSBuild]::IsOSPlatform('Windows')) and !$(RuntimeIdentifier.StartsWith('osx'))">true</BuiltInComInteropSupport>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="12.1.4" />

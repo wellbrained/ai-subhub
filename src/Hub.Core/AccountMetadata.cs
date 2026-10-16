@@ -36,12 +36,8 @@ public static class AccountMetadata
         if (executable is null) return null;
         try
         {
-            var shim = !executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
-            var start = new ProcessStartInfo(shim ? "powershell.exe" : executable)
-            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = account.Directory };
-            var script = $"& {SubscriptionEnvironment.PowerShellQuote(executable)} 'auth' 'status'";
-            foreach (var argument in shim ? new[] { "-NoProfile", "-EncodedCommand", SubscriptionEnvironment.Encode(script) } : new[] { "auth", "status" }) start.ArgumentList.Add(argument);
-            SubscriptionEnvironment.Apply(start, account);
+            var start = CliProcess.Create(executable, account, "auth", "status");
+            start.RedirectStandardOutput = true; start.RedirectStandardError = true;
             using var process = Process.Start(start);
             if (process is null) return null;
             process.ErrorDataReceived += (_, _) => { }; process.BeginErrorReadLine();

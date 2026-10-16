@@ -2,6 +2,10 @@ namespace Hub.Core;
 
 public static class UserDataPaths
 {
+    public static string Current() => OperatingSystem.IsMacOS()
+        ? Path.Combine(MacPlatform.Home, "Library", "Application Support", "AI SubHub")
+        : Resolve(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+
     public static string Resolve(string localAppData)
     {
         var current = Path.Combine(localAppData, "AI SubHub");

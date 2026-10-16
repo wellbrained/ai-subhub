@@ -2,7 +2,7 @@
 
 Source: [wellbrained/ai-subhub](https://github.com/wellbrained/ai-subhub) (private repository).
 
-A free, local Windows tray app for checking AI subscription allowances and launching tools with the right account and project. Version **0.10.0**; MIT licensed. Built with C#/.NET 10 and Avalonia 12.
+A free, local Windows tray and macOS menu-bar app for checking AI subscription allowances and launching tools with the right account and project. Version **0.12.0**; MIT licensed. Built with C#/.NET 10 and Avalonia 12.
 
 ## Run
 
@@ -25,6 +25,14 @@ Account names can be changed in **Edit / rename**. **Remove** only disconnects t
 
 Closing the window hides it. Click the tray icon to reopen; right-click for Refresh and Exit. Opening the app again brings the existing instance forward. Windows startup is opt-in in Settings → General and starts minimized to the tray. If you move the executable after enabling startup, disable and re-enable that setting from its new location.
 
+## macOS test version
+
+Requires macOS 15 or newer. Choose the osx-arm64 ZIP for Apple Silicon or osx-x64 for Intel. Extract it and move AI SubHub.app to Applications before enabling **Settings → General → Start at login**. These test bundles have no Developer ID signature or notarization; macOS may require explicit approval in Privacy & Security.
+
+The same compact UI runs in the menu bar. Launch → Project offers Terminal.app, VS Code and detected provider desktop apps. Default profiles are ~/.claude and ~/.codex; custom profile folders remain separate. Claude reads the matching Keychain entry with selected-profile file fallback; Codex delegates authentication to its CLI. Configuration is stored in ~/Library/Application Support/AI SubHub.
+
+Mac runtime validation is pending access to a Mac. The current checks cover cross-publishing, bundle/architecture/permissions and shared Windows regression behavior. Keychain access, native menus/reopen, Terminal automation and login startup still need the [Mac validation checklist](docs/features/macos.md). Public signing/notarization is deferred.
+
 ## Usage and privacy
 
 - Remaining percentages, reset countdowns, last refresh times and explicit unavailable/stale states. Reset times never imply a fresh allowance without a new provider reading.
@@ -34,7 +42,7 @@ Closing the window hides it. Click the tray icon to reopen; right-click for Refr
 - Credentials stay in the CLI profile/keyring. Claude's access token is read into memory only for the direct request. Hub settings contain account labels, profile paths, saved folders and cached usage; no copied credentials, telemetry or Hub backend. The CLIs keep their own existing privacy/settings policies.
 - Subscription launches clear inherited API-key/cloud-auth environment overrides. Existing profile configuration remains yours; use profiles configured for subscription authentication. CLI executables are detected automatically or configured in Settings → Tools. Windows Terminal is preferred; PowerShell is the fallback.
 
-macOS/Linux, Gemini, a separate ChatGPT launcher, notifications, installers, public releases and automatic updates are outside this first milestone.
+Linux, Gemini, a separate ChatGPT launcher, notifications, installers, public releases and automatic updates are outside this first milestone.
 
 ## Development
 
@@ -43,12 +51,14 @@ Install the .NET 10 SDK, then run:
 ```powershell
 ./build.ps1                 # Release build + tests
 ./build.ps1 -Task Publish   # Self-contained Windows x64 executable + ZIP
+./build.ps1 -Task PublishMac -PythonExecutable python # Both Mac test ZIPs; Python 3 required
+# On a Mac: bash scripts/build-macos.sh (native test build + local ad-hoc signature)
 dotnet run --project src/Hub.App -- --demo
 ```
 
 The build script also recognizes a project-local SDK at `.tools/dotnet/dotnet.exe`. Demo mode uses simulated accounts without provider requests or changes to real settings. For an isolated visual smoke check, run the built executable with `--demo --ui-smoke --snapshot <absolute-png-path>`; it exits after rendering its window.
 
-Architecture and behavior: [feature guide](docs/features/windows-mvp.md). Product language: [CONTEXT.md](CONTEXT.md). Scope decision: [ADR 0001](docs/adr/0001-windows-first.md).
+Architecture and behavior: [shared/Windows guide](docs/features/windows-mvp.md), [macOS guide](docs/features/macos.md). Product language: [CONTEXT.md](CONTEXT.md). Scope decision: [ADR 0001](docs/adr/0001-windows-first.md).
 
 Provider sources: [Codex app-server](https://learn.chatgpt.com/docs/app-server), [Claude authentication](https://code.claude.com/docs/en/authentication), [Claude profile isolation](https://code.claude.com/docs/en/env-vars). Unofficial endpoint implementation references: [Ceiling](https://github.com/btsouth/ceiling), [AI Quota Deck](https://github.com/JoshuaWang2211/ai-quota-deck). Their source code is not copied into this project.
 

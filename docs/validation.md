@@ -79,3 +79,18 @@ The earlier metadata-preservation statement compared files through Codex package
 ## 0.10.0 — 2026-10-16
 
 Fixed 56px label, flexible bar, 92px percentage and 108px reset columns, with left-aligned text and 12px gap after the bar. Remaining/Used visual checks confirm identical column starts and bar endpoints across all accounts and quota rows. Both fit 620×404 with unchanged 82px account rows. Build has zero warnings/errors; 50 tests pass. Native restart preserves account/project metadata and usage style, and updates Windows startup to 0.10.0. Changes remain local.
+
+## 0.11.0 macOS test-build milestone — 2026-10-16
+
+Windows v0.10 was pushed to main (22b48d3) before Mac work. Mac implementation is local on codex/macos; the installed Windows v0.10 executable and startup entry were not replaced.
+
+- Shared Release build: zero warnings/errors; 56 tests pass. Added coverage for exact Keychain hash namespace, default/custom profile environment alignment, Unicode handling, POSIX/AppleScript quoting, escaped login-agent arguments, and reconnectable current-user activation.
+- Cross-published self-contained osx-arm64 and osx-x64, packaged as unsigned .app ZIPs. Inspected Mach-O architectures, matching executable/version/minimum-OS/LSUIElement bundle metadata, archive CRCs and Unix creator/executable0755 modes. Both generated apphosts retain valid ad-hoc SHA-256 code pages; no Developer ID signature or notarization was performed. No credential/settings files in packages.
+- Isolated Windows demo regression: Remaining/Used both fit 620×404 with 3×82px accounts and existing nested launch targets; General content fits600×320. Tray configured, second-instance activation received, close hides and reopen succeeds. Visual PNGs inspected.
+- No real Mac is available yet. Keychain permission/scoping, live provider reads onMac, Terminal automation, desktop targets, native menu-bar/reopen, and login startup remain pending against docs/features/macos.md. Cross-build checks do not claim native runtime success.
+- Mac scope/decisions and docs mirrored to the existing vault project via disk; Obsidian MCP unavailable. No signing account, GitHub workflow or public release created.
+
+## 0.12.0 — GitHub Mac test release, 2026-10-16
+
+Release-only minor bump requested by the owner: rebuild both Mac architectures, run local Release checks and package validation, then publish source and both ZIPs with checksums as a GitHub prerelease. The 0.11 native Mac testing limitations continue to apply. Installed Windows v0.10 and its startup configuration are preserved.
+Local v0.12 checks completed: 56 tests pass, zero warnings/errors; both rebuilt archives pass version/architecture/bundle/CRC/executable-mode/ad-hoc-code-hash checks. SHA-256 checksums generated for the release assets.

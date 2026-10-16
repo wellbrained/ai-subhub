@@ -19,7 +19,7 @@ public sealed class UsageTests
             var settings = new HubSettings { Terminal = "Windows Terminal", ClaudeExecutable = executable };
             var account = new AccountProfile(Guid.NewGuid(), ProviderKind.Claude, "Personal", Path.Combine(directory, "profile"));
             var start = new LaunchService(settings).CreateStartInfo(account, directory, target: TerminalTarget.PowerShell);
-            Assert.Equal("powershell.exe", start.FileName);
+            Assert.Equal(OperatingSystem.IsMacOS() ? "/usr/bin/osascript" : "powershell.exe", start.FileName);
             Assert.DoesNotContain("new-tab", start.ArgumentList);
             Assert.Equal(account.Directory, start.Environment["CLAUDE_CONFIG_DIR"]);
             Assert.False(Directory.Exists(account.Directory));
@@ -140,7 +140,7 @@ public sealed class UsageTests
         {
             await File.WriteAllTextAsync(Path.Combine(directory, ".credentials.json"), """{"claudeAiOauth":{"accessToken":"fake-test-token"}}""");
             using var http = new HttpClient(new StubHandler(HttpStatusCode.Unauthorized, "sensitive fake provider body"));
-            var result = await new ClaudeUsageProvider(http).ReadAsync(new(Guid.NewGuid(), ProviderKind.Claude, "Test", directory), CancellationToken.None);
+            var result = await new ClaudeUsageProvider(http, credentialReader: async (_, ct) => JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(directory, ".credentials.json"), ct))).ReadAsync(new(Guid.NewGuid(), ProviderKind.Claude, "Test", directory), CancellationToken.None);
             Assert.Equal(UsageState.SignInRequired, result.State);
             Assert.DoesNotContain("sensitive", result.Message);
             Assert.DoesNotContain("fake-test-token", result.Message);

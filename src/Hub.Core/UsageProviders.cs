@@ -10,13 +10,13 @@ public interface IUsageProvider
     Task<UsageResult> ReadAsync(AccountProfile account, CancellationToken cancellationToken);
 }
 
-public sealed class ClaudeUsageProvider(HttpClient http, LaunchService? launcher = null) : IUsageProvider
+public sealed class ClaudeUsageProvider(HttpClient http, LaunchService? launcher = null, Func<AccountProfile, CancellationToken, Task<JsonDocument?>>? credentialReader = null) : IUsageProvider
 {
     public async Task<UsageResult> ReadAsync(AccountProfile account, CancellationToken cancellationToken)
     {
-        var file = Path.Combine(account.Directory, ".credentials.json");
-        if (!File.Exists(file)) return new(UsageState.SignInRequired, "Sign in with your Claude subscription to connect this profile.");
-        using var credentials = JsonDocument.Parse(await File.ReadAllTextAsync(file, cancellationToken));
+        var readCredentials = credentialReader ?? ClaudeCredentials.ReadAsync;
+        using var credentials = await readCredentials(account, cancellationToken);
+        if (credentials is null) return new(UsageState.SignInRequired, "Sign in with your Claude subscription to connect this profile.");
         if (!credentials.RootElement.TryGetProperty("claudeAiOauth", out var oauth) || !oauth.TryGetProperty("accessToken", out var token) || string.IsNullOrWhiteSpace(token.GetString()))
             return new(UsageState.SignInRequired, "No Claude subscription login found in this profile.");
         // Credentials stay in memory for this request. Never persist them or include response bodies in errors.
@@ -25,7 +25,7 @@ public sealed class ClaudeUsageProvider(HttpClient http, LaunchService? launcher
         request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
         request.Headers.Add("anthropic-version", "2023-06-01");
         request.Headers.Add("x-app", "cli");
-        request.Headers.UserAgent.ParseAdd("AI-SubHub/0.10.0");
+        request.Headers.UserAgent.ParseAdd("AI-SubHub/0.12.0");
         using var response = await http.SendAsync(request, cancellationToken);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             return new(UsageState.SignInRequired, "Claude could not authorize usage access. Sign in again, then refresh.");
@@ -38,7 +38,7 @@ public sealed class ClaudeUsageProvider(HttpClient http, LaunchService? launcher
         using var data = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         var windows = QuotaParser.Claude(data.RootElement);
         var email = await AccountMetadata.ClaudeEmailAsync(launcher, account, cancellationToken);
-        return windows.Count == 0 ? new(UsageState.Unavailable, "Claude returned no recognized subscription allowances.") : new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows), AccountEmail: email);
+        return windows.Count == 0 ? new(UsageState.Unavailable, "Claude returned no recognized subscription allowances.") : new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows), AccountEmail: email, PlanLabel: SubscriptionPlan.Parse(ProviderKind.Claude, credentials.RootElement));
     }
 }
 
@@ -50,7 +50,7 @@ public sealed class CodexUsageProvider(LaunchService launcher) : IUsageProvider
         if (executable is null) return new(UsageState.CliMissing, "Codex CLI was not found. Set its executable in Settings → Tools.");
         if (!Directory.Exists(account.Directory)) return new(UsageState.SignInRequired, "Sign in with ChatGPT to connect this profile.");
         await using var rpc = new CodexRpc(executable, account);
-        await rpc.CallAsync("initialize", new { clientInfo = new { name = "ai_subhub", title = "AI SubHub", version = "0.10.0" } }, cancellationToken);
+        await rpc.CallAsync("initialize", new { clientInfo = new { name = "ai_subhub", title = "AI SubHub", version = "0.12.0" } }, cancellationToken);
         await rpc.NotifyAsync("initialized", new { }, cancellationToken);
         var identity = await rpc.CallAsync("account/read", new { refreshToken = false }, cancellationToken);
         if (!identity.TryGetProperty("account", out var signedIn) || signedIn.ValueKind != JsonValueKind.Object)
@@ -59,7 +59,7 @@ public sealed class CodexUsageProvider(LaunchService launcher) : IUsageProvider
             return new(UsageState.Unavailable, "This profile uses an API key. Sign in with a ChatGPT subscription for subscription usage.");
         var data = await rpc.CallAsync("account/rateLimits/read", null, cancellationToken);
         var windows = QuotaParser.Codex(data);
-        return windows.Count == 0 ? new(UsageState.Unavailable, "Codex returned no subscription allowances for this account.") : new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows), AccountEmail: AccountMetadata.Email(signedIn), Resets: AccountMetadata.CodexResets(data));
+        return windows.Count == 0 ? new(UsageState.Unavailable, "Codex returned no subscription allowances for this account.") : new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows), AccountEmail: AccountMetadata.Email(signedIn), Resets: AccountMetadata.CodexResets(data), PlanLabel: signedIn.TryGetProperty("planType", out var plan) && plan.ValueKind == JsonValueKind.String ? SubscriptionPlan.Label(plan.GetString()) : null);
     }
 }
 
@@ -69,15 +69,8 @@ internal sealed class CodexRpc : IAsyncDisposable
     private int _id;
     public CodexRpc(string executable, AccountProfile account)
     {
-        var script = $"& {SubscriptionEnvironment.PowerShellQuote(executable)} 'app-server' '--listen' 'stdio://'";
-        var shim = !executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
-        var start = new ProcessStartInfo(shim ? "powershell.exe" : executable)
-        {
-            UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true,
-            RedirectStandardError = true, WorkingDirectory = account.Directory
-        };
-        foreach (var argument in shim ? new[] { "-NoLogo", "-NoProfile", "-EncodedCommand", SubscriptionEnvironment.Encode(script) } : new[] { "app-server", "--listen", "stdio://" }) start.ArgumentList.Add(argument);
-        SubscriptionEnvironment.Apply(start, account);
+        var start = CliProcess.Create(executable, account, "app-server", "--listen", "stdio://");
+        start.RedirectStandardInput = true; start.RedirectStandardOutput = true; start.RedirectStandardError = true;
         _process = Process.Start(start) ?? throw new IOException("Could not start Codex.");
         // Drain stderr without storing or logging potentially sensitive CLI diagnostics.
         _process.ErrorDataReceived += (_, _) => { };
