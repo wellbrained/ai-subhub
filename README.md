@@ -34,9 +34,9 @@ AI SubHub is early-stage software. Windows is the tested platform; the macOS por
 
 | Platform | Availability |
 | --- | --- |
-| Windows x64 | [Build a portable app from source](#build-from-source). A Windows ZIP is not attached to the current release. |
-| macOS 15+ · Apple Silicon | [Download unsigned test ZIP](https://github.com/wellbrained/ai-subhub/releases/download/v0.12.0/AI-SubHub-0.12.0-osx-arm64-unsigned.zip) |
-| macOS 15+ · Intel | [Download unsigned test ZIP](https://github.com/wellbrained/ai-subhub/releases/download/v0.12.0/AI-SubHub-0.12.0-osx-x64-unsigned.zip) |
+| Windows x64 | [Download portable ZIP](https://github.com/wellbrained/ai-subhub/releases/download/v0.13.0/AI-SubHub-0.13.0-win-x64.zip) |
+| macOS 15+ · Apple Silicon | [Download unsigned test ZIP](https://github.com/wellbrained/ai-subhub/releases/download/v0.13.0/AI-SubHub-0.13.0-osx-arm64-unsigned.zip) |
+| macOS 15+ · Intel | [Download unsigned test ZIP](https://github.com/wellbrained/ai-subhub/releases/download/v0.13.0/AI-SubHub-0.13.0-osx-x64-unsigned.zip) |
 
 Mac builds have not yet been validated on a real Mac and have no Developer ID signature or notarization. macOS may require explicit approval in **Privacy & Security**. See the [Mac guide and testing checklist](docs/features/macos.md). Linux is not supported yet.
 
