@@ -13,6 +13,7 @@
     <PackageReference Include="Avalonia.Desktop" Version="12.1.4" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
     <ProjectReference Include="../Hub.Core/Hub.Core.csproj" />
+    <InternalsVisibleTo Include="Hub.App.Tests" />
     <AvaloniaResource Include="Assets/**" />
   </ItemGroup>
 </Project>

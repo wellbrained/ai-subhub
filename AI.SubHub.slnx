@@ -2,4 +2,5 @@
   <Project Path="src/Hub.Core/Hub.Core.csproj" />
   <Project Path="src/Hub.App/Hub.App.csproj" />
   <Project Path="tests/Hub.Core.Tests/Hub.Core.Tests.csproj" />
+  <Project Path="tests/Hub.App.Tests/Hub.App.Tests.csproj" />
 </Solution>

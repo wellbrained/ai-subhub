@@ -22,14 +22,27 @@ public sealed class HubController : IDisposable
     public string? Notice { get; set; }
     public event Action? Changed;
 
-    public HubController(bool demo)
+    private readonly Func<AccountProfile, CancellationToken, Task<UsageResult>> _readUsage;
+    private readonly Action<AccountProfile, string> _launchSignIn;
+
+    public HubController(bool demo) : this(demo, null, null, null) { }
+
+    internal HubController(bool demo, SettingsStore? store,
+        Func<AccountProfile, CancellationToken, Task<UsageResult>>? readUsage,
+        Action<AccountProfile, string>? launchSignIn)
     {
         IsDemo = demo;
         var root = demo ? Path.Combine(Path.GetTempPath(), "ai-subhub-demo") : UserDataPaths.Current();
-        Store = new SettingsStore(root);
+        Store = store ?? new SettingsStore(root);
         Settings = demo ? DemoSettings() : Store.Load();
         Notice = Store.LoadWarning;
         Launcher = new(Settings);
+        _readUsage = readUsage ?? ((account, ct) =>
+        {
+            IUsageProvider provider = account.Provider == ProviderKind.Claude ? new ClaudeUsageProvider(_http, Launcher) : new CodexUsageProvider(Launcher);
+            return provider.ReadAsync(account, ct);
+        });
+        _launchSignIn = launchSignIn ?? ((account, completion) => Launcher.Launch(account, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), login: true, completionFile: completion));
         ReadPlans();
         foreach (var cached in Settings.Readings) Results[cached.AccountId] = new(UsageState.Unavailable, "Cached reading. Waiting for refresh.", cached.Snapshot);
         if (demo)
@@ -99,14 +112,55 @@ public sealed class HubController : IDisposable
         Save();
     }
 
-    public async Task RefreshAsync(bool force)
+    public void SignIn(AccountProfile account)
+    {
+        if (IsDemo || _stop.IsCancellationRequested) return;
+        var completion = new LoginCompletion();
+        try { _launchSignIn(account, completion.FilePath); }
+        catch { completion.Dispose(); throw; }
+        Notice = "Complete sign-in in the terminal. Usage will refresh automatically.";
+        Changed?.Invoke();
+        _ = CompleteSignInAsync(account, completion, _stop.Token);
+    }
+
+    private async Task CompleteSignInAsync(AccountProfile account, LoginCompletion completion, CancellationToken ct)
+    {
+        using (completion)
+        {
+            try
+            {
+                var code = await completion.WaitAsync(ct);
+                if (code != 0)
+                {
+                    Notice = code is null ? "Sign-in was not confirmed. Finish it in the terminal, then refresh." : "Sign-in did not complete successfully. Check the terminal and try again.";
+                    Changed?.Invoke(); return;
+                }
+                // A login can finish during an existing usage read. Wait for that
+                // read rather than letting its in-flight guard drop this request.
+                while (IsRefreshing) await Task.Delay(100, ct);
+                var current = Settings.Accounts.FirstOrDefault(a => a.Id == account.Id);
+                if (current is null || current.Provider != account.Provider || current.Directory != account.Directory) return;
+                ct.ThrowIfCancellationRequested();
+                Notice = null;
+                await RefreshAsync(true, account.Id);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Notice = "Sign-in completed, but its result could not be read. Refresh usage manually.";
+                Changed?.Invoke();
+            }
+        }
+    }
+
+    public async Task RefreshAsync(bool force, Guid? accountId = null)
     {
         if (IsRefreshing || IsDemo || _stop.IsCancellationRequested) return;
         ReadPlans();
         IsRefreshing = true; Changed?.Invoke();
         try
         {
-            foreach (var account in Settings.Accounts.ToArray())
+            foreach (var account in Settings.Accounts.Where(a => accountId is null || a.Id == accountId).ToArray())
             {
                 if (_stop.IsCancellationRequested) break;
                 if (!_schedules.TryGetValue(account.Id, out var schedule)) _schedules[account.Id] = schedule = new();
@@ -117,8 +171,7 @@ public sealed class HubController : IDisposable
                 timeout.CancelAfter(TimeSpan.FromSeconds(35));
                 try
                 {
-                    IUsageProvider provider = account.Provider == ProviderKind.Claude ? new ClaudeUsageProvider(_http, Launcher) : new CodexUsageProvider(Launcher);
-                    result = await provider.ReadAsync(account, timeout.Token);
+                    result = await _readUsage(account, timeout.Token);
                 }
                 catch (OperationCanceledException) { result = new(UsageState.Unavailable, "Usage request timed out. Automatic refresh will retry."); }
                 catch (HttpRequestException) { result = new(UsageState.Unavailable, "Could not reach the provider. Check your internet connection."); }

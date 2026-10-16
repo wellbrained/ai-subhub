@@ -45,3 +45,7 @@ Primary references: [Avalonia packaging](https://docs.avaloniaui.net/docs/deploy
 ## GitHub prerelease (0.12)
 
 On 2026-10-16 the owner requested both Mac packages on GitHub with a new version. Version0.12.0 rebuilds the same test milestone, publishes its source and attaches Apple Silicon/Intel ZIPs plus SHA256SUMS.txt to the private repository's v0.12.0 prerelease. Native Mac validation and Developer ID signing/notarization remain pending.
+
+## Login completion refresh (0.13)
+
+The shared sign-in controller now waits for a per-launch numeric exit-code file before refreshing the selected account. Terminal's zsh command writes that code immediately after the CLI finishes, then leaves its interactive shell open. POSIX/AppleScript quoting and per-profile environment rules still apply. The file carries no credentials, is cleaned up and times out after ten minutes. Native Mac validation of this path is still pending.

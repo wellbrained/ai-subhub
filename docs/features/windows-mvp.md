@@ -16,7 +16,7 @@ Errors exclude raw provider responses and credentials. Ready readings replace th
 
 ## Refresh and recovery
 
-Default cadence is five minutes, adjustable 1–60. A 30-second scheduler checks per-account deadlines. Requests run sequentially and have a 35-second cancellation deadline. Concurrent refresh is suppressed. Failures exponentially increase retry delay; computed backoff is capped at 24 hours, while longer provider Retry-After values remain authoritative. Manual refresh skips ordinary cadence but respects known provider rate limits. Sign-in is an explicit terminal action; refresh after completing it.
+Default cadence is five minutes, adjustable 1–60. A 30-second scheduler checks per-account deadlines. Requests run sequentially and have a 35-second cancellation deadline. Concurrent refresh is suppressed. Failures exponentially increase retry delay; computed backoff is capped at 24 hours, while longer provider Retry-After values remain authoritative. Manual refresh skips ordinary cadence but respects known provider rate limits. Sign-in is an explicit terminal action. After its CLI exits successfully, Hub automatically refreshes that account; manual refresh remains available.
 
 ## Launching and settings
 
@@ -97,3 +97,9 @@ All usage rows now share the same fixed label/percentage/reset columns (56/92/10
 ## macOS version (0.11)
 
 The owner agreed to the same compact features/design, menu-bar integration and native Mac launch targets, with unsigned test .app packages first. Both Apple Silicon and Intel packages are built because test hardware is not yet confirmed. Shared UI, quotas, ordering/visibility, styles and caching remain common; platform details and pending native validation are in [macOS](macos.md).
+
+## Login completion refresh (0.13, 2026-10-16)
+
+Sign in / Sign in again now pass a unique temporary completion-file path into the terminal command. After the CLI exits, PowerShell writes only its numeric exit code; the interactive terminal can remain open. Hub watches the local signal for up to ten minutes and refreshes only the selected account on exit0, bypassing ordinary failure backoff while preserving known provider cooldown. If another refresh is active, the login refresh waits for it. Failed/unconfirmed login shows a safe notice without claiming success; app exit cancels the wait. A removed account or changed profile is not refreshed.
+
+The temporary signal contains no token/email/provider response and is removed after completion/cancellation. Login stays CLI-managed. Main-window and Settings sign-in actions share the same controller path. Synthetic tests execute the actual generated Windows command and verify the completion-to-usage handoff, including paths with spaces/apostrophes, delayed active reads, failure backoff, failed login and provider cooldown.

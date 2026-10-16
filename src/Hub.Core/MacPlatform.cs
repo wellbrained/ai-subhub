@@ -37,10 +37,12 @@ public static class MacPlatform
         return start;
     }
 
-    public static ProcessStartInfo Terminal(AccountProfile account, string directory, string executable, bool login)
+    public static ProcessStartInfo Terminal(AccountProfile account, string directory, string executable, bool login, string? completionFile = null)
     {
         var args = login ? account.Provider == ProviderKind.Claude ? " 'auth' 'login' '--claudeai'" : " 'login'" : "";
         var body = SubscriptionEnvironment.PosixScript(account) + "cd -- " + Quote(directory) + " && " + Quote(executable) + args;
+        if (login && completionFile is not null)
+            body += "; loginResult=$?; printf '%s' \"$loginResult\" > " + Quote(completionFile);
         var command = "/bin/zsh -lc " + Quote(body + "; exec /bin/zsh -l");
         var start = new ProcessStartInfo("/usr/bin/osascript") { UseShellExecute = false, WorkingDirectory = directory };
         start.ArgumentList.Add("-e");

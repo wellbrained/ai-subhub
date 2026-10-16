@@ -104,7 +104,7 @@ public sealed class SettingsWindow : Window
                 _hub.Settings.Accounts[index] = edited; Safe(_hub.Save); Render(); await _hub.RefreshAsync(true);
             }));
             actions.Children.Add(More(
-                ("Sign in", () => Safe(() => _hub.Launcher.Launch(account, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), true)), "Sign in to this CLI profile."),
+                ("Sign in", () => Safe(() => _hub.SignIn(account)), "Sign in to this CLI profile."),
                 ("Remove account", () => { Safe(() => _hub.RemoveAccount(account.Id)); Render(); }, "Remove from AI SubHub. Keep the CLI login, folder and history.")));
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,55,Auto"), ColumnSpacing = 8 };
             grid.Children.Add(Ui.AccountName(account.Label, _hub.Plans.GetValueOrDefault(account.Id, "Plan unknown"), 13, 130, Ui.AccountHint(account.Label, _hub.Results.GetValueOrDefault(account.Id)) + "\n" + account.Directory));
@@ -208,7 +208,7 @@ public sealed class SettingsWindow : Window
     private void About()
     {
         Header("AI SubHub");
-        _body.Children.Add(Ui.Text("Version 0.12.0 · Free and open source · MIT", 12, true));
+        _body.Children.Add(Ui.Text("Version 0.13.0 · Free and open source · MIT", 12, true));
         _body.Children.Add(Ui.Text("Usage goes directly to your providers. No SubHub account, backend or telemetry.", 12));
         _body.Children.Add(Ui.Text("Claude usage uses an unofficial endpoint; provider changes can interrupt it. Logins stay with the CLIs.", 11, true));
         _body.Children.Add(Ui.Text("Settings location", 12)); _body.Children.Add(Clipped(_hub.Store.DirectoryPath, _hub.Store.DirectoryPath, 11, true));

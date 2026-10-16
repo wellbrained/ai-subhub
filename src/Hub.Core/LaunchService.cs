@@ -60,20 +60,22 @@ public sealed class LaunchService(HubSettings settings)
 {
     public string? Executable(ProviderKind provider) => Executables.Find(provider == ProviderKind.Claude ? "claude" : "codex", provider == ProviderKind.Claude ? settings.ClaudeExecutable : settings.CodexExecutable);
 
-    public void Launch(AccountProfile account, string workingDirectory, bool login = false, TerminalTarget? target = null)
+    public void Launch(AccountProfile account, string workingDirectory, bool login = false, TerminalTarget? target = null, string? completionFile = null)
     {
-        var start = CreateStartInfo(account, workingDirectory, login, target);
+        var start = CreateStartInfo(account, workingDirectory, login, target, completionFile);
         Directory.CreateDirectory(account.Directory);
         Process.Start(start)?.Dispose();
     }
 
-    public ProcessStartInfo CreateStartInfo(AccountProfile account, string workingDirectory, bool login = false, TerminalTarget? target = null)
+    public ProcessStartInfo CreateStartInfo(AccountProfile account, string workingDirectory, bool login = false, TerminalTarget? target = null, string? completionFile = null)
     {
         if (!Directory.Exists(workingDirectory)) throw new InvalidOperationException("The selected project folder no longer exists. Choose another folder.");
         var executable = Executable(account.Provider) ?? throw new InvalidOperationException($"{account.Provider} CLI was not found. Install it or set its executable in Settings → Tools.");
-        if (OperatingSystem.IsMacOS()) return MacPlatform.Terminal(account, workingDirectory, executable, login);
+        if (OperatingSystem.IsMacOS()) return MacPlatform.Terminal(account, workingDirectory, executable, login, completionFile);
         var arguments = login ? account.Provider == ProviderKind.Claude ? " 'auth' 'login' '--claudeai'" : " 'login'" : "";
-        var script = SubscriptionEnvironment.Script(account) + $"Set-Location -LiteralPath {SubscriptionEnvironment.PowerShellQuote(workingDirectory)}; & {SubscriptionEnvironment.PowerShellQuote(executable)}{arguments}";
+        var script = SubscriptionEnvironment.Script(account) + $"Set-Location -LiteralPath {SubscriptionEnvironment.PowerShellQuote(workingDirectory)}; $global:LASTEXITCODE = 1; & {SubscriptionEnvironment.PowerShellQuote(executable)}{arguments}";
+        if (login && completionFile is not null)
+            script += $"; [System.IO.File]::WriteAllText({SubscriptionEnvironment.PowerShellQuote(completionFile)}, [string]$LASTEXITCODE)";
         var terminal = (target == TerminalTarget.WindowsTerminal || target is null && settings.Terminal == "Windows Terminal") ? Executables.Find("wt") : null;
         var start = new ProcessStartInfo(terminal ?? "powershell.exe") { UseShellExecute = false, WorkingDirectory = workingDirectory };
         if (terminal is not null) start.ArgumentList.Add("new-tab");

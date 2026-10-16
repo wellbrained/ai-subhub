@@ -46,7 +46,7 @@ Install **Claude Code** and/or the **Codex CLI** for the providers you want to u
 
 1. Open AI SubHub. On Windows, run `AI.SubHub.exe` from the portable build. On Mac, extract the ZIP and move `AI SubHub.app` to Applications.
 2. Choose **Add account** beside a provider. Give it a name and select its existing CLI profile folder, or choose **Create a separate profile** for another login.
-3. Use **Settings → Accounts → ⋯ → Sign in** if needed. Finish sign-in in the terminal, then refresh usage.
+3. Use **Settings → Accounts → ⋯ → Sign in** if needed. Finish sign-in in the terminal. Current source builds refresh that account automatically after success; older test builds may need a manual refresh.
 4. Add local folders in **Settings → Projects**. Use **↑ / ↓** to reorder them and **Show** to control which ones appear in Launch.
 5. On an account row, choose **Launch → Project → target**.
 

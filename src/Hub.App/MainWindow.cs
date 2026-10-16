@@ -62,7 +62,7 @@ public sealed class MainWindow : Window
         _refresh.Content = _hub.IsRefreshing ? "Refreshing…" : "Refresh";
         _refresh.IsEnabled = !_hub.IsRefreshing && !_hub.IsDemo;
         ToolTip.SetTip(_refresh, _hub.IsDemo ? "Demo readings are simulated." : _hub.IsRefreshing ? "A refresh is already running." : "Request fresh usage readings.");
-        _notice.Text = _hub.Notice ?? (_hub.IsDemo ? "Demo · Simulated readings" : $"v0.12.0 · Refresh every {_hub.Settings.RefreshMinutes}m · Close to tray");
+        _notice.Text = _hub.Notice ?? (_hub.IsDemo ? "Demo · Simulated readings" : $"v0.13.0 · Refresh every {_hub.Settings.RefreshMinutes}m · Close to tray");
         _accounts.Children.Clear(); _accountRows.Clear(); _launchMenus.Clear();
         foreach (var provider in Enum.GetValues<ProviderKind>())
         {
@@ -97,7 +97,7 @@ public sealed class MainWindow : Window
         var launch = LaunchButton(account); Grid.SetColumn(launch, 2); header.Children.Add(launch); body.Children.Add(header);
         if (result?.State == UsageState.SignInRequired)
         {
-            var signIn = Ui.Button("Sign in again", () => Safe(() => _hub.Launcher.Launch(account, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), true))); Compact(signIn); body.Children.Add(signIn);
+            var signIn = Ui.Button("Sign in again", () => Safe(() => _hub.SignIn(account))); Compact(signIn); body.Children.Add(signIn);
         }
         if (result is { State: not UsageState.Ready }) body.Children.Add(Ui.Text(result.Message, 11, true));
         if (snapshot is not null)

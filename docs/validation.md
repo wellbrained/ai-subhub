@@ -94,3 +94,10 @@ Windows v0.10 was pushed to main (22b48d3) before Mac work. Mac implementation i
 
 Release-only minor bump requested by the owner: rebuild both Mac architectures, run local Release checks and package validation, then publish source and both ZIPs with checksums as a GitHub prerelease. The 0.11 native Mac testing limitations continue to apply. Installed Windows v0.10 and its startup configuration are preserved.
 Local v0.12 checks completed: 56 tests pass, zero warnings/errors; both rebuilt archives pass version/architecture/bundle/CRC/executable-mode/ad-hoc-code-hash checks. SHA-256 checksums generated for the release assets.
+
+## 0.13.0 — Sign-in refresh fix, 2026-10-16
+
+Reproduced Claude-on-Windows symptom with a synthetic CLI completing successfully while the original terminal command produced no completion signal (red regression test). Root cause: sign-in launched a detached/remaining-open terminal without a success-to-refresh handoff; ordinary authentication-failure backoff could then delay new usage, and an active-refresh guard could drop an immediate retry.
+
+Fix adds a credential-free per-login exit-code handoff and targeted controller refresh after success; active reads are awaited, ordinary backoff bypassed and known provider cooldown retained. Full terminal/controller regression uses synthetic CLI data and no real login. Installed Windows build is updated with native storage preservation checks; Mac native validation remains pending. The owner subsequently requested publication because the missing refresh handoff affects other users too.
+Verification complete: 62 tests pass (57 core +5 controller), zero warnings/errors. Native v0.13 is visible/running; all4 accounts and4 projects plus preferences match the pre-upgrade metadata hash, startup points to0.13, and the newly added account has a fresh successful cached reading. Demo layout remains620×404 with82px rows. A native settings backup was retained. Source publication requested after local verification.
