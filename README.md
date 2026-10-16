@@ -1,73 +1,117 @@
 # AI SubHub
 
-Source: [wellbrained/ai-subhub](https://github.com/wellbrained/ai-subhub) (private repository).
+**Your AI subscriptions, at a glance.**
 
-A free, local Windows tray and macOS menu-bar app for checking AI subscription allowances and launching tools with the right account and project. Version **0.12.0**; MIT licensed. Built with C#/.NET 10 and Avalonia 12.
+A compact desktop app for checking **Claude and Codex usage across multiple accounts**, then launching the right CLI profile in the right project folder. Lives in your Windows tray or macOS menu bar. Free, open source, and local.
 
-## Run
+[Downloads](https://github.com/wellbrained/ai-subhub/releases) · [Report a bug](https://github.com/wellbrained/ai-subhub/issues) · [Build from source](#build-from-source) · [MIT license](LICENSE)
 
-Extract the portable ZIP and run `AI.SubHub.exe`. No .NET installation or administrator rights are needed. Configuration lives in `%LOCALAPPDATA%\AI SubHub`. Existing settings migrate automatically from the previous storage folder; account profiles stay in place.
+![AI SubHub showing Claude and Codex accounts, plan tags, allowance bars, and reset countdowns](docs/images/dashboard-dark.png)
 
-1. Open **Settings → Accounts → Add account**, choose Claude or Codex, and name the account.
-2. Choose its existing CLI profile folder, or **Create a separate profile** and then use **⋯ → Sign in**. A profile holds one provider login; select the original folder to preserve its keyring access, settings and history. Default folders are `%USERPROFILE%\.claude` and `%USERPROFILE%\.codex`. Environment overrides are honored as initial suggestions.
-3. Add folders in **Settings → Projects**. Use ↑/↓ to set their order and **Show** to include or hide each one. Hidden projects remain saved and editable.
-4. On an account row, choose **Launch → Project → target**: Windows Terminal or PowerShell for that CLI profile, VS Code for the folder, or the provider's desktop app. **Manage projects…** opens project settings directly.
+*Windows screenshot with simulated accounts and usage. No real account details are shown.*
 
-The main window defaults to 620 × 404 logical pixels. Accounts use compact rows with one line per allowance; additional accounts scroll inside the window. A small **Add account** button is always beside each provider heading. Reset timestamps and full quota labels are available on hover. There is no global project picker: choose a project for each launch.
+## What it does
 
-Settings is a 600 × 320 window with narrow left navigation, flat account/project rows and small edit dialogs. Profile paths are in the edit dialog and tooltips. Sign-in/removal actions are in each row's ⋯ menu. All settings categories use the same compact controls.
+- **See your allowances.** Five-hour, weekly, and other provider-reported windows, with reset countdowns and clear stale/unavailable states.
+- **Manage multiple accounts.** Connect separate CLI profiles, rename them, and choose their order. Plan tags and signed-in email are shown when available.
+- **Launch by account and project.** Choose **Launch → Project → target** to start a CLI in a terminal, open VS Code, or open the matching desktop app.
+- **Keep projects organized.** Save local folders, set their order, and hide inactive projects without removing them.
+- **Make it yours.** Switch between **% remaining / % used**, choose dark/light/system appearance, adjust refresh frequency, and opt into startup at login.
+- **Check from the tray.** Hover for a compact usage summary; close the window to keep it running in the background.
 
-Claude Desktop opens the chosen local folder in its Code view and asks for folder confirmation, using Desktop's login. Codex Desktop currently opens the app and asks you to choose the folder there. Desktop/IDE logins remain separate from the selected CLI profile.
+<details>
+<summary>Project ordering and visibility</summary>
 
-Claude chat Projects (chats, instructions and knowledge) are separate from local project folders. Integration with that list is deferred; this version does not sync or import it.
+![Compact project settings with manual ordering and Show toggles](docs/images/projects.png)
 
-Account names can be changed in **Edit / rename**. **Remove** only disconnects the account from the hub; its provider profile, credentials and history remain intact. Project removal only removes the saved shortcut.
+*Demo folders. Hidden projects stay saved and can be shown again at any time.*
 
-Closing the window hides it. Click the tray icon to reopen; right-click for Refresh and Exit. Opening the app again brings the existing instance forward. Windows startup is opt-in in Settings → General and starts minimized to the tray. If you move the executable after enabling startup, disable and re-enable that setting from its new location.
+</details>
 
-## macOS test version
+## Get started
 
-Requires macOS 15 or newer. Choose the osx-arm64 ZIP for Apple Silicon or osx-x64 for Intel. Extract it and move AI SubHub.app to Applications before enabling **Settings → General → Start at login**. These test bundles have no Developer ID signature or notarization; macOS may require explicit approval in Privacy & Security.
+AI SubHub is early-stage software. Windows is the tested platform; the macOS port is available as an experimental test build.
 
-The same compact UI runs in the menu bar. Launch → Project offers Terminal.app, VS Code and detected provider desktop apps. Default profiles are ~/.claude and ~/.codex; custom profile folders remain separate. Claude reads the matching Keychain entry with selected-profile file fallback; Codex delegates authentication to its CLI. Configuration is stored in ~/Library/Application Support/AI SubHub.
+| Platform | Availability |
+| --- | --- |
+| Windows x64 | [Build a portable app from source](#build-from-source). A Windows ZIP is not attached to the current release. |
+| macOS 15+ · Apple Silicon | [Download unsigned test ZIP](https://github.com/wellbrained/ai-subhub/releases/download/v0.12.0/AI-SubHub-0.12.0-osx-arm64-unsigned.zip) |
+| macOS 15+ · Intel | [Download unsigned test ZIP](https://github.com/wellbrained/ai-subhub/releases/download/v0.12.0/AI-SubHub-0.12.0-osx-x64-unsigned.zip) |
 
-Mac runtime validation is pending access to a Mac. The current checks cover cross-publishing, bundle/architecture/permissions and shared Windows regression behavior. Keychain access, native menus/reopen, Terminal automation and login startup still need the [Mac validation checklist](docs/features/macos.md). Public signing/notarization is deferred.
+Mac builds have not yet been validated on a real Mac and have no Developer ID signature or notarization. macOS may require explicit approval in **Privacy & Security**. See the [Mac guide and testing checklist](docs/features/macos.md). Linux is not supported yet.
 
-## Usage and privacy
+### Connect your accounts
 
-- Remaining percentages, reset countdowns, last refresh times and explicit unavailable/stale states. Reset times never imply a fresh allowance without a new provider reading.
-- Default refresh is five minutes, configurable from 1–60 minutes. Failed requests back off; provider cooldowns also constrain manual refresh. No desktop notifications.
-- Claude: authenticated requests to the **undocumented** `api.anthropic.com/api/oauth/usage` endpoint using the selected profile's existing login. This can break after provider changes. Authentication failures ask you to sign in again; the hub never handles refresh tokens or silently updates the CLI.
-- Codex: official CLI app-server `account/read` and `account/rateLimits/read`. Reads all returned quota buckets and durations. Requires a CLI that supports these protocol methods and a ChatGPT subscription login; API-key usage is not a subscription allowance.
-- Credentials stay in the CLI profile/keyring. Claude's access token is read into memory only for the direct request. Hub settings contain account labels, profile paths, saved folders and cached usage; no copied credentials, telemetry or Hub backend. The CLIs keep their own existing privacy/settings policies.
-- Subscription launches clear inherited API-key/cloud-auth environment overrides. Existing profile configuration remains yours; use profiles configured for subscription authentication. CLI executables are detected automatically or configured in Settings → Tools. Windows Terminal is preferred; PowerShell is the fallback.
+Install **Claude Code** and/or the **Codex CLI** for the providers you want to use. AI SubHub uses their subscription logins; it does not install or update the CLIs.
 
-Linux, Gemini, a separate ChatGPT launcher, notifications, installers, public releases and automatic updates are outside this first milestone.
+1. Open AI SubHub. On Windows, run `AI.SubHub.exe` from the portable build. On Mac, extract the ZIP and move `AI SubHub.app` to Applications.
+2. Choose **Add account** beside a provider. Give it a name and select its existing CLI profile folder, or choose **Create a separate profile** for another login.
+3. Use **Settings → Accounts → ⋯ → Sign in** if needed. Finish sign-in in the terminal, then refresh usage.
+4. Add local folders in **Settings → Projects**. Use **↑ / ↓** to reorder them and **Show** to control which ones appear in Launch.
+5. On an account row, choose **Launch → Project → target**.
 
-## Development
+Default profiles are `~/.claude` and `~/.codex` (`%USERPROFILE%` is your home folder on Windows). Executables are detected automatically; set a custom path in **Settings → Tools** if needed.
 
-Install the .NET 10 SDK, then run:
+CLI profile selection applies to terminal launches. Desktop apps and IDE extensions use their own logins. Claude Desktop can open a local Code folder; Codex Desktop currently asks you to choose the folder inside the app. **Claude chat Projects are separate from local folders and are not synced.**
+
+Close the main window to keep monitoring; use the tray/menu-bar menu to exit. Startup is opt-in under **Settings → General**. Removing an account disconnects it from AI SubHub; its CLI login, history, and files stay in place.
+
+## How usage and credentials work
+
+| Provider | Usage source | Authentication |
+| --- | --- | --- |
+| Claude | Authenticated, **undocumented** OAuth usage endpoint | Selected CLI profile's credentials on Windows; profile-specific Keychain entry with selected-profile file fallback on Mac |
+| Codex | Official CLI app-server account and rate-limit reads | Managed by the Codex CLI for the selected profile |
+
+Usage requests go directly to the providers. There is **no AI SubHub account, backend, or telemetry**. Claude's access token is read into memory for the usage request; AI SubHub does not copy credentials into its settings or implement token refresh. The CLIs retain their own settings and privacy policies.
+
+Settings contain account labels, profile paths, saved project folders, preferences, and cached usage:
+
+- Windows: `%LOCALAPPDATA%\AI SubHub\settings.json`
+- macOS: `~/Library/Application Support/AI SubHub/settings.json`
+
+Refresh defaults to five minutes. Errors back off, and provider cooldowns also apply to manual refresh. Failed reads keep the last snapshot visibly stale; a reset countdown never refills an allowance without a new reading.
+
+Claude's unofficial usage connection can break when the provider changes it. API-key billing is outside the subscription monitor's scope. Plan tags reflect available login metadata, not a live billing or renewal check. Manual-reset counts appear only when supplied by the provider; AI SubHub does not redeem resets or buy credits.
+
+## Build from source
+
+Requires the **.NET 10 SDK**. Downloaded/self-contained builds do not require a separate .NET runtime.
 
 ```powershell
-./build.ps1                 # Release build + tests
-./build.ps1 -Task Publish   # Self-contained Windows x64 executable + ZIP
-./build.ps1 -Task PublishMac -PythonExecutable python # Both Mac test ZIPs; Python 3 required
-# On a Mac: bash scripts/build-macos.sh (native test build + local ad-hoc signature)
+git clone https://github.com/wellbrained/ai-subhub.git
+cd ai-subhub
+./build.ps1                 # Release build and tests
+./build.ps1 -Task Publish   # Portable Windows x64 app and ZIP
+```
+
+Windows output is written to `artifacts/AI-SubHub-<version>-win-x64/` and the adjacent ZIP.
+
+For Mac builds:
+
+```bash
+# On a Mac with the .NET 10 SDK:
+bash scripts/build-macos.sh
+```
+
+Or cross-publish both Mac architectures from Windows with PowerShell and Python 3:
+
+```powershell
+./build.ps1 -Task PublishMac -PythonExecutable python
+```
+
+The native Mac script applies a local ad-hoc signature for testing; it does not provide Developer ID signing or notarization.
+
+To explore the UI with synthetic data and no provider requests:
+
+```powershell
 dotnet run --project src/Hub.App -- --demo
 ```
 
-The build script also recognizes a project-local SDK at `.tools/dotnet/dotnet.exe`. Demo mode uses simulated accounts without provider requests or changes to real settings. For an isolated visual smoke check, run the built executable with `--demo --ui-smoke --snapshot <absolute-png-path>`; it exits after rendering its window.
+Built with **C# / .NET 10 and Avalonia 12**. Provider adapters, parsing, and storage live in `Hub.Core`; desktop lifecycle and UI live in `Hub.App`. See the [behavior guide](docs/features/windows-mvp.md) and [validation notes](docs/validation.md) for details.
 
-Architecture and behavior: [shared/Windows guide](docs/features/windows-mvp.md), [macOS guide](docs/features/macos.md). Product language: [CONTEXT.md](CONTEXT.md). Scope decision: [ADR 0001](docs/adr/0001-windows-first.md).
+## Contributing
 
-Provider sources: [Codex app-server](https://learn.chatgpt.com/docs/app-server), [Claude authentication](https://code.claude.com/docs/en/authentication), [Claude profile isolation](https://code.claude.com/docs/en/env-vars). Unofficial endpoint implementation references: [Ceiling](https://github.com/btsouth/ceiling), [AI Quota Deck](https://github.com/JoshuaWang2211/ai-quota-deck). Their source code is not copied into this project.
+Bug reports and focused pull requests are welcome. Include your OS, provider, CLI version, reproduction steps, and a redacted error message. Keep tokens, credential files, and private profile contents out of issues and screenshots. Run `./build.ps1` before submitting code changes.
 
-In 0.4, hover the tray icon for each account's lowest remaining allowance and its reset countdown. Stale/unavailable readings stay explicit; long lists end with +N more. Use **Settings → Accounts → ↑/↓** to order accounts within Claude or Codex. That order is saved and used in the main window and tooltip.
-
-In 0.5, small plan tags follow account names in the main window and Accounts settings. They reflect the profile's saved login (for example Pro, Plus or Max 20×). Hover for the freshness explanation; missing or unsupported metadata shows Plan unknown.
-
-Enable **Settings → General → Start with Windows** to launch in the tray at sign-in. This works for every Windows user without CoreHub or administrator rights. Startup is enabled on the owner's PC. CoreHub keeps the project record but no longer autostarts this app; no dev instance is configured.
-
-Hover an account name for the signed-in email reported by its CLI. Fresh Codex reset-credit data appears as a small N resets tag, with supplied expiry details on hover. Unknown availability is distinguished from zero. Claude manual reset availability is not currently exposed by this connection; check Claude Settings → Usage. AI SubHub never redeems resets or purchases credits.
-
-Choose **Settings → General → Usage display → % remaining / % used** to change both percentages and bar fill. The tray summary follows the same preference. Manual reset information is hidden when its availability is unknown.
+AI SubHub is an independent project and is not affiliated with Anthropic or OpenAI. Licensed under [MIT](LICENSE).
