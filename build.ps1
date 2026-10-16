@@ -6,9 +6,9 @@ $dotnet = Join-Path $PSScriptRoot '.tools\dotnet\dotnet.exe'
 if (-not (Test-Path -LiteralPath $dotnet)) { $dotnet = (Get-Command dotnet -ErrorAction Stop).Source }
 Push-Location $PSScriptRoot
 try {
-    & $dotnet build AI.SubscriptionHub.slnx -c Release --nologo
+    & $dotnet build AI.SubHub.slnx -c Release --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
-    & $dotnet test AI.SubscriptionHub.slnx -c Release --no-build --nologo
+    & $dotnet test AI.SubHub.slnx -c Release --no-build --nologo
     if ($LASTEXITCODE -ne 0) { throw 'Tests failed.' }
     if ($Task -eq 'Publish') {
         $version = ([xml](Get-Content -LiteralPath 'Directory.Build.props' -Raw)).Project.PropertyGroup.Version

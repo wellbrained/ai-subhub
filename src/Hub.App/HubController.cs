@@ -19,16 +19,14 @@ public sealed class HubController : IDisposable
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromSeconds(30) };
     public bool IsRefreshing { get; private set; }
     public bool IsDemo { get; }
-    public bool CoreHubManaged => Program.CoreHubManaged;
     public string? Notice { get; set; }
     public event Action? Changed;
 
     public HubController(bool demo)
     {
         IsDemo = demo;
-        // Stable storage location preserves existing accounts and managed profile paths after the display rename.
-        var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "AI Subscription Hub");
-        Store = new SettingsStore(demo ? Path.Combine(Path.GetTempPath(), "ai-subscription-hub-demo") : root);
+        var root = demo ? Path.Combine(Path.GetTempPath(), "ai-subhub-demo") : UserDataPaths.Resolve(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+        Store = new SettingsStore(root);
         Settings = demo ? DemoSettings() : Store.Load();
         Notice = Store.LoadWarning;
         Launcher = new(Settings);
@@ -47,7 +45,7 @@ public sealed class HubController : IDisposable
     public void Start()
     {
         _ = DiscoverDesktopAppsAsync();
-        if (!IsDemo && !CoreHubManaged && Settings.StartWithWindows)
+        if (!IsDemo && Settings.StartWithWindows)
         {
             try { SetStartup(true); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Security.SecurityException) { Notice = "Windows startup could not be updated. Disable and re-enable it in Settings → General."; }
@@ -84,14 +82,14 @@ public sealed class HubController : IDisposable
 
     public void SetStartup(bool enabled)
     {
-        if (enabled && CoreHubManaged) throw new InvalidOperationException("Startup is managed by CoreHub for this production app.");
         if (IsDemo) return;
         if (!OperatingSystem.IsWindows()) throw new InvalidOperationException("Windows startup is supported only on Windows.");
         var executable = Environment.ProcessPath ?? throw new InvalidOperationException("The app executable path could not be found.");
         if (Path.GetFileNameWithoutExtension(executable).Equals("dotnet", StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Enable startup from the portable executable, rather than dotnet run.");
         using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-        if (enabled) key.SetValue("AISubscriptionHub", $"\"{executable}\" --tray");
-        else key.DeleteValue("AISubscriptionHub", false);
+        key.DeleteValue("AISubscriptionHub", false); // Migration-only cleanup of the previous startup identifier.
+        if (enabled) key.SetValue("AISubHub", $"\"{executable}\" --tray");
+        else key.DeleteValue("AISubHub", false);
         Settings.StartWithWindows = enabled;
         Save();
     }
@@ -154,6 +152,6 @@ public sealed class HubController : IDisposable
     private static HubSettings DemoSettings() => new()
     {
         Accounts = [new(Guid.NewGuid(), ProviderKind.Claude, "Personal", @"C:\Profiles\claude-personal"), new(Guid.NewGuid(), ProviderKind.Claude, "Second subscription", @"C:\Profiles\claude-second"), new(Guid.NewGuid(), ProviderKind.Codex, "Personal", @"C:\Profiles\codex")],
-        Projects = [new(Guid.NewGuid(), "AI SubHub", @"D:\Github\ai-subscription-hub"), new(Guid.NewGuid(), "Website", @"D:\Demo\website"), new(Guid.NewGuid(), "Later", @"D:\Demo\later", true)]
+        Projects = [new(Guid.NewGuid(), "AI SubHub", @"D:\Github\ai-subhub"), new(Guid.NewGuid(), "Website", @"D:\Demo\website"), new(Guid.NewGuid(), "Later", @"D:\Demo\later", true)]
     };
 }

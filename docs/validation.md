@@ -51,3 +51,12 @@ Ignored `artifacts/checks` holds sanitized local smoke reports and demo PNGs, no
 ### Correction: native AppData verification and recovery
 
 The earlier metadata-preservation statement compared files through Codex package redirection and missed the native empty settings. A detached native WMI check reproduced the precise issue: native AppData had 0 accounts/0 projects; Codex LocalCache had 3/4. Stopped only AI SubHub through CoreHub, backed up the empty native file, restored all metadata and disabled standalone startup, leaving the original source intact. A native production UI smoke rendered all 3 accounts (82px rows, all fit) with successful Claude/Codex usage; it retained four projects, including two hidden entries, with original order. Restarted through CoreHub, health reports 0.6.0, and opened its window for review. Configuration recovery only; no new application build/version.
+
+## 0.7.0 — 2026-10-16
+
+- Completed AI SubHub naming across GitHub repository/local folder, solution, manifest identity, mutex/events, startup key, protocol client, demo paths and current documentation. Old-name literals only remain in legacy migration/cleanup and their test fixture.
+- Build: zero warnings/errors, 36 tests passed. Migration test checks account/project identity, hidden state, preserving the old settings file and never replacing existing new settings. Quota label tests preserve custom/model-specific buckets.
+- Native Windows production verification: settings copied to the new AI SubHub AppData directory; 3 accounts and 4 projects preserved. Compact main layout is 620×404 client pixels with three 82px rows and all accounts fitting. Visual check confirms identical 5-hour/Weekly labels for Claude and Codex.
+- General screenshot confirms the enabled Start with Windows checkbox and content fitting 600×320. The native HKCU AISubHub startup command points to the renamed production 0.7.0 EXE with --tray; legacy startup value is absent. App running outside Codex package virtualization with native saved settings.
+- Per owner's revised request, CoreHub only keeps project record #14 at the renamed path: Live=false and both ports unset; it no longer owns app startup. No dev instance.
+- GitHub repository is private at https://github.com/wellbrained/ai-subhub. No forced Windows reboot.

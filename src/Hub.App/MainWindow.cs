@@ -20,7 +20,7 @@ public sealed class MainWindow : Window
     public MainWindow(HubController hub)
     {
         _hub = hub;
-        Title = "AI SubHub"; Width = 740; Height = 420; MinWidth = 620; MinHeight = 300;
+        Title = "AI SubHub"; Width = 620; Height = 404; MinWidth = 620; MinHeight = 300;
         Icon = App.Icon(); FontFamily = "Segoe UI";
         _refresh = Ui.AsyncButton("Refresh", () => _hub.RefreshAsync(true)); Compact(_refresh);
         var root = new Grid { RowDefinitions = new RowDefinitions("Auto,*,Auto"), Margin = new Thickness(12), RowSpacing = 10 };
@@ -62,7 +62,7 @@ public sealed class MainWindow : Window
         _refresh.Content = _hub.IsRefreshing ? "Refreshing…" : "Refresh";
         _refresh.IsEnabled = !_hub.IsRefreshing && !_hub.IsDemo;
         ToolTip.SetTip(_refresh, _hub.IsDemo ? "Demo readings are simulated." : _hub.IsRefreshing ? "A refresh is already running." : "Request fresh usage readings.");
-        _notice.Text = _hub.Notice ?? (_hub.IsDemo ? "Demo · Simulated readings" : $"v0.6.0 · Refresh every {_hub.Settings.RefreshMinutes}m · Close to tray");
+        _notice.Text = _hub.Notice ?? (_hub.IsDemo ? "Demo · Simulated readings" : $"v0.7.0 · Refresh every {_hub.Settings.RefreshMinutes}m · Close to tray");
         _accounts.Children.Clear(); _accountRows.Clear(); _launchMenus.Clear();
         foreach (var provider in Enum.GetValues<ProviderKind>())
         {
@@ -104,7 +104,7 @@ public sealed class MainWindow : Window
             foreach (var window in snapshot.Windows)
             {
                 var quota = new Grid { ColumnDefinitions = new ColumnDefinitions("110,*,82,125"), ColumnSpacing = 8 };
-                var label = Ui.Text(window.Label.Replace(" allowance", ""), 11, true); label.TextWrapping = TextWrapping.NoWrap; label.TextTrimming = TextTrimming.CharacterEllipsis;
+                var label = Ui.Text(QuotaParser.CompactLabel(window.Label), 11, true); label.TextWrapping = TextWrapping.NoWrap; label.TextTrimming = TextTrimming.CharacterEllipsis;
                 ToolTip.SetTip(label, window.Label); quota.Children.Add(label);
                 var progress = new ProgressBar { Minimum = 0, Maximum = 100, Value = window.RemainingPercent, Height = 4, VerticalAlignment = VerticalAlignment.Center, Foreground = stale ? Ui.Muted : window.RemainingPercent < 20 ? Ui.Brush("#D89B56") : Ui.Accent };
                 Grid.SetColumn(progress, 1); quota.Children.Add(progress);

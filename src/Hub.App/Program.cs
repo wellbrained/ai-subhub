@@ -17,7 +17,7 @@ internal static class Program
     {
         if (args.Contains("--smoke-test")) return SmokeTest.Run(args).GetAwaiter().GetResult();
         if (!OperatingSystem.IsWindows()) return 2;
-        var instanceName = args.Contains("--demo") ? @"Local\AISubscriptionHub-Demo" : @"Local\AISubscriptionHub";
+        var instanceName = args.Contains("--demo") ? @"Local\AISubHub-Demo" : @"Local\AISubHub";
         _activation = new EventWaitHandle(false, EventResetMode.AutoReset, instanceName + "-Show");
         _instance = new Mutex(true, instanceName, out var first);
         if (!first) { _activation.Set(); _activation.Dispose(); _instance.Dispose(); return 0; }

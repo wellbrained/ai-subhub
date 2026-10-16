@@ -51,6 +51,12 @@ public static class ProfileRules
 
 public static class QuotaParser
 {
+    public static string CompactLabel(string label)
+    {
+        var text = label.Replace(" allowance", "");
+        if (text.StartsWith("codex · ", StringComparison.OrdinalIgnoreCase)) text = text[8..];
+        return text switch { "Session" => "5-hour", "1-week" => "Weekly", _ => text };
+    }
     public static IReadOnlyList<QuotaWindow> Claude(JsonElement root)
     {
         var windows = new List<QuotaWindow>();

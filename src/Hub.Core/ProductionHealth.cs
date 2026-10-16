@@ -35,7 +35,7 @@ public sealed class ProductionHealth : IDisposable
                     var count = await stream.ReadAsync(buffer, timeout.Token);
                     var request = Encoding.ASCII.GetString(buffer, 0, count);
                     var healthy = request.StartsWith("GET /api/health HTTP/", StringComparison.Ordinal);
-                    var body = healthy ? "{\"status\":\"ok\",\"app\":\"AI SubHub\",\"version\":\"0.6.0\"}" : "{}";
+                    var body = healthy ? "{\"status\":\"ok\",\"app\":\"AI SubHub\",\"version\":\"0.7.0\"}" : "{}";
                     var response = $"HTTP/1.1 {(healthy ? "200 OK" : "404 Not Found")}\r\nContent-Type: application/json\r\nContent-Length: {Encoding.UTF8.GetByteCount(body)}\r\nConnection: close\r\n\r\n{body}";
                     await stream.WriteAsync(Encoding.UTF8.GetBytes(response), timeout.Token);
                 }

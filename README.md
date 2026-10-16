@@ -1,19 +1,19 @@
 # AI SubHub
 
-Source: [wellbrained/ai-subscription-hub](https://github.com/wellbrained/ai-subscription-hub) (private repository).
+Source: [wellbrained/ai-subhub](https://github.com/wellbrained/ai-subhub) (private repository).
 
-A free, local Windows tray app for checking AI subscription allowances and launching tools with the right account and project. Version **0.6.0**; MIT licensed. Built with C#/.NET 10 and Avalonia 12.
+A free, local Windows tray app for checking AI subscription allowances and launching tools with the right account and project. Version **0.7.0**; MIT licensed. Built with C#/.NET 10 and Avalonia 12.
 
 ## Run
 
-Extract the portable ZIP and run `AI.SubHub.exe`. No .NET installation or administrator rights are needed. Existing configuration remains in `%LOCALAPPDATA%\AI Subscription Hub` for compatibility with v0.1, preserving your accounts and profile paths.
+Extract the portable ZIP and run `AI.SubHub.exe`. No .NET installation or administrator rights are needed. Configuration lives in `%LOCALAPPDATA%\AI SubHub`. Existing settings migrate automatically from the previous storage folder; account profiles stay in place.
 
 1. Open **Settings → Accounts → Add account**, choose Claude or Codex, and name the account.
 2. Choose its existing CLI profile folder, or **Create a separate profile** and then use **⋯ → Sign in**. A profile holds one provider login; select the original folder to preserve its keyring access, settings and history. Default folders are `%USERPROFILE%\.claude` and `%USERPROFILE%\.codex`. Environment overrides are honored as initial suggestions.
 3. Add folders in **Settings → Projects**. Use ↑/↓ to set their order and **Show** to include or hide each one. Hidden projects remain saved and editable.
 4. On an account row, choose **Launch → Project → target**: Windows Terminal or PowerShell for that CLI profile, VS Code for the folder, or the provider's desktop app. **Manage projects…** opens project settings directly.
 
-The main window defaults to 740 × 420 logical pixels. Accounts use compact rows with one line per allowance; additional accounts scroll inside the window. A small **Add account** button is always beside each provider heading. Reset timestamps and full quota labels are available on hover. There is no global project picker: choose a project for each launch.
+The main window defaults to 620 × 404 logical pixels. Accounts use compact rows with one line per allowance; additional accounts scroll inside the window. A small **Add account** button is always beside each provider heading. Reset timestamps and full quota labels are available on hover. There is no global project picker: choose a project for each launch.
 
 Settings is a 600 × 320 window with narrow left navigation, flat account/project rows and small edit dialogs. Profile paths are in the edit dialog and tooltips. Sign-in/removal actions are in each row's ⋯ menu. All settings categories use the same compact controls.
 
@@ -56,4 +56,4 @@ In 0.4, hover the tray icon for each account's lowest remaining allowance and it
 
 In 0.5, small plan tags follow account names in the main window and Accounts settings. They reflect the profile's saved login (for example Pro, Plus or Max 20×). Hover for the freshness explanation; missing or unsupported metadata shows Plan unknown.
 
-On the owner's PC, startup is managed by CoreHub: the Live production app starts minimized at Windows logon. No dev instance is configured. CoreHub's production Start/Stop/Restart controls use scripts/start-server.ps1 and the last successfully published build; the app's startup setting then says Managed by CoreHub. The health endpoint is loopback-only and contains no account data.
+Enable **Settings → General → Start with Windows** to launch in the tray at sign-in. This works for every Windows user without CoreHub or administrator rights. Startup is enabled on the owner's PC. CoreHub keeps the project record but no longer autostarts this app; no dev instance is configured.

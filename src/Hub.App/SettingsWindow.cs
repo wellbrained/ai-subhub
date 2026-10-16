@@ -169,14 +169,14 @@ public sealed class SettingsWindow : Window
         var terminal = Choice(["Windows Terminal", "PowerShell"], _hub.Settings.Terminal);
         terminal.SelectionChanged += (_, _) => { if (terminal.SelectedItem is string selected) { _hub.Settings.Terminal = selected; Safe(_hub.Save); } };
         ToolTip.SetTip(terminal, "Default terminal for sign-in. The Launch menu lets you choose per session."); Field("Sign-in terminal", terminal);
-        var startup = new CheckBox { Content = _hub.CoreHubManaged ? "Managed by CoreHub" : "Enabled", IsChecked = _hub.CoreHubManaged || _hub.Settings.StartWithWindows, IsEnabled = !_hub.IsDemo && !_hub.CoreHubManaged, FontSize = 12, MinHeight = 26 };
+        var startup = new CheckBox { Content = "Enabled", IsChecked = _hub.Settings.StartWithWindows, IsEnabled = !_hub.IsDemo, FontSize = 12, MinHeight = 26 };
         startup.IsCheckedChanged += (_, _) =>
         {
             if (startup.IsChecked == _hub.Settings.StartWithWindows) return;
             Safe(() => _hub.SetStartup(startup.IsChecked == true));
             startup.IsChecked = _hub.Settings.StartWithWindows;
         };
-        ToolTip.SetTip(startup, _hub.CoreHubManaged ? "CoreHub starts the production app at logon. Manage its Live switch in CoreHub." : _hub.IsDemo ? "Startup changes are disabled in demo mode." : "Open in the tray when you sign in to Windows."); Field("Start with Windows", startup);
+        ToolTip.SetTip(startup, _hub.IsDemo ? "Startup changes are disabled in demo mode." : "Open in the tray when you sign in to Windows. No administrator rights needed."); Field("Start with Windows", startup);
         _body.Children.Add(Ui.Text("Close the main window to keep running. Exit from the tray menu.", 11, true));
     }
 
@@ -205,7 +205,7 @@ public sealed class SettingsWindow : Window
     private void About()
     {
         Header("AI SubHub");
-        _body.Children.Add(Ui.Text("Version 0.6.0 · Free and open source · MIT", 12, true));
+        _body.Children.Add(Ui.Text("Version 0.7.0 · Free and open source · MIT", 12, true));
         _body.Children.Add(Ui.Text("Usage goes directly to your providers. No SubHub account, backend or telemetry.", 12));
         _body.Children.Add(Ui.Text("Claude usage uses an unofficial endpoint; provider changes can interrupt it. Logins stay with the CLIs.", 11, true));
         _body.Children.Add(Ui.Text("Settings location", 12)); _body.Children.Add(Clipped(_hub.Store.DirectoryPath, _hub.Store.DirectoryPath, 11, true));

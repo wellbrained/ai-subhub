@@ -25,7 +25,7 @@ public sealed class ClaudeUsageProvider(HttpClient http) : IUsageProvider
         request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
         request.Headers.Add("anthropic-version", "2023-06-01");
         request.Headers.Add("x-app", "cli");
-        request.Headers.UserAgent.ParseAdd("AI-SubHub/0.6.0");
+        request.Headers.UserAgent.ParseAdd("AI-SubHub/0.7.0");
         using var response = await http.SendAsync(request, cancellationToken);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             return new(UsageState.SignInRequired, "Claude could not authorize usage access. Sign in again, then refresh.");
@@ -49,7 +49,7 @@ public sealed class CodexUsageProvider(LaunchService launcher) : IUsageProvider
         if (executable is null) return new(UsageState.CliMissing, "Codex CLI was not found. Set its executable in Settings → Tools.");
         if (!Directory.Exists(account.Directory)) return new(UsageState.SignInRequired, "Sign in with ChatGPT to connect this profile.");
         await using var rpc = new CodexRpc(executable, account);
-        await rpc.CallAsync("initialize", new { clientInfo = new { name = "ai_subscription_hub", title = "AI SubHub", version = "0.6.0" } }, cancellationToken);
+        await rpc.CallAsync("initialize", new { clientInfo = new { name = "ai_subhub", title = "AI SubHub", version = "0.7.0" } }, cancellationToken);
         await rpc.NotifyAsync("initialized", new { }, cancellationToken);
         var identity = await rpc.CallAsync("account/read", new { refreshToken = false }, cancellationToken);
         if (!identity.TryGetProperty("account", out var signedIn) || signedIn.ValueKind != JsonValueKind.Object)
