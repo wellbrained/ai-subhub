@@ -1,5 +1,7 @@
 # AI SubHub
 
+Source: [wellbrained/ai-subscription-hub](https://github.com/wellbrained/ai-subscription-hub) (private repository).
+
 A free, local Windows tray app for checking AI subscription allowances and launching tools with the right account and project. Version **0.6.0**; MIT licensed. Built with C#/.NET 10 and Avalonia 12.
 
 ## Run
