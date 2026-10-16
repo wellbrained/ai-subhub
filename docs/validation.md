@@ -60,3 +60,22 @@ The earlier metadata-preservation statement compared files through Codex package
 - General screenshot confirms the enabled Start with Windows checkbox and content fitting 600×320. The native HKCU AISubHub startup command points to the renamed production 0.7.0 EXE with --tray; legacy startup value is absent. App running outside Codex package virtualization with native saved settings.
 - Per owner's revised request, CoreHub only keeps project record #14 at the renamed path: Live=false and both ports unset; it no longer owns app startup. No dev instance.
 - GitHub repository is private at https://github.com/wellbrained/ai-subhub. No forced Windows reboot.
+
+## 0.8.0 — 2026-10-16
+
+- Build: zero warnings/errors; all 47 tests pass. Added coverage for missing/invalid reset metadata vs explicit zero, provider count vs capped detail rows, expiry selection, and safe plain email handling.
+- Live read-only checks: both Claude profiles and Codex return signed-in email (report records booleans only). Codex currently returns available reset count=0. Claude manual reset availability stays unknown through this connection. No reset redemption endpoint is called.
+- Demo and native UI: 620×404 default, three 82px account rows all fit; reset badge adds no row/window height. Native settings/account/project metadata preserved (3 accounts, 4 projects), email/reset runtime metadata absent from persisted quota cache.
+- Native restart updates the existing Windows startup entry to 0.8.0. No CoreHub startup dependency. Changes remain local pending a new push request.
+
+## 0.9.0 — 2026-10-16
+
+- Build: zero warnings/errors; all 50 tests pass. Added checks for complementary displayed percentage/bar values, matching tray style using the same constrained quota bucket/reset, and persisted preference with old/unknown settings defaulting to Remaining.
+- Remaining/Used demo screenshots visually verified at 620×404, three 82px rows fit. Progress gaps reduced to 4px, label column 56px, content-sized reset column right aligned with smaller row side padding. No larger window.
+- General screenshot/report: five preference rows, tallest 40px, all content fits 600×320. Changing Usage display saves immediately and the controller notifies main/tray views.
+- Unknown manual-reset information removed from account tooltips entirely; known counts including zero remain displayed.
+- Native upgrade preserves 3 accounts/4 projects, defaults to Remaining and refreshes the existing Windows startup path to 0.9.0. No commit/push requested; changes remain local.
+
+## 0.10.0 — 2026-10-16
+
+Fixed 56px label, flexible bar, 92px percentage and 108px reset columns, with left-aligned text and 12px gap after the bar. Remaining/Used visual checks confirm identical column starts and bar endpoints across all accounts and quota rows. Both fit 620×404 with unchanged 82px account rows. Build has zero warnings/errors; 50 tests pass. Native restart preserves account/project metadata and usage style, and updates Windows startup to 0.10.0. Changes remain local.

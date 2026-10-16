@@ -16,10 +16,10 @@ internal static class SmokeTest
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(40));
         try
         {
-            IUsageProvider adapter = provider == ProviderKind.Claude ? new ClaudeUsageProvider(http) : new CodexUsageProvider(launcher);
+            IUsageProvider adapter = provider == ProviderKind.Claude ? new ClaudeUsageProvider(http, launcher) : new CodexUsageProvider(launcher);
             var result = await adapter.ReadAsync(new(Guid.NewGuid(), provider, "Smoke test", path), timeout.Token);
             // Deliberately exclude account identity, credential contents and raw provider responses.
-            await File.WriteAllTextAsync(report, JsonSerializer.Serialize(new { Provider = provider.ToString(), State = result.State.ToString(), result.Message, WindowCount = result.Snapshot?.Windows.Count ?? 0 }, new JsonSerializerOptions { WriteIndented = true }));
+            await File.WriteAllTextAsync(report, JsonSerializer.Serialize(new { Provider = provider.ToString(), State = result.State.ToString(), result.Message, WindowCount = result.Snapshot?.Windows.Count ?? 0, HasAccountEmail = result.AccountEmail is not null, AvailableResets = result.Resets?.AvailableCount }, new JsonSerializerOptions { WriteIndented = true }));
             return result.State == UsageState.Ready ? 0 : 1;
         }
         catch (Exception ex) when (ex is IOException or HttpRequestException or JsonException or InvalidOperationException or OperationCanceledException or System.ComponentModel.Win32Exception)

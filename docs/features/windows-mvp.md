@@ -75,3 +75,21 @@ Standard usage labels match across providers: 5-hour and Weekly. Claude's Sessio
 ### Startup ownership revised — 2026-10-16 (supersedes CoreHub startup above)
 
 The owner requested the ordinary Start with Windows checkbox for everyone, including this PC. General always offers it outside demo mode. It writes the current portable executable with --tray into HKCU Run under AISubHub, updates the entry when an enabled app runs from a new version/path, and removes it when unchecked. The old startup identifier is removed during this operation. No administrator rights or CoreHub dependency. This PC uses direct Windows startup=true; CoreHub project #14 is no longer Live and has neither a prod nor dev port, avoiding duplicate startup. The optional script/health integration remains available for external management but is not this PC's startup mechanism.
+
+## Signed-in email and manual reset availability (0.8)
+
+Hover an account name in the main window or Accounts settings for its provider-reported signed-in email. Claude reads auth status in the selected CLI profile with a five-second limit; Codex uses account/read. No editable label is treated as identity. These APIs report a signed-in email, not a separate email-ownership verification flag, so no verification checkmark is invented. Email stays in memory, is not added to settings/cache, and is excluded from smoke report contents. Missing identity says unavailable.
+
+Codex's official app-server rate-limit response can include rateLimitResetCredits with availableCount and optional credit expiry details. A compact N resets tag appears for fresh known data, including explicit zero. Hover shows the earliest supplied expiry. Missing/unsupported/failed metadata means unknown, never zero; a capped credit detail list never overrides the provider count. Claude's current CLI usage integration does not establish manual reset availability; its tooltip directs users to the provider Usage page. Claude's official reset guide says manual resets can cover five-hour or weekly usage and may expire. This is separate from ordinary quota reset countdowns. AI SubHub only reads availability; there is no consume/reset/purchase request.
+
+Sources: https://github.com/openai/codex/blob/main/codex-rs/app-server-protocol/src/protocol/v2/account.rs and https://support.claude.com/en/articles/17007452-what-is-a-limit-reset.
+
+## Usage style and tighter rows (0.9)
+
+Settings → General → Usage display selects % remaining (default for existing/new settings) or % used. The preference persists; the main percentage and bar fill switch immediately using complementary values, while warnings still indicate low remaining capacity. The tray displays the matching style for the same most-constrained window and corresponding reset time. Provider readings stay unchanged. Unknown style values normalize to Remaining.
+
+Unknown manual-reset metadata is omitted entirely from account tooltips as well as tags. Known zero remains visible. Usage rows use a 56px label column, 4px gaps, content-sized percentage/reset columns and smaller side padding; reset text aligns against the right edge with no oversized reserved column. General spacing tightens to fit the new field in 600×320. Demo-only --used exercises the alternate style without changing real settings.
+
+### Column alignment refinement (0.10)
+
+All usage rows now share the same fixed label/percentage/reset columns (56/92/108px) and flexible bar column. Percentage/reset text aligns to the left edge of its column, so starts stay identical even when text lengths differ. A 12px gap follows each bar (8px grid gap + 4px bar right margin); ordinary gaps are 8px. Window size remains unchanged.

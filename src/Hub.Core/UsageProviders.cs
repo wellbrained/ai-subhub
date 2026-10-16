@@ -10,7 +10,7 @@ public interface IUsageProvider
     Task<UsageResult> ReadAsync(AccountProfile account, CancellationToken cancellationToken);
 }
 
-public sealed class ClaudeUsageProvider(HttpClient http) : IUsageProvider
+public sealed class ClaudeUsageProvider(HttpClient http, LaunchService? launcher = null) : IUsageProvider
 {
     public async Task<UsageResult> ReadAsync(AccountProfile account, CancellationToken cancellationToken)
     {
@@ -25,7 +25,7 @@ public sealed class ClaudeUsageProvider(HttpClient http) : IUsageProvider
         request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
         request.Headers.Add("anthropic-version", "2023-06-01");
         request.Headers.Add("x-app", "cli");
-        request.Headers.UserAgent.ParseAdd("AI-SubHub/0.7.0");
+        request.Headers.UserAgent.ParseAdd("AI-SubHub/0.10.0");
         using var response = await http.SendAsync(request, cancellationToken);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             return new(UsageState.SignInRequired, "Claude could not authorize usage access. Sign in again, then refresh.");
@@ -37,7 +37,8 @@ public sealed class ClaudeUsageProvider(HttpClient http) : IUsageProvider
         if (!response.IsSuccessStatusCode) return new(UsageState.Unavailable, $"Claude usage is unavailable (HTTP {(int)response.StatusCode}). This unofficial endpoint may have changed.");
         using var data = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         var windows = QuotaParser.Claude(data.RootElement);
-        return windows.Count == 0 ? new(UsageState.Unavailable, "Claude returned no recognized subscription allowances.") : new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows));
+        var email = await AccountMetadata.ClaudeEmailAsync(launcher, account, cancellationToken);
+        return windows.Count == 0 ? new(UsageState.Unavailable, "Claude returned no recognized subscription allowances.") : new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows), AccountEmail: email);
     }
 }
 
@@ -49,7 +50,7 @@ public sealed class CodexUsageProvider(LaunchService launcher) : IUsageProvider
         if (executable is null) return new(UsageState.CliMissing, "Codex CLI was not found. Set its executable in Settings → Tools.");
         if (!Directory.Exists(account.Directory)) return new(UsageState.SignInRequired, "Sign in with ChatGPT to connect this profile.");
         await using var rpc = new CodexRpc(executable, account);
-        await rpc.CallAsync("initialize", new { clientInfo = new { name = "ai_subhub", title = "AI SubHub", version = "0.7.0" } }, cancellationToken);
+        await rpc.CallAsync("initialize", new { clientInfo = new { name = "ai_subhub", title = "AI SubHub", version = "0.10.0" } }, cancellationToken);
         await rpc.NotifyAsync("initialized", new { }, cancellationToken);
         var identity = await rpc.CallAsync("account/read", new { refreshToken = false }, cancellationToken);
         if (!identity.TryGetProperty("account", out var signedIn) || signedIn.ValueKind != JsonValueKind.Object)
@@ -58,7 +59,7 @@ public sealed class CodexUsageProvider(LaunchService launcher) : IUsageProvider
             return new(UsageState.Unavailable, "This profile uses an API key. Sign in with a ChatGPT subscription for subscription usage.");
         var data = await rpc.CallAsync("account/rateLimits/read", null, cancellationToken);
         var windows = QuotaParser.Codex(data);
-        return windows.Count == 0 ? new(UsageState.Unavailable, "Codex returned no subscription allowances for this account.") : new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows));
+        return windows.Count == 0 ? new(UsageState.Unavailable, "Codex returned no subscription allowances for this account.") : new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows), AccountEmail: AccountMetadata.Email(signedIn), Resets: AccountMetadata.CodexResets(data));
     }
 }
 

@@ -27,6 +27,7 @@ public sealed class App : Application
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
             var isolated = desktop.Args?.Contains("--demo") == true;
             _controller = new HubController(isolated);
+            if (isolated && desktop.Args?.Contains("--used") == true) _controller.Settings.UsageStyle = "Used";
             SetTheme(desktop.Args?.Contains("--light") == true && isolated ? "Light" : _controller.Settings.Theme);
             _window = new MainWindow(_controller);
             desktop.MainWindow = _window;

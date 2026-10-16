@@ -12,7 +12,8 @@ public sealed record QuotaWindow(string Label, double UsedPercent, DateTimeOffse
     public double RemainingPercent => Math.Clamp(100 - UsedPercent, 0, 100);
 }
 public sealed record UsageSnapshot(DateTimeOffset FetchedAt, IReadOnlyList<QuotaWindow> Windows);
-public sealed record UsageResult(UsageState State, string Message, UsageSnapshot? Snapshot = null, TimeSpan? RetryAfter = null);
+public sealed record UsageResult(UsageState State, string Message, UsageSnapshot? Snapshot = null, TimeSpan? RetryAfter = null, string? AccountEmail = null, ResetAvailability? Resets = null);
+public sealed record ResetAvailability(int AvailableCount, DateTimeOffset? EarliestExpiry);
 public sealed record CachedReading(Guid AccountId, UsageSnapshot Snapshot);
 
 public sealed class HubSettings
@@ -22,6 +23,7 @@ public sealed class HubSettings
     public List<ProjectFolder> Projects { get; set; } = [];
     public Guid? SelectedProjectId { get; set; }
     public string Theme { get; set; } = "Dark";
+    public string UsageStyle { get; set; } = "Remaining";
     public int RefreshMinutes { get; set; } = 5;
     public bool StartWithWindows { get; set; }
     public string Terminal { get; set; } = "Windows Terminal";

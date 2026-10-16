@@ -2,7 +2,7 @@
 
 Source: [wellbrained/ai-subhub](https://github.com/wellbrained/ai-subhub) (private repository).
 
-A free, local Windows tray app for checking AI subscription allowances and launching tools with the right account and project. Version **0.7.0**; MIT licensed. Built with C#/.NET 10 and Avalonia 12.
+A free, local Windows tray app for checking AI subscription allowances and launching tools with the right account and project. Version **0.10.0**; MIT licensed. Built with C#/.NET 10 and Avalonia 12.
 
 ## Run
 
@@ -57,3 +57,7 @@ In 0.4, hover the tray icon for each account's lowest remaining allowance and it
 In 0.5, small plan tags follow account names in the main window and Accounts settings. They reflect the profile's saved login (for example Pro, Plus or Max 20×). Hover for the freshness explanation; missing or unsupported metadata shows Plan unknown.
 
 Enable **Settings → General → Start with Windows** to launch in the tray at sign-in. This works for every Windows user without CoreHub or administrator rights. Startup is enabled on the owner's PC. CoreHub keeps the project record but no longer autostarts this app; no dev instance is configured.
+
+Hover an account name for the signed-in email reported by its CLI. Fresh Codex reset-credit data appears as a small N resets tag, with supplied expiry details on hover. Unknown availability is distinguished from zero. Claude manual reset availability is not currently exposed by this connection; check Claude Settings → Usage. AI SubHub never redeems resets or purchases credits.
+
+Choose **Settings → General → Usage display → % remaining / % used** to change both percentages and bar fill. The tray summary follows the same preference. Manual reset information is hidden when its availability is unknown.

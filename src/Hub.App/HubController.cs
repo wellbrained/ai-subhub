@@ -37,7 +37,7 @@ public sealed class HubController : IDisposable
             foreach (var account in Settings.Accounts)
             {
                 var used = account.Label.Contains("Personal") ? 32 : 71;
-                Results[account.Id] = new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow.AddMinutes(-2), [new("5-hour allowance", used, DateTimeOffset.UtcNow.AddHours(2.3)), new("Weekly allowance", used - 12, DateTimeOffset.UtcNow.AddDays(3))]));
+                Results[account.Id] = new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow.AddMinutes(-2), [new("5-hour allowance", used, DateTimeOffset.UtcNow.AddHours(2.3)), new("Weekly allowance", used - 12, DateTimeOffset.UtcNow.AddDays(3))]), AccountEmail: "demo@example.test", Resets: account.Provider == ProviderKind.Codex ? new(2, DateTimeOffset.UtcNow.AddDays(3)) : null);
             }
         }
     }
@@ -112,7 +112,7 @@ public sealed class HubController : IDisposable
                 timeout.CancelAfter(TimeSpan.FromSeconds(35));
                 try
                 {
-                    IUsageProvider provider = account.Provider == ProviderKind.Claude ? new ClaudeUsageProvider(_http) : new CodexUsageProvider(Launcher);
+                    IUsageProvider provider = account.Provider == ProviderKind.Claude ? new ClaudeUsageProvider(_http, Launcher) : new CodexUsageProvider(Launcher);
                     result = await provider.ReadAsync(account, timeout.Token);
                 }
                 catch (OperationCanceledException) { result = new(UsageState.Unavailable, "Usage request timed out. Automatic refresh will retry."); }

@@ -22,6 +22,7 @@ public sealed class SettingsStore(string directory)
             settings.Readings ??= [];
             settings.RefreshMinutes = Math.Clamp(settings.RefreshMinutes, 1, 60);
             settings.Theme = settings.Theme is "Light" or "System" ? settings.Theme : "Dark";
+            settings.UsageStyle = settings.UsageStyle == "Used" ? "Used" : "Remaining";
             return settings;
         }
         catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException)

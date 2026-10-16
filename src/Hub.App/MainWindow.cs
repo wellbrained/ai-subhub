@@ -62,7 +62,7 @@ public sealed class MainWindow : Window
         _refresh.Content = _hub.IsRefreshing ? "Refreshing…" : "Refresh";
         _refresh.IsEnabled = !_hub.IsRefreshing && !_hub.IsDemo;
         ToolTip.SetTip(_refresh, _hub.IsDemo ? "Demo readings are simulated." : _hub.IsRefreshing ? "A refresh is already running." : "Request fresh usage readings.");
-        _notice.Text = _hub.Notice ?? (_hub.IsDemo ? "Demo · Simulated readings" : $"v0.7.0 · Refresh every {_hub.Settings.RefreshMinutes}m · Close to tray");
+        _notice.Text = _hub.Notice ?? (_hub.IsDemo ? "Demo · Simulated readings" : $"v0.10.0 · Refresh every {_hub.Settings.RefreshMinutes}m · Close to tray");
         _accounts.Children.Clear(); _accountRows.Clear(); _launchMenus.Clear();
         foreach (var provider in Enum.GetValues<ProviderKind>())
         {
@@ -89,7 +89,8 @@ public sealed class MainWindow : Window
         var stale = result?.State != UsageState.Ready || snapshot is not null && DateTimeOffset.UtcNow - snapshot.FetchedAt > TimeSpan.FromMinutes(_hub.Settings.RefreshMinutes + 1);
         var body = Ui.Stack(4);
         var header = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"), ColumnSpacing = 10 };
-        header.Children.Add(Ui.AccountName(account.Label, _hub.Plans.GetValueOrDefault(account.Id, "Plan unknown"), 14, 220, account.Label));
+        var resets = !stale && result?.Resets is { } available ? available.AvailableCount == 1 ? "1 reset" : $"{Math.Min(available.AvailableCount, 999)}{(available.AvailableCount > 999 ? "+" : "")} resets" : null;
+        header.Children.Add(Ui.AccountName(account.Label, _hub.Plans.GetValueOrDefault(account.Id, "Plan unknown"), 14, resets is null ? 220 : 130, Ui.AccountHint(account.Label, result), resets));
         var age = Ui.Text(snapshot is null ? "" : $"{(stale ? "Stale · " : "")}{Ui.Age(snapshot.FetchedAt)}", 11, true);
         if (snapshot is not null) ToolTip.SetTip(age, $"Last successful refresh: {snapshot.FetchedAt.LocalDateTime:g}{(stale ? ". Last known reading, not current usage." : "")}");
         Grid.SetColumn(age, 1); header.Children.Add(age);
@@ -103,20 +104,20 @@ public sealed class MainWindow : Window
         {
             foreach (var window in snapshot.Windows)
             {
-                var quota = new Grid { ColumnDefinitions = new ColumnDefinitions("110,*,82,125"), ColumnSpacing = 8 };
+                var quota = new Grid { ColumnDefinitions = new ColumnDefinitions("56,*,92,108"), ColumnSpacing = 8 };
                 var label = Ui.Text(QuotaParser.CompactLabel(window.Label), 11, true); label.TextWrapping = TextWrapping.NoWrap; label.TextTrimming = TextTrimming.CharacterEllipsis;
                 ToolTip.SetTip(label, window.Label); quota.Children.Add(label);
-                var progress = new ProgressBar { Minimum = 0, Maximum = 100, Value = window.RemainingPercent, Height = 4, VerticalAlignment = VerticalAlignment.Center, Foreground = stale ? Ui.Muted : window.RemainingPercent < 20 ? Ui.Brush("#D89B56") : Ui.Accent };
+                var progress = new ProgressBar { Minimum = 0, Maximum = 100, Value = UsageDisplay.Value(window, _hub.Settings.UsageStyle), Margin = new Thickness(0, 0, 4, 0), Height = 4, VerticalAlignment = VerticalAlignment.Center, Foreground = stale ? Ui.Muted : window.RemainingPercent < 20 ? Ui.Brush("#D89B56") : Ui.Accent };
                 Grid.SetColumn(progress, 1); quota.Children.Add(progress);
-                var percent = Ui.Text($"{window.RemainingPercent:0.#}% left", 12); percent.HorizontalAlignment = HorizontalAlignment.Right;
+                var percent = Ui.Text(UsageDisplay.Text(window, _hub.Settings.UsageStyle), 12); percent.HorizontalAlignment = HorizontalAlignment.Left; percent.MinWidth = 0; percent.TextWrapping = TextWrapping.NoWrap;
                 Grid.SetColumn(percent, 2); quota.Children.Add(percent);
                 var fullReset = Ui.ResetText(window.ResetsAt);
-                var reset = Ui.Text(fullReset.Split(" · ")[0], 11, true); reset.TextWrapping = TextWrapping.NoWrap; reset.TextTrimming = TextTrimming.CharacterEllipsis;
+                var reset = Ui.Text(fullReset.Split(" · ")[0], 11, true); reset.MaxWidth = 108; reset.HorizontalAlignment = HorizontalAlignment.Left; reset.TextWrapping = TextWrapping.NoWrap; reset.TextTrimming = TextTrimming.CharacterEllipsis;
                 ToolTip.SetTip(reset, fullReset); Grid.SetColumn(reset, 3); quota.Children.Add(reset); body.Children.Add(quota);
             }
         }
         else if (result is null || result.State == UsageState.Ready) body.Children.Add(Ui.Text(_hub.IsRefreshing ? "Connecting…" : "Usage unavailable", 11, true));
-        var card = Ui.Card(body); card.Padding = new Thickness(10, 8); card.CornerRadius = new CornerRadius(7); return card;
+        var card = Ui.Card(body); card.Padding = new Thickness(8, 8); card.CornerRadius = new CornerRadius(7); return card;
     }
 
     private Button LaunchButton(AccountProfile account)

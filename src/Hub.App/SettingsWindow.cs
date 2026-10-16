@@ -39,7 +39,7 @@ public sealed class SettingsWindow : Window
 
     private void Render()
     {
-        Background = Ui.Background; _body.Children.Clear(); _nav.Children.Clear(); _rows.Clear();
+        Background = Ui.Background; _body.Children.Clear(); _nav.Children.Clear(); _rows.Clear(); _body.Spacing = _category == "General" ? 6 : 10;
         _error.Foreground = Ui.Foreground;
         if (_nav.Parent is Border navigation) navigation.BorderBrush = Ui.Line;
         var title = Ui.Heading("Settings", 14); title.Margin = new Thickness(7, 1, 0, 10); _nav.Children.Add(title);
@@ -107,7 +107,7 @@ public sealed class SettingsWindow : Window
                 ("Sign in", () => Safe(() => _hub.Launcher.Launch(account, Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), true)), "Sign in to this CLI profile."),
                 ("Remove account", () => { Safe(() => _hub.RemoveAccount(account.Id)); Render(); }, "Remove from AI SubHub. Keep the CLI login, folder and history.")));
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,55,Auto"), ColumnSpacing = 8 };
-            grid.Children.Add(Ui.AccountName(account.Label, _hub.Plans.GetValueOrDefault(account.Id, "Plan unknown"), 13, 130, account.Label + " · " + account.Directory));
+            grid.Children.Add(Ui.AccountName(account.Label, _hub.Plans.GetValueOrDefault(account.Id, "Plan unknown"), 13, 130, Ui.AccountHint(account.Label, _hub.Results.GetValueOrDefault(account.Id)) + "\n" + account.Directory));
             var provider = Ui.Text(account.Provider.ToString(), 11, true); Grid.SetColumn(provider, 1); grid.Children.Add(provider);
             Grid.SetColumn(actions, 2); grid.Children.Add(actions); Row(grid);
         }
@@ -163,6 +163,9 @@ public sealed class SettingsWindow : Window
         var themes = Choice(["Dark", "Light", "System"], _hub.Settings.Theme);
         themes.SelectionChanged += (_, _) => { if (themes.SelectedItem is string theme) { Safe(() => _hub.UpdateTheme(theme)); Render(); } };
         Field("Appearance", themes);
+        var usageStyle = Choice(["% remaining", "% used"], _hub.Settings.UsageStyle == "Used" ? "% used" : "% remaining");
+        usageStyle.SelectionChanged += (_, _) => { if (usageStyle.SelectedItem is string selected) { _hub.Settings.UsageStyle = selected == "% used" ? "Used" : "Remaining"; Safe(_hub.Save); } };
+        ToolTip.SetTip(usageStyle, "Choose what percentages and bar fill represent. Applies immediately to the window and tray tooltip."); Field("Usage display", usageStyle);
         var interval = new NumericUpDown { Minimum = 1, Maximum = 60, Value = _hub.Settings.RefreshMinutes, Increment = 1, FormatString = "0", MinHeight = 26, FontSize = 12, Padding = new Thickness(6, 3) };
         interval.ValueChanged += (_, _) => { if (interval.Value is { } minutes) { _hub.Settings.RefreshMinutes = (int)minutes; Safe(_hub.Save); } };
         ToolTip.SetTip(interval, "Minutes between refreshes. Errors and provider rate limits increase the delay."); Field("Refresh (minutes)", interval);
@@ -205,22 +208,22 @@ public sealed class SettingsWindow : Window
     private void About()
     {
         Header("AI SubHub");
-        _body.Children.Add(Ui.Text("Version 0.7.0 · Free and open source · MIT", 12, true));
+        _body.Children.Add(Ui.Text("Version 0.10.0 · Free and open source · MIT", 12, true));
         _body.Children.Add(Ui.Text("Usage goes directly to your providers. No SubHub account, backend or telemetry.", 12));
         _body.Children.Add(Ui.Text("Claude usage uses an unofficial endpoint; provider changes can interrupt it. Logins stay with the CLIs.", 11, true));
         _body.Children.Add(Ui.Text("Settings location", 12)); _body.Children.Add(Clipped(_hub.Store.DirectoryPath, _hub.Store.DirectoryPath, 11, true));
     }
 
-    private void Row(Control content)
+    private void Row(Control content, bool compact = false)
     {
-        var row = new Border { Child = content, BorderBrush = Ui.Line, BorderThickness = new Thickness(0, 0, 0, 1), Padding = new Thickness(0, 5, 0, 7) };
+        var row = new Border { Child = content, BorderBrush = Ui.Line, BorderThickness = new Thickness(0, 0, 0, 1), Padding = compact ? new Thickness(0, 3, 0, 4) : new Thickness(0, 5, 0, 7) };
         _rows.Add(row); _body.Children.Add(row);
     }
 
     private void Field(string label, Control editor)
     {
         var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,170"), ColumnSpacing = 10, MinHeight = 30 };
-        row.Children.Add(Ui.Text(label, 12)); Grid.SetColumn(editor, 1); row.Children.Add(editor); Row(row);
+        row.Children.Add(Ui.Text(label, 12)); Grid.SetColumn(editor, 1); row.Children.Add(editor); Row(row, true);
     }
 
     private static ComboBox Choice(string[] options, string value) => new() { ItemsSource = options, SelectedItem = value, HorizontalAlignment = HorizontalAlignment.Stretch, MinHeight = 26, FontSize = 12, Padding = new Thickness(6, 3) };

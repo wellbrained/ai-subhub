@@ -19,15 +19,30 @@ internal static class Ui
     public static TextBlock Text(string text, double size = 14, bool muted = false) => new() { Text = text, FontSize = size, Foreground = muted ? Muted : Foreground, TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
     public static TextBlock Heading(string text, double size = 24) => new() { Text = text, FontSize = size, FontWeight = FontWeight.SemiBold, TextWrapping = TextWrapping.Wrap };
     public static StackPanel Stack(double spacing = 12) => new() { Spacing = spacing };
-    public static Control AccountName(string label, string plan, double size, double maximumNameWidth, string hint)
+    public static string AccountHint(string label, Hub.Core.UsageResult? result)
     {
-        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto"), ColumnSpacing = 6, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
+        var email = result?.AccountEmail ?? "Unavailable; refresh after signing in.";
+        var resets = result?.Resets is { } available ? $"\nManual usage resets: {available.AvailableCount} available" + (available.EarliestExpiry is { } expiry ? $"; earliest expires {expiry.LocalDateTime:g}" : "") : "";
+        return $"{label}\nSigned-in email: {email}{resets}";
+    }
+
+    public static Control AccountName(string label, string plan, double size, double maximumNameWidth, string hint, string? resetText = null)
+    {
+        var row = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,Auto,Auto"), ColumnSpacing = 6, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Center };
         var name = Text(label, size); name.MaxWidth = maximumNameWidth; name.TextWrapping = TextWrapping.NoWrap; name.TextTrimming = TextTrimming.CharacterEllipsis;
         ToolTip.SetTip(name, hint); row.Children.Add(name);
         var text = Text(plan, 10); text.Foreground = Accent; text.TextWrapping = TextWrapping.NoWrap;
         var tag = new Border { Child = text, BorderBrush = Line, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(5, 1), VerticalAlignment = VerticalAlignment.Center };
         ToolTip.SetTip(tag, "Plan reported by this profile's saved login. Refresh after signing in again if your plan changed.");
-        Grid.SetColumn(tag, 1); row.Children.Add(tag); return row;
+        Grid.SetColumn(tag, 1); row.Children.Add(tag);
+        if (resetText is not null)
+        {
+            var resetLabel = Text(resetText, 10); resetLabel.TextWrapping = TextWrapping.NoWrap; resetLabel.Foreground = Accent;
+            var reset = new Border { Child = resetLabel, BorderBrush = Line, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(5, 1), VerticalAlignment = VerticalAlignment.Center };
+            ToolTip.SetTip(reset, hint + "\nAvailability is from the last successful usage read. Reset redemption stays in the provider's app.");
+            Grid.SetColumn(reset, 2); row.Children.Add(reset);
+        }
+        return row;
     }
     public static StackPanel Row(double spacing = 10) => new() { Orientation = Orientation.Horizontal, Spacing = spacing, VerticalAlignment = VerticalAlignment.Center };
     public static Button Button(string label, Action action, string? hint = null)
