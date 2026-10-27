@@ -16,6 +16,7 @@ public sealed class MainWindow : Window
     private readonly List<Border> _accountRows = [];
     private readonly List<MenuFlyout> _launchMenus = [];
     private SettingsWindow? _settings;
+    private readonly WindowPlacementTracker _placement;
 
     public MainWindow(HubController hub)
     {
@@ -34,7 +35,11 @@ public sealed class MainWindow : Window
         Grid.SetRow(_scroll, 1); root.Children.Add(_scroll);
         Grid.SetRow(_notice, 2); root.Children.Add(_notice);
         Content = root; _hub.Changed += Render; Render();
+        _placement = new WindowPlacementTracker(this, hub);
     }
+
+    internal void SavePlacement() => _placement.Save();
+    internal void ShowFromTray() => _placement.Show();
 
     private static void Compact(Button button)
     {
@@ -62,7 +67,7 @@ public sealed class MainWindow : Window
         _refresh.Content = _hub.IsRefreshing ? "Refreshing…" : "Refresh";
         _refresh.IsEnabled = !_hub.IsRefreshing && !_hub.IsDemo;
         ToolTip.SetTip(_refresh, _hub.IsDemo ? "Demo readings are simulated." : _hub.IsRefreshing ? "A refresh is already running." : "Request fresh usage readings.");
-        _notice.Text = _hub.Notice ?? (_hub.IsDemo ? "Demo · Simulated readings" : $"v0.13.0 · Refresh every {_hub.Settings.RefreshMinutes}m · Close to tray");
+        _notice.Text = _hub.Notice ?? (_hub.IsDemo ? "Demo · Simulated readings" : $"v0.13.2 · Refresh every {_hub.Settings.RefreshMinutes}m · Close to tray");
         _accounts.Children.Clear(); _accountRows.Clear(); _launchMenus.Clear();
         foreach (var provider in Enum.GetValues<ProviderKind>())
         {
@@ -104,19 +109,20 @@ public sealed class MainWindow : Window
         {
             foreach (var window in snapshot.Windows)
             {
-                var quota = new Grid { ColumnDefinitions = new ColumnDefinitions("56,*,92,108"), ColumnSpacing = 8 };
-                var label = Ui.Text(QuotaParser.CompactLabel(window.Label), 11, true); label.TextWrapping = TextWrapping.NoWrap; label.TextTrimming = TextTrimming.CharacterEllipsis;
+                var quota = new Grid { ColumnDefinitions = new ColumnDefinitions("112,*,92,108"), ColumnSpacing = 8 };
+                var label = Ui.Text(QuotaParser.CompactLabel(window.Label), 11, true);
                 ToolTip.SetTip(label, window.Label); quota.Children.Add(label);
                 var progress = new ProgressBar { Minimum = 0, Maximum = 100, Value = UsageDisplay.Value(window, _hub.Settings.UsageStyle), Margin = new Thickness(0, 0, 4, 0), Height = 4, VerticalAlignment = VerticalAlignment.Center, Foreground = stale ? Ui.Muted : window.RemainingPercent < 20 ? Ui.Brush("#D89B56") : Ui.Accent };
                 Grid.SetColumn(progress, 1); quota.Children.Add(progress);
                 var percent = Ui.Text(UsageDisplay.Text(window, _hub.Settings.UsageStyle), 12); percent.HorizontalAlignment = HorizontalAlignment.Left; percent.MinWidth = 0; percent.TextWrapping = TextWrapping.NoWrap;
                 Grid.SetColumn(percent, 2); quota.Children.Add(percent);
                 var fullReset = Ui.ResetText(window.ResetsAt);
-                var reset = Ui.Text(fullReset.Split(" · ")[0], 11, true); reset.MaxWidth = 108; reset.HorizontalAlignment = HorizontalAlignment.Left; reset.TextWrapping = TextWrapping.NoWrap; reset.TextTrimming = TextTrimming.CharacterEllipsis;
+                var reset = Ui.Text(fullReset.Split(" · ")[0], 11, true); reset.HorizontalAlignment = HorizontalAlignment.Stretch;
                 ToolTip.SetTip(reset, fullReset); Grid.SetColumn(reset, 3); quota.Children.Add(reset); body.Children.Add(quota);
             }
         }
         else if (result is null || result.State == UsageState.Ready) body.Children.Add(Ui.Text(_hub.IsRefreshing ? "Connecting…" : "Usage unavailable", 11, true));
+        body.Children.Add(MonthlyBillingUi.Footer(this, _hub, account));
         var card = Ui.Card(body); card.Padding = new Thickness(8, 8); card.CornerRadius = new CornerRadius(7); return card;
     }
 

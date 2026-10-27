@@ -104,6 +104,8 @@ public sealed class SettingsWindow : Window
                 _hub.Settings.Accounts[index] = edited; Safe(_hub.Save); Render(); await _hub.RefreshAsync(true);
             }));
             actions.Children.Add(More(
+                ("Monthly billing…", () => _ = MonthlyBillingUi.Edit(this, _hub, account), "Set a monthly renewal or end date and reminders."),
+                ("Open billing", () => _ = MonthlyBillingUi.OpenBilling(this, _hub, account), "Opens the provider in your browser; check its signed-in account."),
                 ("Sign in", () => Safe(() => _hub.SignIn(account)), "Sign in to this CLI profile."),
                 ("Remove account", () => { Safe(() => _hub.RemoveAccount(account.Id)); Render(); }, "Remove from AI SubHub. Keep the CLI login, folder and history.")));
             var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,55,Auto"), ColumnSpacing = 8 };
@@ -208,7 +210,7 @@ public sealed class SettingsWindow : Window
     private void About()
     {
         Header("AI SubHub");
-        _body.Children.Add(Ui.Text("Version 0.13.0 · Free and open source · MIT", 12, true));
+        _body.Children.Add(Ui.Text("Version 0.13.2 · Free and open source · MIT", 12, true));
         _body.Children.Add(Ui.Text("Usage goes directly to your providers. No SubHub account, backend or telemetry.", 12));
         _body.Children.Add(Ui.Text("Claude usage uses an unofficial endpoint; provider changes can interrupt it. Logins stay with the CLIs.", 11, true));
         _body.Children.Add(Ui.Text("Settings location", 12)); _body.Children.Add(Clipped(_hub.Store.DirectoryPath, _hub.Store.DirectoryPath, 11, true));

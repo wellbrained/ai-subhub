@@ -22,6 +22,8 @@ Terminal.app receives an AppleScript through `/usr/bin/osascript` with a separat
 
 The app bundle uses LSUIElement so it lives in the menu bar. Close hides the window; menu-bar Open and a second launch restore it. Avalonia's Reopen activation also restores/unhides it. Exit shuts down explicitly. The current-user named-pipe activation signal carries a single byte, with no network endpoint or account data, and pending activation is retained until the UI subscribes.
 
+Main-window position, normal size and maximized state persist through the shared [window placement](windows-mvp.md#window-placement) behavior. Menu-bar Open/reopen preserves maximized state; a minimized window reopens visibly. Saved positions are constrained to an available monitor's working area. Native Mac placement/full-screen behavior still needs validation.
+
 Start at login writes only `~/Library/LaunchAgents/org.aisubhub.app.plist`, using the current executable and a separate `--tray` argument, RunAtLoad and no KeepAlive. Disable removes that file. Changes affect the next login; Hub does not log out, restart, bootstrap a second app or terminate the current process. Move the bundle to Applications first; after moving it later, run it from its new location to refresh enabled startup.
 
 ## Build and validation
@@ -47,5 +49,7 @@ Primary references: [Avalonia packaging](https://docs.avaloniaui.net/docs/deploy
 On 2026-10-16 the owner requested both Mac packages on GitHub with a new version. Version0.12.0 rebuilds the same test milestone, publishes its source and attaches Apple Silicon/Intel ZIPs plus SHA256SUMS.txt to the private repository's v0.12.0 prerelease. Native Mac validation and Developer ID signing/notarization remain pending.
 
 ## Login completion refresh (0.13)
+
+Shared 0.13.2 additions: optional monthly renewal/end dates and seven-/three-day reminders use the same in-app reminder window while running, including with the main window hidden. Billing opens via Avalonia's platform URI launcher; the browser login may differ from the CLI profile. Claude's optional OAuth profile metadata request uses the existing in-memory credential reader, including Keychain profiles. No Keychain or launch/login changes. Windows native checks pass; native Mac reminder presentation, date-picker and browser-launch validation remain pending.
 
 The shared sign-in controller now waits for a per-launch numeric exit-code file before refreshing the selected account. Terminal's zsh command writes that code immediately after the CLI finishes, then leaves its interactive shell open. POSIX/AppleScript quoting and per-profile environment rules still apply. The file carries no credentials, is cleaned up and times out after ten minutes. Native Mac validation of this path is still pending.

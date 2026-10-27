@@ -21,6 +21,7 @@ public sealed class HubController : IDisposable
     public bool IsDemo { get; }
     public string? Notice { get; set; }
     public event Action? Changed;
+    internal event Action<IReadOnlyList<BillingReminder>>? BillingRemindersDue;
 
     private readonly Func<AccountProfile, CancellationToken, Task<UsageResult>> _readUsage;
     private readonly Action<AccountProfile, string> _launchSignIn;
@@ -50,7 +51,7 @@ public sealed class HubController : IDisposable
             foreach (var account in Settings.Accounts)
             {
                 var used = account.Label.Contains("Personal") ? 32 : 71;
-                Results[account.Id] = new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow.AddMinutes(-2), [new("5-hour allowance", used, DateTimeOffset.UtcNow.AddHours(2.3)), new("Weekly allowance", used - 12, DateTimeOffset.UtcNow.AddDays(3))]), AccountEmail: "demo@example.test", Resets: account.Provider == ProviderKind.Codex ? new(2, DateTimeOffset.UtcNow.AddDays(3)) : null);
+                Results[account.Id] = new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow.AddMinutes(-2), [new("5-hour allowance", used, null), new("Weekly allowance", used - 12, DateTimeOffset.UtcNow.AddDays(3)), new("Weekly · Sonnet allowance", used - 12, DateTimeOffset.UtcNow.AddDays(3))]), AccountEmail: "demo@example.test", Resets: account.Provider == ProviderKind.Codex ? new(2, DateTimeOffset.UtcNow.AddDays(3)) : null);
             }
         }
     }
@@ -63,8 +64,9 @@ public sealed class HubController : IDisposable
             try { SetStartup(true); }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Security.SecurityException) { Notice = "Login startup could not be updated. Disable and re-enable it in Settings → General."; }
         }
-        _timer.Tick += async (_, _) => { await RefreshAsync(false); Changed?.Invoke(); };
+        _timer.Tick += async (_, _) => { await RefreshAsync(false); CheckBillingReminders(DateOnly.FromDateTime(DateTime.Now)); Changed?.Invoke(); };
         _timer.Start();
+        CheckBillingReminders(DateOnly.FromDateTime(DateTime.Now));
         _ = RefreshAsync(true);
     }
 
@@ -142,6 +144,7 @@ public sealed class HubController : IDisposable
                 if (current is null || current.Provider != account.Provider || current.Directory != account.Directory) return;
                 ct.ThrowIfCancellationRequested();
                 Notice = null;
+                if (Results.TryGetValue(account.Id, out var beforeLogin)) Results[account.Id] = beforeLogin with { PlanLabel = null, PlanFromProvider = false, AccountEmail = null };
                 await RefreshAsync(true, account.Id);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
@@ -178,10 +181,18 @@ public sealed class HubController : IDisposable
                 catch (JsonException) { result = new(UsageState.Unavailable, "The provider returned an unrecognized response. Check the CLI version and try again."); }
                 catch (UnauthorizedAccessException) { result = new(UsageState.Unavailable, "The profile could not be read. Check its folder permissions."); }
                 catch (Exception ex) when (ex is IOException or InvalidOperationException or System.ComponentModel.Win32Exception) { result = new(UsageState.Unavailable, "Could not read usage. Check the profile login and CLI installation, then refresh."); }
-                if (!Settings.Accounts.Contains(account)) continue;
+                if (!Settings.Accounts.Any(current => current.Id == account.Id && current.Provider == account.Provider && current.Directory == account.Directory)) continue;
                 schedule.Complete(result, DateTimeOffset.UtcNow, Settings.RefreshMinutes);
-                if (result.Snapshot is null && Results.TryGetValue(account.Id, out var previous)) result = result with { Snapshot = previous.Snapshot };
+                if (Results.TryGetValue(account.Id, out var previous))
+                {
+                    result = result with { Snapshot = result.Snapshot ?? previous.Snapshot };
+                    var sameIdentity = result.AccountEmail is not null && result.AccountEmail == previous.AccountEmail;
+                    if (!result.PlanFromProvider && previous.PlanFromProvider && result.State != UsageState.SignInRequired
+                        && (result.State != UsageState.Ready || sameIdentity))
+                        result = result with { PlanLabel = previous.PlanLabel, PlanFromProvider = true, AccountEmail = result.AccountEmail ?? previous.AccountEmail };
+                }
                 Results[account.Id] = result;
+                ReadPlans();
                 Changed?.Invoke();
             }
             Settings.Readings = Results.Where(x => x.Value.Snapshot is not null && Settings.Accounts.Any(a => a.Id == x.Key)).Select(x => new CachedReading(x.Key, x.Value.Snapshot!)).ToList();
@@ -199,6 +210,34 @@ public sealed class HubController : IDisposable
     }
 
     public void ForgetReading(Guid id) { Results.Remove(id); Settings.Readings.RemoveAll(x => x.AccountId == id); _schedules.Remove(id); }
+
+    internal void ReportNotice(string message) { Notice = message; Changed?.Invoke(); }
+
+    internal void CheckBillingReminders(DateOnly today)
+    {
+        if (IsDemo || IsRefreshing || BillingRemindersDue is null) return;
+        var reminders = Settings.Accounts.Select(account => BillingSchedule.Reminder(account, today)).OfType<BillingReminder>().ToArray();
+        if (reminders.Length == 0) return;
+        var previous = Settings.Accounts.ToArray();
+        foreach (var reminder in reminders)
+        {
+            var index = Settings.Accounts.FindIndex(account => account.Id == reminder.Account.Id);
+            Settings.Accounts[index] = reminder.Account with
+            {
+                Billing = reminder.Account.Billing! with { LastReminderDate = reminder.Date, LastReminderDays = reminder.Threshold }
+            };
+        }
+        try { Store.Save(Settings); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Settings.Accounts = previous.ToList();
+            Notice = "Renewal reminders could not be saved. Check local settings permissions.";
+            Changed?.Invoke();
+            return;
+        }
+        BillingRemindersDue.Invoke(reminders);
+    }
+
     private void ReadPlans()
     {
         Plans.Clear();
@@ -209,7 +248,7 @@ public sealed class HubController : IDisposable
 
     private static HubSettings DemoSettings() => new()
     {
-        Accounts = [new(Guid.NewGuid(), ProviderKind.Claude, "Personal", @"C:\Profiles\claude-personal"), new(Guid.NewGuid(), ProviderKind.Claude, "Second subscription", @"C:\Profiles\claude-second"), new(Guid.NewGuid(), ProviderKind.Codex, "Personal", @"C:\Profiles\codex")],
+        Accounts = [new(Guid.NewGuid(), ProviderKind.Claude, "Personal", @"C:\Profiles\claude-personal", new(DateOnly.FromDateTime(DateTime.Now).AddDays(7))), new(Guid.NewGuid(), ProviderKind.Claude, "Second subscription", @"C:\Profiles\claude-second", new(DateOnly.FromDateTime(DateTime.Now).AddDays(3), AutoRenew: false)), new(Guid.NewGuid(), ProviderKind.Codex, "Personal", @"C:\Profiles\codex")],
         Projects = [new(Guid.NewGuid(), "AI SubHub", @"D:\Github\ai-subhub"), new(Guid.NewGuid(), "Website", @"D:\Demo\website"), new(Guid.NewGuid(), "Later", @"D:\Demo\later", true)]
     };
 }

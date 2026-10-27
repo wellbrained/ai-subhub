@@ -18,6 +18,7 @@ A compact desktop app for checking **Claude and Codex usage across multiple acco
 - **Keep projects organized.** Save local folders, set their order, and hide inactive projects without removing them.
 - **Make it yours.** Switch between **% remaining / % used**, choose dark/light/system appearance, adjust refresh frequency, and opt into startup at login.
 - **Check from the tray.** Hover for a compact usage summary; close the window to keep it running in the background.
+- **Plan monthly renewals.** Enter an optional renewal or access-end date per account, get 7-/3-day reminders while SubHub runs, and open provider billing. Later monthly dates are estimates, never inferred from usage resets.
 
 <details>
 <summary>Project ordering and visibility</summary>
@@ -31,6 +32,8 @@ A compact desktop app for checking **Claude and Codex usage across multiple acco
 ## Get started
 
 AI SubHub is early-stage software. Windows is the tested platform; the macOS port is available as an experimental test build.
+
+Current source: **0.13.2**, including fresh plan badges, wrapping quota labels, optional monthly renewal reminders, and saved window placement. Published downloads below remain **0.13.0**.
 
 | Platform | Availability |
 | --- | --- |

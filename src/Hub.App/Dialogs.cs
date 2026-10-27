@@ -37,6 +37,7 @@ internal static class Dialogs
             try
             {
                 var account = ProfileRules.Create(hub.Settings.Accounts, provider, name.Text ?? "", path.Text ?? "", existing?.Id);
+                if (existing is not null && StringComparer.OrdinalIgnoreCase.Equals(account.Directory, existing.Directory)) account = account with { Billing = existing.Billing };
                 if (!Directory.Exists(account.Directory)) Directory.CreateDirectory(account.Directory);
                 dialog.Close(account);
             }

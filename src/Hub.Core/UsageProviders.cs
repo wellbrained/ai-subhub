@@ -25,7 +25,7 @@ public sealed class ClaudeUsageProvider(HttpClient http, LaunchService? launcher
         request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
         request.Headers.Add("anthropic-version", "2023-06-01");
         request.Headers.Add("x-app", "cli");
-        request.Headers.UserAgent.ParseAdd("AI-SubHub/0.13.0");
+        request.Headers.UserAgent.ParseAdd("AI-SubHub/0.13.2");
         using var response = await http.SendAsync(request, cancellationToken);
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             return new(UsageState.SignInRequired, "Claude could not authorize usage access. Sign in again, then refresh.");
@@ -37,8 +37,36 @@ public sealed class ClaudeUsageProvider(HttpClient http, LaunchService? launcher
         if (!response.IsSuccessStatusCode) return new(UsageState.Unavailable, $"Claude usage is unavailable (HTTP {(int)response.StatusCode}). This unofficial endpoint may have changed.");
         using var data = JsonDocument.Parse(await response.Content.ReadAsStringAsync(cancellationToken));
         var windows = QuotaParser.Claude(data.RootElement);
-        var email = await AccountMetadata.ClaudeEmailAsync(launcher, account, cancellationToken);
-        return windows.Count == 0 ? new(UsageState.Unavailable, "Claude returned no recognized subscription allowances.") : new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows), AccountEmail: email, PlanLabel: SubscriptionPlan.Parse(ProviderKind.Claude, credentials.RootElement));
+        if (windows.Count == 0) return new(UsageState.Unavailable, "Claude returned no recognized subscription allowances.");
+        var profile = await ReadProfileAsync(token.GetString()!, cancellationToken);
+        var email = profile.Email ?? await AccountMetadata.ClaudeEmailAsync(launcher, account, cancellationToken);
+        return new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows), AccountEmail: email,
+            PlanLabel: profile.Plan ?? SubscriptionPlan.Parse(ProviderKind.Claude, credentials.RootElement), PlanFromProvider: profile.Plan is not null);
+    }
+
+    private async Task<(string? Plan, string? Email)> ReadProfileAsync(string token, CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(4));
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, "https://api.anthropic.com/api/oauth/profile");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            if (!response.IsSuccessStatusCode) return default;
+            if (response.Content.Headers.ContentLength > 65536) return default;
+            using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+            var buffer = new byte[65537];
+            var length = await stream.ReadAtLeastAsync(buffer, buffer.Length, throwOnEndOfStream: false, timeout.Token);
+            if (length > 65536) return default;
+            using var profile = JsonDocument.Parse(buffer.AsMemory(0, length));
+            var root = profile.RootElement;
+            var email = root.ValueKind == JsonValueKind.Object && root.TryGetProperty("account", out var identity) ? AccountMetadata.Email(identity) : null;
+            return (SubscriptionPlan.ClaudeProfile(root), email);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested) { return default; }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or JsonException) { return default; }
     }
 }
 
@@ -50,7 +78,7 @@ public sealed class CodexUsageProvider(LaunchService launcher) : IUsageProvider
         if (executable is null) return new(UsageState.CliMissing, "Codex CLI was not found. Set its executable in Settings → Tools.");
         if (!Directory.Exists(account.Directory)) return new(UsageState.SignInRequired, "Sign in with ChatGPT to connect this profile.");
         await using var rpc = new CodexRpc(executable, account);
-        await rpc.CallAsync("initialize", new { clientInfo = new { name = "ai_subhub", title = "AI SubHub", version = "0.13.0" } }, cancellationToken);
+        await rpc.CallAsync("initialize", new { clientInfo = new { name = "ai_subhub", title = "AI SubHub", version = "0.13.2" } }, cancellationToken);
         await rpc.NotifyAsync("initialized", new { }, cancellationToken);
         var identity = await rpc.CallAsync("account/read", new { refreshToken = false }, cancellationToken);
         if (!identity.TryGetProperty("account", out var signedIn) || signedIn.ValueKind != JsonValueKind.Object)
@@ -59,7 +87,8 @@ public sealed class CodexUsageProvider(LaunchService launcher) : IUsageProvider
             return new(UsageState.Unavailable, "This profile uses an API key. Sign in with a ChatGPT subscription for subscription usage.");
         var data = await rpc.CallAsync("account/rateLimits/read", null, cancellationToken);
         var windows = QuotaParser.Codex(data);
-        return windows.Count == 0 ? new(UsageState.Unavailable, "Codex returned no subscription allowances for this account.") : new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows), AccountEmail: AccountMetadata.Email(signedIn), Resets: AccountMetadata.CodexResets(data), PlanLabel: signedIn.TryGetProperty("planType", out var plan) && plan.ValueKind == JsonValueKind.String ? SubscriptionPlan.Label(plan.GetString()) : null);
+        var plan = SubscriptionPlan.CodexCurrent(data, signedIn);
+        return windows.Count == 0 ? new(UsageState.Unavailable, "Codex returned no subscription allowances for this account.") : new(UsageState.Ready, "Connected", new(DateTimeOffset.UtcNow, windows), AccountEmail: AccountMetadata.Email(signedIn), Resets: AccountMetadata.CodexResets(data), PlanLabel: plan == "Plan unknown" ? null : plan, PlanFromProvider: plan != "Plan unknown");
     }
 }
 

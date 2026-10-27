@@ -4,6 +4,14 @@ A hub for seeing remaining AI subscription capacity and opening tools in the int
 
 ## Language
 
+**Monthly renewal**: The next subscription payment date entered from the provider's billing page. Recurrence is monthly only. Later dates are estimates anchored to that date, not verified charges or quota resets.
+
+**Access end date**: The manually entered date paid access ends after cancellation. It does not recur; SubHub does not cancel the subscription.
+
+**Billing reminder**: An in-app prompt at seven and three calendar days before a tracked renewal or access end date, delivered only while SubHub runs. Reminder history is local to each account and cycle.
+
+**Window placement**: The main window's desktop position, normal size and maximized state. Minimization and hiding to the tray are temporary visibility states and do not replace normal placement.
+
 **Provider**: The AI service whose subscription allowance is shown: Claude or Codex in the first version.
 
 **Account**: A named connection to one provider login. Its name is an editable label chosen by the user, not proof of the provider identity.

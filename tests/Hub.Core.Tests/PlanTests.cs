@@ -35,4 +35,25 @@ public sealed class PlanTests
     {
         Assert.Equal("Plan unknown", SubscriptionPlan.Read(new(Guid.NewGuid(), ProviderKind.Claude, "Test", Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString()))));
     }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("{}")]
+    [InlineData("{\"organization\":null}")]
+    [InlineData("{\"organization\":{\"organization_type\":\"private-value\",\"plan_display_name\":\"private\"}}")]
+    public void UnrecognizedLiveProfileDoesNotLeakArbitraryLabels(string json)
+    {
+        using var data = JsonDocument.Parse(json);
+        Assert.Null(SubscriptionPlan.ClaudeProfile(data.RootElement));
+    }
+
+    [Fact]
+    public void FreshCodexRateLimitPlanWinsOverCachedAccountIdentity()
+    {
+        using var rateLimits = JsonDocument.Parse("""{"rateLimits":{"planType":"pro"}}""");
+        using var account = JsonDocument.Parse("""{"planType":"plus"}""");
+        Assert.Equal("Pro", SubscriptionPlan.CodexCurrent(rateLimits.RootElement, account.RootElement));
+        using var missing = JsonDocument.Parse("null");
+        Assert.Equal("Plus", SubscriptionPlan.CodexCurrent(missing.RootElement, account.RootElement));
+    }
 }

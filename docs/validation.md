@@ -1,4 +1,17 @@
-# v0.3.0 delivery checks
+# Delivery checks
+
+## 0.13.2 local Windows delivery (2026-10-24)
+
+- Release solution build: zero warnings/errors. All 102 tests pass (87 core, 15 app).
+- Red/green regression: synthetic Claude usage plus live profile Max 5× initially displayed the saved Pro label; now the live profile wins. Optional profile authorization/rate-limit/malformed/oversized failures retain valid usage. Codex rate-limit plan beats cached identity metadata.
+- Controller checks: plan visible before Changed, same-known-identity fallback, sign-out/account-switch clearing, billing edits during in-flight usage reads.
+- Billing checks: optional legacy-compatible settings, monthly anchor/no drift, leap years, fixed access end, seven-/three-day catch-up and persistent deduplication across restart/removal. The date editor preserves the original monthly anchor when saving an unchanged projected date.
+- Isolated native Windows test: long allowance and unavailable-reset labels wrap at the unchanged 620px width, account rename retains billing, date picker loads correctly, and a reminder window remains visible with the main window hidden.
+- Demo-only dark main window, dark/light billing editor and reminder captures inspected under artifacts/subscription-checks. No real credentials, provider responses or financial dates were used in tests/captures.
+- Self-contained Windows 0.13.2 portable build/ZIP produced; packaged reminder smoke passed and the running local 0.13.1 process was replaced with 0.13.2. Production pointer and startup script accept patch releases. Public GitHub downloads remain 0.13.0; no commit/push/release. Native Mac behavior remains pending.
+
+
+## v0.3.0 delivery checks
 
 Date: 2026-10-15. Target: this Windows x64 PC. Development SDK: .NET 10.0.402, installed locally under `.tools/dotnet`; UI packages: Avalonia 12.1.4.
 
@@ -103,3 +116,16 @@ Fix adds a credential-free per-login exit-code handoff and targeted controller r
 Verification complete: 62 tests pass (57 core +5 controller), zero warnings/errors. Native v0.13 is visible/running; all4 accounts and4 projects plus preferences match the pre-upgrade metadata hash, startup points to0.13, and the newly added account has a fresh successful cached reading. Demo layout remains620×404 with82px rows. A native settings backup was retained. Source publication requested after local verification.
 Download publication requested: v0.13.0 includes Windows x64 plus Apple Silicon/Intel Mac ZIPs, rebuilt from the same fix with SHA-256 checksums. Windows verification and the existing Mac native-validation limitations remain applicable.
 Release packaging verified: 62 tests pass with zero warnings; Windows ZIP CRC/version/x64 executable and demo layout/tray lifecycle pass. Both Mac ZIPs pass CRC, version/architecture/plist, Unix0755 and generated apphost ad-hoc-code-hash checks. Release SHA256SUMS covers all three packages.
+
+## Window placement — 2026-10-19 (local)
+
+Native Windows regression reproduced the fixed-default startup: a resized 760×470 window reopened at 620px wide. After the fix, the same test passes normal position/size restoration, maximized restart, tray hide/reopen, normal/maximized minimization and retention of normal bounds. Native UI tests run in an isolated process because Avalonia's UI dispatcher is process-wide. Synthetic settings tests verify roundtrip/backward compatibility and preservation of existing account/preferences; monitor/scaling tests verify fallback into an available working area.
+
+`build.ps1 -Task Check`: 65 tests pass (58 core, 7 app), zero build warnings/errors. No deployment, version bump, commit or publication. Native Mac placement/full-screen validation remains pending.
+Demo lifecycle smoke also passes: tray configured, close hides, and Open restores visibility.
+
+## 0.13.1 — Local Windows replacement, 2026-10-19
+
+Built and installed the window-placement patch locally on request. Full Release build: zero warnings/errors; all 65 tests pass. Packaged the self-contained Windows x64 executable and ZIP. Version identifiers in build properties, manifest, UI, health response and provider clients match 0.13.1; README distinguishes current source from the published 0.13.0 downloads.
+
+Native storage backup retained before replacement. Exactly one responsive 0.13.1 instance is running with its main window visible. All four accounts, four projects and preferences pass the pre/post metadata hash comparison. Login startup points to the new executable, and native settings contain saved main-window placement. No commit, push or public release; native Mac validation remains pending.

@@ -15,6 +15,7 @@ public sealed class App : Application
     private HubController? _controller;
     private TrayIcon? _tray;
     private MainWindow? _window;
+    private BillingReminderWindow? _billingReminder;
     public override void Initialize()
     {
         Styles.Add(new FluentTheme());
@@ -47,9 +48,20 @@ public sealed class App : Application
             _tray = new TrayIcon { Icon = Icon(), ToolTipText = "AI SubHub", Menu = menu, IsVisible = true };
             void UpdateTray() => _tray.ToolTipText = Hub.Core.TraySummary.Build(_controller.Settings, _controller.Results, DateTimeOffset.UtcNow);
             _controller.Changed += UpdateTray; UpdateTray();
+            void RemindBilling(IReadOnlyList<Hub.Core.BillingReminder> reminders)
+            {
+                if (_billingReminder is null)
+                {
+                    _billingReminder = new BillingReminderWindow(_controller);
+                    _billingReminder.Closed += (_, _) => _billingReminder = null;
+                }
+                _billingReminder.Add(reminders);
+                if (!_billingReminder.IsVisible) _billingReminder.Show();
+            }
+            _controller.BillingRemindersDue += RemindBilling;
             _tray.Clicked += (_, _) => ShowWindow();
             TrayIcon.SetIcons(this, new TrayIcons { _tray });
-            desktop.Exit += (_, _) => { _controller.Changed -= UpdateTray; _controller.Dispose(); _tray.Dispose(); };
+            desktop.Exit += (_, _) => { _window.SavePlacement(); _controller.Changed -= UpdateTray; _controller.BillingRemindersDue -= RemindBilling; _controller.Dispose(); _tray.Dispose(); };
             // Avalonia normally shows MainWindow automatically; hide only after startup is complete.
             if (desktop.Args?.Contains("--tray") == true) Dispatcher.UIThread.Post(() => { if (!Program.ActivationRequested) _window.Hide(); }, DispatcherPriority.Background);
             _controller.Start();
@@ -69,6 +81,18 @@ public sealed class App : Application
                 {
                     var dialog = Dialogs.AccountWindow(_controller, Hub.Core.ProviderKind.Claude, _controller.Settings.Accounts.FirstOrDefault());
                     Dispatcher.UIThread.Post(() => dialog.Show(_window), DispatcherPriority.Background); snapshotTarget = dialog;
+                }
+                if (desktop.Args.Contains("--billing-dialog"))
+                {
+                    var dialog = MonthlyBillingUi.EditorWindow(_controller.Settings.Accounts[0]);
+                    Dispatcher.UIThread.Post(() => dialog.Show(_window), DispatcherPriority.Background); snapshotTarget = dialog;
+                }
+                if (desktop.Args.Contains("--billing-reminder"))
+                {
+                    var reminder = new BillingReminderWindow(_controller);
+                    var account = _controller.Settings.Accounts[0];
+                    reminder.Add([new(account, account.Billing!.Date, 7, 7)]);
+                    Dispatcher.UIThread.Post(() => reminder.Show(), DispatcherPriority.Background); snapshotTarget = reminder;
                 }
                 DispatcherTimer.RunOnce(() =>
                 {
@@ -104,7 +128,7 @@ public sealed class App : Application
     {
         if (_window is null) return;
         this.TryGetFeature<IActivatableLifetime>()?.TryLeaveBackground();
-        _window.Show(); _window.WindowState = WindowState.Normal; _window.Activate();
+        _window.ShowFromTray();
     }
 
     public void SetTheme(string theme) => RequestedThemeVariant = theme switch { "Light" => ThemeVariant.Light, "System" => ThemeVariant.Default, _ => ThemeVariant.Dark };

@@ -5,16 +5,17 @@ namespace Hub.Core;
 public enum ProviderKind { Claude, Codex }
 public enum UsageState { Ready, Unavailable, SignInRequired, RateLimited, CliMissing }
 
-public sealed record AccountProfile(Guid Id, ProviderKind Provider, string Label, string Directory);
+public sealed record AccountProfile(Guid Id, ProviderKind Provider, string Label, string Directory, MonthlyBilling? Billing = null);
 public sealed record ProjectFolder(Guid Id, string Label, string Directory, bool IsHidden = false);
 public sealed record QuotaWindow(string Label, double UsedPercent, DateTimeOffset? ResetsAt)
 {
     public double RemainingPercent => Math.Clamp(100 - UsedPercent, 0, 100);
 }
 public sealed record UsageSnapshot(DateTimeOffset FetchedAt, IReadOnlyList<QuotaWindow> Windows);
-public sealed record UsageResult(UsageState State, string Message, UsageSnapshot? Snapshot = null, TimeSpan? RetryAfter = null, string? AccountEmail = null, ResetAvailability? Resets = null, string? PlanLabel = null);
+public sealed record UsageResult(UsageState State, string Message, UsageSnapshot? Snapshot = null, TimeSpan? RetryAfter = null, string? AccountEmail = null, ResetAvailability? Resets = null, string? PlanLabel = null, bool PlanFromProvider = false);
 public sealed record ResetAvailability(int AvailableCount, DateTimeOffset? EarliestExpiry);
 public sealed record CachedReading(Guid AccountId, UsageSnapshot Snapshot);
+public sealed record WindowPlacement(int X, int Y, double Width, double Height, bool Maximized = false);
 
 public sealed class HubSettings
 {
@@ -30,6 +31,7 @@ public sealed class HubSettings
     public string? ClaudeExecutable { get; set; }
     public string? CodexExecutable { get; set; }
     public List<CachedReading> Readings { get; set; } = [];
+    public WindowPlacement? MainWindowPlacement { get; set; }
 }
 
 public static class ProfileRules

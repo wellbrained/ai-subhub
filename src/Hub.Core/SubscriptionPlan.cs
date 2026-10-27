@@ -23,9 +23,7 @@ public static class SubscriptionPlan
         {
             if (!Object(root, "claudeAiOauth", out var oauth)) return "Plan unknown";
             var plan = Text(oauth, "subscriptionType");
-            if (plan == "max") return Text(oauth, "rateLimitTier") switch
-            { "default_claude_max_5x" => "Max 5×", "default_claude_max_20x" => "Max 20×", _ => "Max" };
-            return Label(plan);
+            return ClaudeLabel(plan, Text(oauth, "rateLimitTier"));
         }
         if (Text(root, "auth_mode") == "apikey") return "API key";
         if (!Object(root, "tokens", out var tokens) || Text(tokens, "id_token") is not { } token) return "Plan unknown";
@@ -41,6 +39,26 @@ public static class SubscriptionPlan
         }
         catch (Exception ex) when (ex is FormatException or JsonException) { return "Plan unknown"; }
     }
+
+    public static string? ClaudeProfile(JsonElement root)
+    {
+        if (!Object(root, "organization", out var organization)) return null;
+        var plan = Text(organization, "organization_type") switch
+        {
+            "claude_max" => "max", "claude_pro" => "pro", "claude_team" => "team",
+            "claude_enterprise" => "enterprise", _ => null
+        };
+        return plan is null ? null : ClaudeLabel(plan, Text(organization, "rate_limit_tier"));
+    }
+
+    public static string CodexCurrent(JsonElement response, JsonElement account)
+    {
+        var live = Object(response, "rateLimits", out var limits) ? Label(Text(limits, "planType")) : "Plan unknown";
+        return live != "Plan unknown" ? live : Label(Text(account, "planType"));
+    }
+
+    private static string ClaudeLabel(string? plan, string? tier) => plan == "max" ? tier switch
+    { "default_claude_max_5x" => "Max 5×", "default_claude_max_20x" => "Max 20×", _ => "Max" } : Label(plan);
 
     public static string Label(string? value) => value?.ToLowerInvariant() switch
     { "free" => "Free", "pro" => "Pro", "plus" => "Plus", "max" => "Max", "team" => "Team", "business" => "Business", "enterprise" => "Enterprise", "edu" => "Edu", "go" => "Go", _ => "Plan unknown" };

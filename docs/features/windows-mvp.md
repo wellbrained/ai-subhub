@@ -50,7 +50,7 @@ Demo-only --tray-report writes the actual tooltip text and length during UI smok
 
 ## Subscription plan tags (0.5)
 
-A compact tag follows each account name in the main window and Accounts settings. Plans are read from the selected profile's saved login metadata at startup, refresh and settings save. Claude uses subscriptionType and recognized Max rate-limit tiers; Codex decodes only the plan claim from its local ID token. This is display metadata, not token verification or a live billing check. The tooltip explains that plan changes may require a new login. Missing, malformed or unrecognized metadata displays Plan unknown; arbitrary provider strings are never shown. No additional network calls, stored credentials or settings schema changes. Plan tags are kept in memory and demo tags are synthetic. Existing window/row sizes remain unchanged.
+A compact tag follows each account name in the main window and Accounts settings. At startup saved login metadata is the fallback: Claude subscriptionType/recognized Max tiers and Codex's ID-token plan claim. On refresh, Claude optionally reads `/api/oauth/profile` with the same in-memory OAuth bearer and beta header; recognized `organization.organization_type` and `rate_limit_tier` update the tag without logging in again. This undocumented profile schema was verified against the installed CLI on 2026-10-24. The optional request is capped at four seconds and 64 KiB; failure leaves usage available. Arbitrary display names/raw profile bodies are never stored or shown. Codex prefers `rateLimits.planType`, then `account/read` planType. Plans update before UI change notifications. Last verified plans survive transient failures for the same known identity, but not sign-out, successful re-login or a changed identity/profile. This is display metadata, not a billing check. Unknown metadata displays Plan unknown. Demo tags are synthetic.
 
 ## CoreHub production startup (0.6, 2026-10-16)
 
@@ -68,7 +68,7 @@ Codex's packaged Windows process redirects AppData access to its LocalCache. Con
 
 AI SubHub is the product name; ai-subhub is the repository/folder slug. Solution: AI.SubHub.slnx. Manifest identity, instance signals, startup registry value and protocol client identity use the new name. Old-name literals remain only in compatibility migration code/tests so existing settings are recoverable. The local project and matching vault folder move to ai-subhub, with CoreHub folderPath updated. Settings copy to AI SubHub on first native startup, preserving accounts, usage cache, project order/visibility and preferences; legacy settings remain as a backup. Profile folders and credentials do not move.
 
-The main window starts at 620×404 logical client pixels, matching the owner's resized window (622×436 including Windows borders/title bar at the inspected scale). The account area still scrolls for longer lists. CoreHub remains production-only on port 4200 and starts in the tray.
+The main window defaults to 620×404 logical client pixels. Saved placement overrides this default (see Window placement below). The account area still scrolls for longer lists. CoreHub remains production-only on port 4200 and starts in the tray.
 
 Standard usage labels match across providers: 5-hour and Weekly. Claude's Session reading and Codex's default named 1-week reading are normalized only for display; stored provider labels remain available on hover. Model-specific and nonstandard windows retain their distinctions.
 
@@ -92,7 +92,7 @@ Unknown manual-reset metadata is omitted entirely from account tooltips as well 
 
 ### Column alignment refinement (0.10)
 
-All usage rows now share the same fixed label/percentage/reset columns (56/92/108px) and flexible bar column. Percentage/reset text aligns to the left edge of its column, so starts stay identical even when text lengths differ. A 12px gap follows each bar (8px grid gap + 4px bar right margin); ordinary gaps are 8px. Window size remains unchanged.
+All usage rows share aligned label/percentage/reset columns and a flexible bar column. As of 0.13.2, label/percentage/reset columns are 112/92/108px. Full compact allowance labels and relative reset text wrap rather than being ellipsized; longer rows grow vertically without widening the window. Percentage/reset starts stay aligned. A 12px gap follows each bar (8px grid gap + 4px bar right margin); ordinary gaps are 8px.
 
 ## macOS version (0.11)
 
@@ -103,3 +103,21 @@ The owner agreed to the same compact features/design, menu-bar integration and n
 Sign in / Sign in again now pass a unique temporary completion-file path into the terminal command. After the CLI exits, PowerShell writes only its numeric exit code; the interactive terminal can remain open. Hub watches the local signal for up to ten minutes and refreshes only the selected account on exit0, bypassing ordinary failure backoff while preserving known provider cooldown. If another refresh is active, the login refresh waits for it. Failed/unconfirmed login shows a safe notice without claiming success; app exit cancels the wait. A removed account or changed profile is not refreshed.
 
 The temporary signal contains no token/email/provider response and is removed after completion/cancellation. Login stays CLI-managed. Main-window and Settings sign-in actions share the same controller path. Synthetic tests execute the actual generated Windows command and verify the completion-to-usage handoff, including paths with spaces/apostrophes, delayed active reads, failure backoff, failed login and provider cooldown.
+
+## Monthly billing reminders (0.13.2, 2026-10-24)
+
+Approved scope: monthly only, optional per account; show renewal/end dates early enough to decide whether to keep or cancel. Click the account's date/Set monthly renewal footer or Settings → Accounts → … → Monthly billing. Enter the next date from provider billing; reminders default to enabled at seven and three local-calendar days before. Uncheck Renews every month after canceling to track a fixed access end instead. Disable Track monthly billing to remove the date/history. SubHub never purchases, cancels or changes a provider subscription.
+
+Neither verified Claude OAuth profile/usage nor Codex app-server metadata exposes a reliable billing date. Subscription-created timestamps, trial ends, reset-credit expiry and quota reset times are not billing dates. Therefore entry is manual; no financial-account scraping or inferred provider dates. Initial dates say manual; later monthly dates say estimated. Monthly projections keep the original day (Jan 31 → Feb 28/29 → Mar 31), and editing reminder options without changing the displayed date preserves that anchor. Fixed end dates never recur. Account rename preserves billing; changing its profile folder clears it rather than attaching the date to a different login.
+
+Optional AccountProfile.Billing JSON stores the entered Date, AutoRenew, Reminders and last delivered cycle/threshold; old accounts with no field remain valid. Dates use local DateOnly, not UTC midnight. At startup and every 30-second scheduler tick, a non-modal reminder window can appear even if the main window is hidden to tray/menu bar. Within a missed reminder window, only the most urgent threshold is delivered; persistent history deduplicates repeat ticks and restarts. There is no OS background job when SubHub is closed. History is saved before presenting (at-most-once dispatch); persistence failures restore the previous state, show a safe notice and retry later. Removing an account removes its reminder metadata. Demo mode never persists or auto-delivers reminders.
+
+Open billing uses Claude Settings/Billing or ChatGPT Settings/Account. The shortcut opens the browser's existing login, not an authenticated CLI session. Tooltips call out possible account mismatch, app-store management and admin-managed plans. Cancellation remains with the provider. Shared UI shows safe errors if the browser cannot launch.
+
+Validation: synthetic profile requests, controller plan events/account switches, monthly/leap-year/end-date behavior, reminder catch-up/dedup/restart/settings compatibility, and isolated native Windows checks for wrapping labels, account edits, billing date picker and visible reminders with the main window hidden. Demo UI smoke flags --billing-dialog and --billing-reminder capture these surfaces without real settings or credentials. Native macOS reminder/browser behavior remains unverified.
+
+## Window placement
+
+The main window remembers its normal client size, desktop position and maximized state across restarts in optional `MainWindowPlacement` settings metadata. Existing settings without placement keep the 620×404 default. Positions use physical pixels and sizes use logical pixels; restoration clamps the window to the selected monitor's working area, falling back to the primary monitor if its previous monitor is disconnected. Invalid sizes use the default.
+
+Normal bounds are retained separately from maximized/minimized geometry. A minimized window reopens visibly in its previous normal or maximized state; minimizing does not become a persisted startup state. Close still hides to the tray, Open/second-instance activation preserves maximized state, and `--tray` still starts hidden. Placement saves after a short debounce and on close/exit, without refreshing account metadata or rendering usage rows. Demo mode never writes placement. Settings dialogs retain their existing default placement.

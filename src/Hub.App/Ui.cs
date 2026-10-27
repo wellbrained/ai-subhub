@@ -33,7 +33,7 @@ internal static class Ui
         ToolTip.SetTip(name, hint); row.Children.Add(name);
         var text = Text(plan, 10); text.Foreground = Accent; text.TextWrapping = TextWrapping.NoWrap;
         var tag = new Border { Child = text, BorderBrush = Line, BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(4), Padding = new Thickness(5, 1), VerticalAlignment = VerticalAlignment.Center };
-        ToolTip.SetTip(tag, "Plan reported by this profile's saved login. Refresh after signing in again if your plan changed.");
+        ToolTip.SetTip(tag, "Latest available provider plan, with saved login metadata as fallback. Not a live billing check. Refresh to check for a changed plan.");
         Grid.SetColumn(tag, 1); row.Children.Add(tag);
         if (resetText is not null)
         {
