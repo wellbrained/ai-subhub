@@ -97,6 +97,13 @@ fn main() {
     // Test helper: pretend the previous version was 0.1.0, so the patch-notes dialog shows the
     // next time the popover opens (nothing is saved).
     let show_notes = args.iter().any(|a| a == "--show-whats-new");
+    // Demo only, for README screenshots without clicking: `--demo-page hub` opens Settings on
+    // that page, `--demo-page stats` the Statistics window.
+    let demo_page = args
+        .iter()
+        .position(|a| a == "--demo-page")
+        .and_then(|i| args.get(i + 1).cloned())
+        .filter(|_| demo::on());
     gpui_platform::application()
         .with_assets(assets::Assets)
         .with_quit_mode(QuitMode::Explicit)
@@ -215,6 +222,25 @@ fn main() {
                     s.pending_settings_page = Some(state::SettingsTarget::AddAccounts)
                 });
                 open_settings(&shell, cx);
+            }
+            if let Some(page) = demo_page.as_deref() {
+                use state::SettingsTarget as T;
+                let target = match page {
+                    "general" => Some(T::General),
+                    "appearance" => Some(T::Appearance),
+                    "accounts" => Some(T::Accounts),
+                    "add-accounts" => Some(T::AddAccounts),
+                    "hub" => Some(T::Hub),
+                    "projects" => Some(T::Projects),
+                    "about" => Some(T::About),
+                    _ => None,
+                };
+                if let Some(target) = target {
+                    state.update(cx, |s, _| s.pending_settings_page = Some(target));
+                    open_settings(&shell, cx);
+                } else if page == "stats" {
+                    open_stats(&shell, cx);
+                }
             }
         });
 }

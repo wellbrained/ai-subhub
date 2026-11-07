@@ -542,6 +542,11 @@ fn nav_item(id: impl Into<gpui::ElementId>, active: bool, t: &Tokens) -> gpui::S
 /// The page a request from another window ("Manage projects…", first start) opens.
 fn target_page(target: SettingsTarget) -> Page {
     match target {
+        SettingsTarget::General => Page::General,
+        SettingsTarget::Appearance => Page::Appearance,
+        SettingsTarget::Accounts => Page::Accounts,
+        SettingsTarget::Hub => Page::Hub,
+        SettingsTarget::About => Page::About,
         SettingsTarget::Projects => Page::Projects,
         SettingsTarget::AddAccounts => Page::AddAccounts,
         SettingsTarget::Account(id) => Page::Account(id),

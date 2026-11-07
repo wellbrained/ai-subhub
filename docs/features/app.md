@@ -17,6 +17,7 @@ Crate `crates/subhub-app` (GPUI). Domain logic lives in `crates/subhub-core`; th
 - **No outside effects**: refresh never calls a provider, the hub or Credential Manager (fixture readings re-stamped as fresh, hub "Connected · N logins"); steering plans as usual but writes no priority; Hub → Management key and Start with Windows are disabled ("Not available in the demo."), the Run key is never read or written; no update checks, downloads, installs or leftover cleanup (About & updates says "Demo mode"); Sign in and every Launch target only show "Demo: nothing was started"; Open billing does nothing; desktop apps and CLIs are pretended, not looked up. The LiteLLM price download still runs (public, read-only).
 - **Marked**: own mutex `Local\AISubHub.SingleInstance.Demo` (runs next to the installed app and a dev build), tray tip "AI SubHub (demo)", balloon titles prefixed "AI SubHub (demo) · " (billing reminders still fire, owner), a small "Demo" pill in the popover header and the Settings / Statistics title bars, and sandbox paths shown as `C:\Users\demo\…`.
 - Works with `--show-whats-new`; `--demo --stats-dump [path]` dumps the demo logs.
+- `--demo --demo-page <page>` opens a window at start, for screenshots without clicking: `general`, `appearance`, `accounts`, `add-accounts`, `hub`, `projects`, `about` (Settings) or `stats`. Ignored without `--demo`. The README shots are taken with `PrintWindow` and cropped by the 7 px invisible border (left, right, bottom).
 
 ## Logo and icons
 

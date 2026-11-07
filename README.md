@@ -23,16 +23,32 @@ AI SubHub shows the usage limits of all your **Claude Code** and **Codex** accou
 - **Hub support (optional).** If you run a [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) hub, SubHub lists its logins by itself and can steer new hub threads to the account whose weekly limit expires soonest, or to one you pick.
 - **Updates itself** from GitHub Releases, automatically or when you say so, and shows short patch notes afterwards.
 
-<details>
-<summary>More screenshots</summary>
+## Statistics
 
-![Statistics: work tokens, API estimate, cost by type and a daily chart per provider](docs/images/demo-statistics-usage.png)
+Open **Statistics** from the tray menu or the popover. Everything is read from the session logs Claude Code and Codex write on your PC, so it works without the hub and sends nothing anywhere.
+
+- **Usage tab:** work tokens (input and output) and an API cost estimate for the past 24 hours or 7, 30 or 90 days. It shows the cost split into input, output and cache, and a daily chart per provider with a table per model. The estimate uses public list prices and shows what the same work would cost on the API, not what you pay for your plan.
+- **Limits tab:** a live board of every account's session and weekly windows, with % left, reset countdowns and pace. It is useful for picking the account with the most room before a long task.
+
+![Statistics, Usage tab: work tokens, API estimate, cost by type and a daily chart per provider](docs/images/demo-statistics-usage.png)
 
 ![Statistics, Limits tab: a live board of every account's windows](docs/images/demo-statistics-limits.png)
 
-![Settings, Accounts page: accounts per provider with their source and status](docs/images/demo-settings-accounts.png)
+## Settings
 
-</details>
+Settings has a menu of pages on the left:
+
+- **General:** refresh interval, what the close button does, Start with Windows, and (under Advanced) the sign-in terminal and CLI paths.
+- **Appearance:** theme, accent colour, % left or % used, plan badges, emails, and the taskbar badges (which accounts, left or right).
+- **Accounts:** all accounts by provider with their source and status. Open an account to rename it, change its tag colour and group, show it on the taskbar, set its renewal date, or sign in again. **Add accounts** lists the CLI profiles found on your PC.
+- **Hub:** connect a CLIProxyAPI hub and turn steering for new threads on or off.
+- **Projects:** the folders that appear in every card's Launch menu, in your order, with the option to hide some.
+- **About & updates:** version, update mode (automatic or manual) and the patch notes.
+
+| | |
+| --- | --- |
+| ![Settings, Accounts: accounts per provider with source and status](docs/images/demo-settings-accounts.png) | ![Settings, Appearance: theme, accent colour, usage display and taskbar badges](docs/images/demo-settings-appearance.png) |
+| ![Settings, Hub: connection status, steering and the hub address](docs/images/demo-settings-hub.png) | ![Settings, Projects: project folders for the Launch menus](docs/images/demo-settings-projects.png) |
 
 ## Get started
 

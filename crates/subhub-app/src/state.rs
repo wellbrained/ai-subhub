@@ -42,6 +42,11 @@ pub struct AccountStatus {
 /// A settings page another window asks the Settings window to open ("Manage projects…").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTarget {
+    General,
+    Appearance,
+    Accounts,
+    Hub,
+    About,
     Projects,
     /// Accounts → Add accounts (first start without accounts).
     AddAccounts,
