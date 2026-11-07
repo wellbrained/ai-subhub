@@ -43,6 +43,13 @@ enum Page {
     About,
 }
 
+/// Tabs on Detect / Import (owner, 2026-11-07).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DetectTab {
+    Cli,
+    Hub,
+}
+
 const TOP_PAGES: [(Page, &str); 8] = [
     (Page::General, "General"),
     (Page::Display, "Display"),
@@ -103,6 +110,7 @@ pub struct SettingsWindow {
     picked: HashSet<PathBuf>,
     /// The account list the detection was computed against (`accounts_sig`).
     detect_sig: u64,
+    detect_tab: DetectTab,
     _subs: Vec<Subscription>,
 }
 
@@ -248,6 +256,7 @@ impl SettingsWindow {
             detected: vec![],
             picked: HashSet::new(),
             detect_sig: 0,
+            detect_tab: DetectTab::Cli,
             confirm_remove: None,
             project_label,
             editing_project: None,
@@ -2738,39 +2747,63 @@ impl SettingsWindow {
             }
         }
 
-        div()
+        let tab = self.detect_tab;
+        let tabs = div().pb_3().child(chips(
+            "det-tab",
+            &[(DetectTab::Cli, "CLI profiles"), (DetectTab::Hub, "Hub")],
+            &tab,
+            t,
+            {
+                let me = cx.entity();
+                move |v, cx| {
+                    me.update(cx, |this, cx| {
+                        this.detect_tab = v;
+                        cx.notify();
+                    })
+                }
+            },
+        ));
+        let page = div()
             .flex()
             .flex_col()
             .child(heading("Detect / Import"))
-            .child(div().pb_3().text_xs().text_color(t.muted).child(
-                "CLI profiles found in your user folder (.claude*, .codex*), in \
-                     CLAUDE_CONFIG_DIR and CODEX_HOME, and in .config\\claude. Only the \
-                     login email is read; tokens are never touched. A login is never added \
-                     twice.",
-            ))
-            .child(toolbar)
-            .child(list)
-            .when(self.detected.is_empty(), |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .items_center()
-                        .gap_2()
-                        .pt_3()
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_xs()
-                                .text_color(t.muted)
-                                .child("No CLI profiles found. Pick a profile folder yourself:"),
-                        )
-                        .child(button("det-add", "Add account", t, false).on_click(
-                            cx.listener(|this, _, window, cx| this.go(Page::Add, window, cx)),
-                        )),
-                )
-            })
-            .child(self.detect_hub_block(t, cx))
+            .child(tabs);
+        if tab == DetectTab::Hub {
+            return page
+                .child(div().pb_1().text_xs().text_color(t.muted).child(
+                    "Logins in your CLIProxyAPI hub. The hub adds them by itself on each \
+                     refresh; a login that also has a CLI profile stays one account.",
+                ))
+                .child(self.detect_hub_block(t, cx));
+        }
+        page.child(div().pb_3().text_xs().text_color(t.muted).child(
+            "CLI profiles found in your user folder (.claude*, .codex*), in \
+                 CLAUDE_CONFIG_DIR and CODEX_HOME, and in .config\\claude. Only the \
+                 login email is read; tokens are never touched. A login is never added \
+                 twice.",
+        ))
+        .child(toolbar)
+        .child(list)
+        .when(self.detected.is_empty(), |d| {
+            d.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .pt_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(t.muted)
+                            .child("No CLI profiles found. Pick a profile folder yourself:"),
+                    )
+                    .child(button("det-add", "Add account", t, false).on_click(
+                        cx.listener(|this, _, window, cx| this.go(Page::Add, window, cx)),
+                    )),
+            )
+        })
     }
 
     fn detect_row(
@@ -2803,6 +2836,16 @@ impl SettingsWindow {
                     .unwrap_or_default();
                 Some(format!("Same login as {name}"))
             }
+        };
+        // Informed, not asked (owner, 2026-11-07): the login is also in the hub; importing makes
+        // no second account, it adds this folder as the account's CLI source.
+        let in_hub = match &d.status {
+            DetectStatus::Joins { account, .. } | DetectStatus::Added { account, .. } => self
+                .state
+                .read(cx)
+                .account(*account)
+                .is_some_and(|a| a.hub.is_some()),
+            _ => false,
         };
         let dir = d.dir.clone();
         let control: AnyElement = if importable {
@@ -2861,6 +2904,7 @@ impl SettingsWindow {
                     .when(d.email.is_none(), |r| {
                         r.child(tag("No login found", t.warn, t))
                     })
+                    .when(in_hub, |r| r.child(tag("Also in the hub", t.muted, t)))
                     .when_some(status, |r, s| r.child(tag(&s, t.muted, t))),
             )
     }
@@ -2881,30 +2925,47 @@ impl SettingsWindow {
             HubStatus::Error(e) => format!("Hub problem: {e}"),
         };
         let set_up = !matches!(s.hub, HubStatus::Ok(_));
-        let hub_accounts: Vec<(ProviderKind, String, Option<String>, bool, bool)> = s
+        let folder_name = |p: &std::path::Path| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string())
+        };
+        // One account per login (owner, 2026-11-07): a hub login that also has a CLI profile is
+        // the same account with both sources; the row says which folder, or that one was found
+        // but not imported yet.
+        let hub_accounts: Vec<(ProviderKind, String, Option<String>, String, bool)> = s
             .settings
             .accounts
             .iter()
             .filter(|a| a.hub.is_some())
             .map(|a| {
+                let cli = match &a.profile_dir {
+                    Some(dir) => format!("Also as CLI profile {}", folder_name(dir)),
+                    None => match self.detected.iter().find(|d| {
+                        d.importable()
+                            && d.provider == a.provider
+                            && d.email
+                                .as_deref()
+                                .zip(a.email.as_deref())
+                                .is_some_and(|(x, y)| x.eq_ignore_ascii_case(y))
+                    }) {
+                        Some(d) => {
+                            format!("CLI profile {} found, not imported", folder_name(&d.dir))
+                        }
+                        None => "Hub only".into(),
+                    },
+                };
                 (
                     a.provider,
                     a.label.clone(),
                     a.email.clone(),
-                    a.profile_dir.is_some(),
+                    cli,
                     a.hub.as_ref().is_some_and(|h| h.benched),
                 )
             })
             .collect();
         let mut rows = div().flex().flex_col();
-        for (p, label, email, with_profile, benched) in hub_accounts {
-            let status = if with_profile {
-                "Hub + profile"
-            } else if benched {
-                "Hub · benched"
-            } else {
-                "Hub · added automatically"
-            };
+        for (p, label, email, status, benched) in hub_accounts {
             rows =
                 rows.child(
                     div()
@@ -2921,20 +2982,19 @@ impl SettingsWindow {
                                 None => label,
                             }),
                         ))
-                        .child(tag(status, t.muted, t)),
+                        .when(benched, |r| r.child(tag("Benched", t.warn, t)))
+                        .child(tag(&status, t.muted, t)),
                 );
         }
+        let source = format!("Source: CLIProxyAPI hub at {}", s.settings.hub.base_url);
         div()
             .flex()
             .flex_col()
-            .pt_6()
             .child(
                 div()
                     .text_xs()
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(t.faint)
-                    .pb_1()
-                    .child("HUB"),
+                    .text_color(t.muted)
+                    .child(SharedString::from(source)),
             )
             .child(
                 div()

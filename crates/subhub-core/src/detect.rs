@@ -413,6 +413,48 @@ mod tests {
     }
 
     #[test]
+    fn hub_listed_after_import_links_instead_of_duplicating() {
+        // CLI import first (e.g. the hub key is entered later), then the hub's refresh.
+        let home = tempfile::tempdir().unwrap();
+        let h = home.path();
+        claude_profile(&h.join(".claude-a"), Some("a@example.test"));
+        let mut accounts = vec![];
+        let found = detect(h, &ProfileEnv::default(), &accounts);
+        import(&mut accounts, &found);
+        let hub = vec![
+            crate::hub::HubAccount {
+                provider: ProviderKind::Claude,
+                email: Some("A@example.test".into()),
+                file_name: "a.json".into(),
+                auth_index: serde_json::Value::Null,
+                disabled: false,
+                account_id: None,
+                priority: None,
+            },
+            crate::hub::HubAccount {
+                provider: ProviderKind::Claude,
+                email: Some("only-hub@example.test".into()),
+                file_name: "o.json".into(),
+                auth_index: serde_json::Value::Null,
+                disabled: false,
+                account_id: None,
+                priority: None,
+            },
+        ];
+        crate::merge::apply_hub_accounts(&mut accounts, &hub);
+        crate::merge::fold_duplicates(&mut accounts);
+        assert_eq!(accounts.len(), 2, "one account per login");
+        assert!(accounts[0].profile_dir.is_some() && accounts[0].hub.is_some());
+        assert!(accounts[1].profile_dir.is_none() && accounts[1].hub.is_some());
+        // And detecting again offers nothing.
+        assert!(
+            detect(h, &ProfileEnv::default(), &accounts)
+                .iter()
+                .all(|d| !d.importable())
+        );
+    }
+
+    #[test]
     fn same_login_in_one_batch_is_imported_once() {
         let home = tempfile::tempdir().unwrap();
         let h = home.path();
