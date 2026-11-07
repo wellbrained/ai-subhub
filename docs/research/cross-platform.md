@@ -6,6 +6,8 @@ Research only, 2026-11-07, branch `research/cross-platform`. No app code was cha
 
 Unverified claims are marked *(unverified)*.
 
+**Decision (owner, 2026-11-07):** macOS comes only once the Windows app is finished, with all features and the design done and nothing else pending. Linux is not planned. Until then there is no cross-platform work. The open questions in section 7 are decided when the macOS work starts.
+
 ---
 
 ## 1. GPUI on macOS and Linux
