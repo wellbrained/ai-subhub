@@ -47,6 +47,13 @@ _Avoid_: Project as a synonym for a provider chat project.
 
 **Tray ring**: The live-drawn tray icon showing the chosen metric as a ring.
 
+**Taskbar display**: The always-visible usage next to the tray (badges, bars, numbers or focus), switched on or off on its own; off leaves just the tray icon.
+
+**Main taskbar**: The taskbar with the tray icons. Other monitors can have their own taskbar, which can also carry the taskbar display.
+
+**Hover card**: The small popover-styled card that shows while the pointer rests on the tray icon (all visible accounts) or on a taskbar badge (that account). Information only; a click opens the popover.
+_Avoid_: Tooltip, which means the plain Windows text tip (still set for screen readers).
+
 **Monthly renewal**: An optional, manually entered date on which an account's subscription renews each month. Later dates are estimates that keep the original day of month.
 
 **Access end date**: A fixed date entered after canceling, when paid access ends. It never recurs.

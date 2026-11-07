@@ -312,6 +312,51 @@ pub fn fit_plan(window: &Window, width: f32, height: f32) -> Option<((f32, f32),
     }
 }
 
+/// Top-left of the client area in physical screen px.
+pub fn client_origin(window: &Window) -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    let hwnd = hwnd(window)?;
+    let mut p = POINT::default();
+    unsafe { ClientToScreen(hwnd, &mut p).ok().ok()? };
+    Some((p.x, p.y))
+}
+
+/// Puts the client area at `x, y` with size `w x h` (all physical px), topmost, without
+/// activating. Done twice: moving onto a monitor with another scale makes Windows resize the
+/// window (WM_DPICHANGED) during the first call.
+pub fn place_client_physical(window: &Window, x: i32, y: i32, w: i32, h: i32) {
+    use windows::Win32::Foundation::{POINT, RECT};
+    use windows::Win32::Graphics::Gdi::ClientToScreen;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetClientRect, GetWindowRect, HWND_TOPMOST, SWP_NOACTIVATE, SetWindowPos,
+    };
+    let Some(hwnd) = hwnd(window) else { return };
+    for _ in 0..2 {
+        unsafe {
+            let (mut outer, mut client) = (RECT::default(), RECT::default());
+            let mut origin = POINT::default();
+            if GetWindowRect(hwnd, &mut outer).is_err() || GetClientRect(hwnd, &mut client).is_err()
+            {
+                return;
+            }
+            let _ = ClientToScreen(hwnd, &mut origin);
+            let (left, top) = (origin.x - outer.left, origin.y - outer.top);
+            let extra_w = (outer.right - outer.left) - (client.right - client.left);
+            let extra_h = (outer.bottom - outer.top) - (client.bottom - client.top);
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                x - left,
+                y - top,
+                w + extra_w,
+                h + extra_h,
+                SWP_NOACTIVATE,
+            );
+        }
+    }
+}
+
 /// Moves the window (outer top-left, physical px) without resizing or activating.
 pub fn move_outer(window: &Window, x: i32, y: i32) {
     use windows::Win32::UI::WindowsAndMessaging::{

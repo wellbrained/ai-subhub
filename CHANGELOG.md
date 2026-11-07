@@ -10,6 +10,8 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 - The Days table shows the last week and scrolls for older days; Codex is blue in the statistics.
 - Settings → Taskbar: a clear "Show usage next to the tray" switch; off leaves just the tray icon and keeps your style.
 - New installs start with the Badge style on the taskbar.
+- Hover cards: resting on the tray icon or a taskbar badge shows a small card with both windows, % left, reset times and status (Settings → Taskbar → "Show details on hover").
+- The taskbar display can show on the main taskbar, all taskbars or chosen monitors, with its own position per monitor.
 
 ## 0.1.0 – 2026-11-07
 

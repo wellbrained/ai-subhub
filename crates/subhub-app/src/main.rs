@@ -4,9 +4,11 @@
 
 mod assets;
 mod format;
+mod hover_card;
 mod icons;
 mod limits_board;
 mod logo;
+mod monitors;
 mod popover;
 mod settings_window;
 mod startup;
@@ -49,8 +51,9 @@ struct Shell {
     stats: Option<WindowHandle<Root>>,
     /// The "Updated to …" dialog.
     notes: Option<WindowHandle<Root>>,
-    /// Always-visible taskbar display and the mode it was opened with.
-    taskbar: Option<(
+    /// Always-visible taskbar displays: monitor id, window, and the style it was opened with.
+    taskbar: Vec<(
+        String,
         WindowHandle<taskbar::TaskbarDisplay>,
         subhub_core::settings::TaskbarMode,
     )>,
@@ -97,7 +100,8 @@ fn main() {
             theme::apply_component_theme(dark, None, cx);
 
             let (tx, mut rx) = futures::channel::mpsc::unbounded();
-            let tray = match Tray::new(tx, "AI SubHub") {
+            let rich = state.read(cx).display().hover_details;
+            let tray = match Tray::new(tx, "AI SubHub", rich) {
                 Ok(t) => t,
                 Err(_) => {
                     // Never run without a way back.
@@ -111,10 +115,30 @@ fn main() {
                 settings: None,
                 stats: None,
                 notes: None,
-                taskbar: None,
+                taskbar: Vec::new(),
                 closed_at: None,
                 state: state.clone(),
             }));
+            // No hover card while the popover is open.
+            {
+                let shell = shell.clone();
+                hover_card::init(
+                    state.clone(),
+                    Rc::new(move |_| shell.try_borrow().is_ok_and(|s| s.popover.is_some())),
+                );
+            }
+            // Monitors come and go (docking, Windows' "show taskbar on all displays"): re-check
+            // which taskbars get a display every few seconds.
+            {
+                let shell = shell.clone();
+                cx.spawn(async move |cx| {
+                    loop {
+                        cx.background_executor().timer(Duration::from_secs(3)).await;
+                        cx.update(|cx| sync_taskbar(&shell, cx));
+                    }
+                })
+                .detach();
+            }
 
             // Keep the tray ring and tooltip in step with the state.
             {
@@ -149,6 +173,23 @@ fn main() {
                             TrayEvent::Settings => open_settings(&shell, cx),
                             TrayEvent::Statistics => open_stats(&shell, cx),
                             TrayEvent::Quit => cx.quit(),
+                            TrayEvent::HoverOpen | TrayEvent::HoverMove => {
+                                let r = shell.borrow().tray.icon_rect();
+                                if let Some(r) = r {
+                                    let anchor = subhub_core::placement::Rect {
+                                        left: r.left as f32,
+                                        top: r.top as f32,
+                                        right: r.right as f32,
+                                        bottom: r.bottom as f32,
+                                    };
+                                    if ev == TrayEvent::HoverOpen {
+                                        hover_card::tray_enter(anchor, cx);
+                                    } else {
+                                        hover_card::tray_move(anchor, cx);
+                                    }
+                                }
+                            }
+                            TrayEvent::HoverClose => hover_card::tray_leave(cx),
                         });
                     }
                 })
@@ -292,89 +333,91 @@ fn stats_dump(path: Option<&String>) {
     }
 }
 
-/// Opens, closes or reopens the taskbar display to match the Display setting.
+/// Opens, closes or reopens taskbar displays to match the settings and the connected monitors:
+/// one per chosen monitor's taskbar (`placement::display_monitors`).
 fn sync_taskbar(shell: &ShellRef, cx: &mut App) {
     let state = shell.borrow().state.clone();
     let d = state.read(cx).display();
-    // None = switched off: just the tray icon.
-    let wanted = d.taskbar_enabled.then_some(d.taskbar_mode);
-    let current = shell.borrow().taskbar.map(|(_, m)| m);
-    if current == wanted {
-        return;
+    let mode = d.taskbar_mode;
+    // Empty = switched off: just the tray icon.
+    let wanted: Vec<String> = if d.taskbar_enabled {
+        let infos: Vec<_> = monitors::list().iter().map(|m| m.info()).collect();
+        subhub_core::placement::display_monitors(&d.taskbar_monitors, &infos)
+    } else {
+        vec![]
+    };
+    // Close displays on monitors no longer wanted, or opened in another style.
+    let open_now = std::mem::take(&mut shell.borrow_mut().taskbar);
+    let mut keep = Vec::new();
+    for (id, h, m) in open_now {
+        let alive = h.update(cx, |_, _, _| ()).is_ok();
+        if alive && m == mode && wanted.contains(&id) {
+            keep.push((id, h, m));
+        } else {
+            let _ = h.update(cx, |_, window, _| window.remove_window());
+        }
     }
-    let old = shell.borrow_mut().taskbar.take();
-    if let Some((h, _)) = old {
-        let _ = h.update(cx, |_, window, _| window.remove_window());
+    for id in wanted {
+        if keep.iter().any(|(k, _, _)| *k == id) {
+            continue;
+        }
+        let toggle_shell = shell.clone();
+        let on_click: taskbar::OnClick = Rc::new(move |cx: &mut App, r| {
+            toggle_popover(&toggle_shell, Anchor::TaskbarDisplay(r), cx)
+        });
+        if let Some(h) = taskbar::open(state.clone(), id.clone(), on_click, cx) {
+            keep.push((id, h, mode));
+        }
     }
-    let toggle_shell = shell.clone();
-    let on_click: taskbar::OnClick = Rc::new(move |cx: &mut App, b| {
-        toggle_popover(&toggle_shell, Anchor::TaskbarDisplay(b), cx)
-    });
-    if let (Some(mode), Some(h)) = (wanted, taskbar::open(state, on_click, cx)) {
-        shell.borrow_mut().taskbar = Some((h, mode));
-    }
+    shell.borrow_mut().taskbar = keep;
 }
 
 fn single_instance() -> bool {
     use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
     use windows::Win32::System::Threading::CreateMutexW;
     use windows::core::w;
+    // Development builds (cargo's target folder) use their own name, so one can run next to
+    // the installed app for testing; still one dev build at a time.
+    let dev = std::env::current_exe()
+        .map(|p| subhub_core::update::is_dev_build(&p))
+        .unwrap_or(false);
+    let name = if dev {
+        w!("Local\\AISubHub.SingleInstance.Dev")
+    } else {
+        w!("Local\\AISubHub.SingleInstance")
+    };
     unsafe {
         // The handle is intentionally never closed: held for the process lifetime.
-        if CreateMutexW(None, true, w!("Local\\AISubHub.SingleInstance")).is_err() {
+        if CreateMutexW(None, true, name).is_err() {
             return true;
         }
         GetLastError() != ERROR_ALREADY_EXISTS
     }
 }
 
-/// The tray icon is the static logo; only the hover summary follows the state.
+/// The tray icon is the static logo; only the tip text follows the state. The text is set
+/// either way (screen readers read it); Windows draws it only when hover cards are off.
 fn update_tray(shell: &ShellRef, state: &Entity<AppState>, cx: &mut App) {
-    let tip = tray_tip(state.read(cx));
-    let _ = shell.borrow_mut().tray.set_tip(&tip);
-}
-
-/// Hover summary, within the tooltip's 127-char limit.
-fn tray_tip(s: &AppState) -> String {
-    let mut lines = vec!["AI SubHub".to_string()];
-    for acc in s.settings.accounts.iter().filter(|a| !a.hidden) {
-        let Some(r) = s.settings.readings.get(&acc.id) else {
-            continue;
-        };
-        let lowest = r
-            .windows
-            .iter()
-            .filter(|w| !acc.hidden_windows.contains(&w.key))
-            .map(|w| w.remaining_percent())
-            .fold(None::<f64>, |m, v| Some(m.map_or(v, |m| m.min(v))));
-        if let Some(l) = lowest {
-            let stale = if s.is_stale(acc.id) { " (stale)" } else { "" };
-            lines.push(format!("{}: {:.0}% left{stale}", acc.label, l));
-        }
+    let s = state.read(cx);
+    let views = hover_card::account_views(s);
+    let tip = subhub_core::hover::tip_text(&subhub_core::hover::tray_card(&views, views.len()));
+    let rich = s.display().hover_details;
+    if !rich {
+        hover_card::hide(cx);
     }
-    let mut out = String::new();
-    for (i, l) in lines.iter().enumerate() {
-        if out.len() + l.len() + 1 > 120 {
-            out.push_str("\n…");
-            break;
-        }
-        if i > 0 {
-            out.push('\n');
-        }
-        out.push_str(l);
-    }
-    out
+    let _ = shell.borrow_mut().tray.set_tip(&tip, rich);
 }
 
 /// What the popover opens above: the tray icon, or the taskbar display that was clicked.
 #[derive(Clone, Copy)]
 enum Anchor {
     Tray,
-    /// The taskbar display that was clicked, with its screen bounds (logical px).
-    TaskbarDisplay(Bounds<gpui::Pixels>),
+    /// The taskbar display that was clicked (physical screen px).
+    TaskbarDisplay(subhub_core::placement::Rect),
 }
 
 fn toggle_popover(shell: &ShellRef, anchor: Anchor, cx: &mut App) {
+    hover_card::hide(cx);
     let mut s = shell.borrow_mut();
     if let Some(handle) = s.popover.take() {
         let _ = handle.update(cx, |_, window, _| window.remove_window());
@@ -389,20 +432,33 @@ fn toggle_popover(shell: &ShellRef, anchor: Anchor, cx: &mut App) {
     }
     let state = s.state.clone();
     let height = Popover::preferred_height(state.read(cx));
-    let scale = s.tray.scale();
-    let anchor_rect = match anchor {
-        Anchor::Tray => s.tray.rect(),
-        // Above the clicked taskbar display, centred on it (physical px for the work-area lookup).
-        Anchor::TaskbarDisplay(b) => Some(tray::TrayRect {
-            left: (b.origin.x.as_f32() * scale) as i32,
-            top: (b.origin.y.as_f32() * scale) as i32,
-            right: ((b.origin.x + b.size.width).as_f32() * scale) as i32,
-            bottom: ((b.origin.y + b.size.height).as_f32() * scale) as i32,
-        }),
+    let (scale, anchor_rect) = match anchor {
+        Anchor::Tray => (s.tray.scale(), s.tray.rect()),
+        // Above the clicked taskbar display, centred on it, on its monitor (another monitor's
+        // taskbar may have another scale).
+        Anchor::TaskbarDisplay(r) => {
+            let scale = monitors::at_point(
+                ((r.left + r.right) / 2.0) as i32,
+                ((r.top + r.bottom) / 2.0) as i32,
+            )
+            .map_or(1.0, |(_, s, _)| s);
+            let rect = tray::TrayRect {
+                left: r.left as i32,
+                top: r.top as i32,
+                right: r.right as i32,
+                bottom: r.bottom as i32,
+            };
+            (scale, Some(rect))
+        }
     };
+    // Open on the anchor's monitor (see `monitors::display_id`).
+    let display = anchor_rect.as_ref().and_then(|r| {
+        monitors::at_point((r.left + r.right) / 2, (r.top + r.bottom) / 2).map(|(d, _, _)| d)
+    });
     let (x, y) = popover_origin(anchor_rect, scale, height);
     drop(s);
     let options = WindowOptions {
+        display_id: display,
         window_bounds: Some(WindowBounds::Windowed(Bounds {
             origin: point(px(x), px(y)),
             size: size(px(popover::WIDTH), px(height)),

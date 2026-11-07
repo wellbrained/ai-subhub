@@ -78,6 +78,10 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
 
 /// An enabled entry follows the exe when it runs from a new path (a moved or updated build).
 pub fn refresh_if_enabled() {
+    // A development build must not take over the installed app's entry.
+    if std::env::current_exe().map_or(true, |p| subhub_core::update::is_dev_build(&p)) {
+        return;
+    }
     if let (Some(current), Ok(want)) = (registered(), current_command())
         && current != want
     {
