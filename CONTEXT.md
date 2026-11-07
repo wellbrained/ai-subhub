@@ -94,6 +94,11 @@ _Avoid_: Recommendation, which suggests SubHub changes the plan; it never does.
 
 **Warm-up**: Starting an account's 5-hour window early with a tiny prompt, so its reset lands when the user would otherwise run out. The suggested time comes from the work rhythm.
 
+**Overview**: The first tab of the Statistics window: a verdict sentence, four numbers, the top tip and one row per topic (Plans, 5-hour windows, Renewals, Where usage goes) that states its answer and opens for details.
+
+**Tip**: A concrete suggestion on the Overview (warm-up, switch instead of waiting, downgrade, upgrade, ending plan, unused plan, task insight, expiring weekly room) with a stable id. "Not for me" hides it for good; "Show hidden tips" brings hidden ones back.
+_Avoid_: Recommendation (see Plan fit).
+
 **Collecting data**: An Overview result that needs more readings than there are; it names the day the first result is expected instead of guessing.
 
 **Update**: A newer SubHub version published as a GitHub Release. Offered only when newer than the running version, never as a downgrade.

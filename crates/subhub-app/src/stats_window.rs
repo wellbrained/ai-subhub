@@ -2,6 +2,7 @@
 //! `Usage | Limits` tabs, the range switch, Copy as image and Rescan; below it the Usage view
 //! (tiles, "By type", then a Models / Providers / Days breakdown with the daily chart) or the
 //! live Limits board. Data: `subhub_core::stats` (local session logs).
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -16,14 +17,19 @@ use subhub_core::settings::{StatsBreakdown, StatsMetric, StatsSettings};
 use subhub_core::stats::{ModelRow, Point, Range, Summary, summarize};
 
 use crate::icons::{Icon, icon, series_color};
+use crate::overview::{self, OverviewState};
 use crate::state::AppState;
 use crate::theme::{self, Tokens};
 use crate::title_bar::{self, icon_button, seg};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
-    Usage,
+    /// The default (owner, 2026-11-07): verdict, numbers, tips and topic rows.
+    Overview,
+    /// "Limits now": the live Limits board.
     Limits,
+    /// "Tokens & cost": the Usage view.
+    Usage,
 }
 
 /// The one-time fit of the window height to the Usage content (Models view).
@@ -55,21 +61,32 @@ pub struct StatsWindow {
     prices_open: bool,
     /// The summary for (range, state.stats_rev); recomputed only when either changes.
     summary: Option<((Range, u64), Summary)>,
+    /// The Overview tab's state and last analysis.
+    overview: OverviewState,
+    /// Opens the Settings window (on `AppState::pending_settings_page`).
+    on_settings: Rc<dyn Fn(&mut gpui::App)>,
     _sub: Subscription,
 }
 
 impl StatsWindow {
-    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        state: Entity<AppState>,
+        on_settings: Rc<dyn Fn(&mut gpui::App)>,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let sub = cx.observe(&state, |_, _, cx| cx.notify());
-        // The Limits countdowns tick: re-render twice a minute while that tab is open. Ends with
-        // the window.
+        // The Limits countdowns tick: re-render twice a minute while that tab is open; the
+        // Overview re-renders only when its analysis is old enough to run again. Ends with the
+        // window.
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_secs(30))
                     .await;
                 let alive = this.update(cx, |this, cx| {
-                    if this.tab == Tab::Limits {
+                    if this.tab == Tab::Limits
+                        || (this.tab == Tab::Overview && this.overview.stale())
+                    {
                         cx.notify();
                     }
                 });
@@ -79,19 +96,32 @@ impl StatsWindow {
             }
         })
         .detach();
+        // Opens on the Overview (owner, 2026-11-07). The one-time height fit belongs to the
+        // Usage content and would resize the window on the first switch to it, so it only runs
+        // when the window opens on Usage.
+        let tab = Tab::Overview;
         Self {
             state,
             range: Range::Quarter,
-            // Opens on Usage: the popover already shows the limits (owner, 2026-11-07).
-            tab: Tab::Usage,
-            fit: Fit::Pending,
+            tab,
+            fit: if tab == Tab::Usage {
+                Fit::Pending
+            } else {
+                Fit::Done
+            },
             scroll: gpui::ScrollHandle::new(),
             days_scroll: gpui::ScrollHandle::new(),
             copied: None,
             prices_open: false,
             summary: None,
+            overview: OverviewState::new(),
+            on_settings,
             _sub: sub,
         }
+    }
+
+    pub(crate) fn overview_mut(&mut self) -> &mut OverviewState {
+        &mut self.overview
     }
 
     /// Re-renders after each delay (ms): the fit follows layouts that happen after a resize.
@@ -468,6 +498,11 @@ impl Render for StatsWindow {
         };
         let prefs: StatsSettings = self.state.read(cx).settings.stats.clone();
         let on_limits = self.tab == Tab::Limits;
+        let on_overview = self.tab == Tab::Overview;
+        if on_overview {
+            let state = self.state.clone();
+            self.overview.ensure(&state, cx);
+        }
         if has_scan {
             let key = (self.range, rev);
             if self.summary.as_ref().map(|(k, _)| *k) != Some(key) {
@@ -506,7 +541,11 @@ impl Render for StatsWindow {
         // ----- title bar -----
         let tabs = seg(
             "tab",
-            &[(Tab::Usage, "Usage"), (Tab::Limits, "Limits")],
+            &[
+                (Tab::Overview, "Overview"),
+                (Tab::Limits, "Limits now"),
+                (Tab::Usage, "Tokens & cost"),
+            ],
             &self.tab,
             &t,
             {
@@ -543,7 +582,9 @@ impl Render for StatsWindow {
         if let Some(note) = copy_note {
             trailing.push(status(note));
         }
-        if !on_limits {
+        if on_overview {
+            trailing.push(overview::range_switch(&self.overview, me.clone(), &t));
+        } else if !on_limits {
             let ranges = Range::ALL.map(|r| (r, r.short()));
             trailing.push(seg("range", &ranges, &self.range, &t, {
                 let me = me.clone();
@@ -588,7 +629,7 @@ impl Render for StatsWindow {
                 })
                 .into_any_element(),
         );
-        let bar = title_bar::bar("stats-bar", "Usage", &t, window, Some(tabs), trailing);
+        let bar = title_bar::bar("stats-bar", "AI SubHub", &t, window, Some(tabs), trailing);
 
         // ----- body -----
         let price_note = {
@@ -602,7 +643,29 @@ impl Render for StatsWindow {
                 None => "API estimate: tokens priced with the built-in price table (LiteLLM list not fetched yet). Models without a public price are Unpriced.".to_string(),
             }
         };
-        let body: AnyElement = if on_limits {
+        let body: AnyElement = if on_overview {
+            let open_settings: overview::OpenSettings = {
+                let state = self.state.clone();
+                let on_settings = self.on_settings.clone();
+                Rc::new(move |target, cx: &mut gpui::App| {
+                    state.update(cx, |s, cx| {
+                        s.pending_settings_page = Some(target);
+                        cx.notify();
+                    });
+                    on_settings(cx);
+                })
+            };
+            overview::body(
+                &self.overview,
+                &overview::Ctx {
+                    t: &t,
+                    s: self.state.read(cx),
+                    me: me.clone(),
+                    state: self.state.clone(),
+                    open_settings,
+                },
+            )
+        } else if on_limits {
             crate::limits_board::board(self.state.read(cx), Utc::now(), &t)
         } else if let Some((_, summary)) = self.summary.as_ref().filter(|_| has_scan) {
             let state = self.state.clone();

@@ -10,6 +10,7 @@ mod icons;
 mod limits_board;
 mod logo;
 mod monitors;
+mod overview;
 mod popover;
 mod settings_window;
 mod startup;
@@ -104,12 +105,30 @@ fn main() {
         .position(|a| a == "--demo-page")
         .and_then(|i| args.get(i + 1).cloned())
         .filter(|_| demo::on());
+    // Demo only: `--demo-theme light|dark`, `--demo-open-row <row>`, `--demo-height <px>`.
+    let demo_theme = demo::theme(&args);
+    demo::read_flags(&args);
     gpui_platform::application()
         .with_assets(assets::Assets)
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
-            let state = cx.new(|_| AppState::load());
+            let state = cx.new(|_| {
+                let mut s = AppState::load();
+                if let Some(theme) = demo_theme {
+                    s.settings.display.theme = theme;
+                }
+                // Demo: every account knows its plan from the start (the stale one never gets
+                // a fresh reading that would bring it), so the Overview shows every state.
+                if demo::on() {
+                    for a in &s.settings.accounts {
+                        if let Some(plan) = subhub_core::demo::plan(a.id) {
+                            s.plans.insert(a.id, plan.to_string());
+                        }
+                    }
+                }
+                s
+            });
             STATE.with(|c| *c.borrow_mut() = Some(state.clone()));
             let dark = theme::is_dark(state.read(cx).display().theme, cx);
             theme::apply_component_theme(dark, None, cx);
@@ -313,8 +332,8 @@ fn sync_taskbar(shell: &ShellRef, cx: &mut App) {
     let state = shell.borrow().state.clone();
     let d = state.read(cx).display();
     let mode = d.taskbar_mode;
-    // Empty = switched off: just the tray icon.
-    let wanted: Vec<String> = if d.taskbar_enabled {
+    // Empty = switched off: just the tray icon. Never with `--demo-hidden` (nothing on the desktop).
+    let wanted: Vec<String> = if d.taskbar_enabled && !demo::hidden() {
         let infos: Vec<_> = monitors::list().iter().map(|m| m.info()).collect();
         subhub_core::placement::display_monitors(&d.taskbar_monitors, &infos)
     } else {
@@ -528,21 +547,39 @@ fn close_popover(shell: &ShellRef, cx: &mut App) {
     }
 }
 
+/// Brings a window (client `w x h` logical px) to the front. With `--demo-hidden` it was created
+/// hidden (`show: false`) and is shown far off-screen as a tool window (no taskbar button), never
+/// activated.
+fn present(window: &mut gpui::Window, cx: &mut App, w: f32, h: f32) {
+    if demo::hidden() {
+        window_style::show_off_screen(window, cx, demo::OFF_SCREEN, demo::OFF_SCREEN, w, h);
+    } else {
+        window.activate_window();
+    }
+}
+
+/// Raises an open window; a `--demo-hidden` one stays where it is, never activated.
+fn raise(window: &mut gpui::Window) {
+    if !demo::hidden() {
+        window.activate_window();
+    }
+}
+
 /// Opens (or raises) the Statistics window and starts a scan.
 fn open_stats(shell: &ShellRef, cx: &mut App) {
     let state = shell.borrow().state.clone();
     let existing = shell.borrow().stats;
     if let Some(h) = existing
-        && h.update(cx, |_, window, _| window.activate_window())
-            .is_ok()
+        && h.update(cx, |_, window, _| raise(window)).is_ok()
     {
         state.update(cx, |s, cx| s.start_scan(cx));
         return;
     }
     let border = border_color(&state, cx);
+    let height = demo::stats_height().unwrap_or(760.0);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(
-            size(px(stats_window::WIDTH), px(760.0)),
+            size(px(stats_window::WIDTH), px(height)),
             cx,
         )),
         // No system caption: the merged title bar (title_bar.rs) is drawn by the window itself.
@@ -554,16 +591,23 @@ fn open_stats(shell: &ShellRef, cx: &mut App) {
         }),
         window_min_size: Some(size(px(760.0), px(480.0))),
         icon: logo::window_icon(),
+        show: !demo::hidden(),
+        focus: !demo::hidden(),
         ..Default::default()
     };
     let view_state = state.clone();
+    // Overview links ("Account settings…", hub steering) open Settings on a page.
+    let on_settings: Rc<dyn Fn(&mut App)> = {
+        let shell = shell.clone();
+        Rc::new(move |cx: &mut App| open_settings(&shell, cx))
+    };
     if let Ok(h) = cx.open_window(options, |window, cx| {
-        let view = cx.new(|cx| stats_window::StatsWindow::new(view_state, cx));
+        let view = cx.new(|cx| stats_window::StatsWindow::new(view_state, on_settings, cx));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
-        let _ = h.update(cx, |_, window, _| {
+        let _ = h.update(cx, |_, window, cx| {
             window_style::round(window, border);
-            window.activate_window();
+            present(window, cx, stats_window::WIDTH, height);
         });
         shell.borrow_mut().stats = Some(h);
         state.update(cx, |s, cx| s.start_scan(cx));
@@ -573,8 +617,7 @@ fn open_stats(shell: &ShellRef, cx: &mut App) {
 fn open_settings(shell: &ShellRef, cx: &mut App) {
     let existing = shell.borrow().settings;
     if let Some(h) = existing
-        && h.update(cx, |_, window, _| window.activate_window())
-            .is_ok()
+        && h.update(cx, |_, window, _| raise(window)).is_ok()
     {
         return;
     }
@@ -590,6 +633,8 @@ fn open_settings(shell: &ShellRef, cx: &mut App) {
         }),
         window_min_size: Some(size(px(640.0), px(420.0))),
         icon: logo::window_icon(),
+        show: !demo::hidden(),
+        focus: !demo::hidden(),
         ..Default::default()
     };
     let quit_state = state.clone();
@@ -605,9 +650,9 @@ fn open_settings(shell: &ShellRef, cx: &mut App) {
         let view = cx.new(|cx| SettingsWindow::new(state, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
-        let _ = h.update(cx, |_, window, _| {
+        let _ = h.update(cx, |_, window, cx| {
             window_style::round(window, border);
-            window.activate_window();
+            present(window, cx, 900.0, 640.0);
         });
         shell.borrow_mut().settings = Some(h);
     }

@@ -18,6 +18,8 @@ pub struct Tokens {
     pub warn: Hsla,
     pub danger: Hsla,
     pub ok: Hsla,
+    /// Informational messages (the Overview's "i" chips); never a warning.
+    pub info: Hsla,
 }
 
 fn c(hex: u32) -> Hsla {
@@ -50,6 +52,7 @@ impl Tokens {
                 warn: c(0xf59e0b),
                 danger: c(0xef4444),
                 ok: c(0x22c55e),
+                info: c(0x60a5fa),
             }
         } else {
             Self {
@@ -66,6 +69,7 @@ impl Tokens {
                 warn: c(0xd97706),
                 danger: c(0xdc2626),
                 ok: c(0x16a34a),
+                info: c(0x2563eb),
             }
         }
     }

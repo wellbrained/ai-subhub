@@ -2,7 +2,7 @@
 //! model, each with its main-thread / subagent parts. Shares are weighted by API value (the
 //! price book's estimate), so models with different prices compare; when nothing in the range is
 //! priced the work tokens weigh instead.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::{Component, Path};
 
@@ -92,6 +92,10 @@ pub struct ThreadShare {
     pub share: f64,
     /// Last local hour index with use.
     pub last_hour: i64,
+    /// The task kind most of its value went to (None for a thread without use).
+    pub kind: Option<TaskKind>,
+    /// Local days in the range with use.
+    pub days: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -108,6 +112,8 @@ pub struct UsageReport {
     pub models: Vec<Share<String>>,
     /// The biggest [`MAX_THREADS`] threads.
     pub threads: Vec<ThreadShare>,
+    /// Threads with use in the range (all of them, not only the listed ones).
+    pub thread_count: usize,
 }
 
 impl UsageReport {
@@ -131,8 +137,22 @@ impl UsageReport {
 
 pub const MAX_THREADS: usize = 20;
 
-/// Per thread: totals, value per project, last hour.
-type ThreadAcc = (Acc, HashMap<ProjectKey, f64>, i64);
+/// Per thread: totals, value per project, last hour, value per task kind, days with use.
+#[derive(Default)]
+struct ThreadAcc {
+    acc: Acc,
+    projects: HashMap<ProjectKey, f64>,
+    last_hour: i64,
+    kinds: HashMap<TaskKind, f64>,
+    days: HashSet<i64>,
+}
+
+/// The key with the largest value (ties: the smaller key).
+fn top<K: Ord>(m: HashMap<K, f64>) -> Option<K> {
+    m.into_iter()
+        .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
+        .map(|(k, _)| k)
+}
 
 fn ratio(a: f64, b: f64) -> f64 {
     if b > 0.0 { a / b } else { 0.0 }
@@ -226,10 +246,16 @@ pub fn usage(
             .add(usd, work, b.sidechain);
         let t = threads
             .entry((b.provider, &b.thread))
-            .or_insert_with(|| (Acc::default(), HashMap::new(), b.hour));
-        t.0.add(usd, work, b.sidechain);
-        *t.1.entry(project).or_default() += usd + work as f64 * 1e-12;
-        t.2 = t.2.max(b.hour);
+            .or_insert_with(|| ThreadAcc {
+                last_hour: b.hour,
+                ..ThreadAcc::default()
+            });
+        let weight = usd + work as f64 * 1e-12;
+        t.acc.add(usd, work, b.sidechain);
+        *t.projects.entry(project).or_default() += weight;
+        t.last_hour = t.last_hour.max(b.hour);
+        *t.kinds.entry(b.kind).or_default() += weight;
+        t.days.insert(b.hour.div_euclid(24));
     }
     let by_tokens = total.usd <= 0.0;
     let project_label = |k: &ProjectKey| match k {
@@ -240,25 +266,25 @@ pub fn usage(
         ProjectKey::Folder(f) => f.clone(),
         ProjectKey::Unknown => String::new(),
     };
+    let thread_count = threads.len();
     let mut thread_rows: Vec<ThreadShare> = threads
         .into_iter()
-        .map(|((provider, id), (a, projects, last_hour))| ThreadShare {
+        .map(|((provider, id), t)| ThreadShare {
             thread: id.to_string(),
             provider,
             title: scan.titles.get(id).cloned(),
-            project: projects
-                .into_iter()
-                .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
-                .map_or(ProjectKey::Unknown, |(k, _)| k),
-            usd: a.usd,
-            sub_usd: a.sub_usd,
-            work: a.work,
+            project: top(t.projects).unwrap_or(ProjectKey::Unknown),
+            usd: t.acc.usd,
+            sub_usd: t.acc.sub_usd,
+            work: t.acc.work,
             share: if by_tokens {
-                ratio(a.work as f64, total.work as f64)
+                ratio(t.acc.work as f64, total.work as f64)
             } else {
-                ratio(a.usd, total.usd)
+                ratio(t.acc.usd, total.usd)
             },
-            last_hour,
+            last_hour: t.last_hour,
+            kind: top(t.kinds),
+            days: t.days.len(),
         })
         .collect();
     thread_rows.sort_by(|a, b| {
@@ -278,6 +304,7 @@ pub fn usage(
         projects: rows(projs, &total, by_tokens, project_label),
         models: rows(models, &total, by_tokens, |m| m.clone()),
         threads: thread_rows,
+        thread_count,
     }
 }
 
@@ -409,7 +436,12 @@ mod tests {
         assert_eq!(r.projects[1].key, ProjectKey::Unknown);
         assert_eq!(r.threads[0].title.as_deref(), Some("Fix login"));
         assert_eq!(r.threads[0].project, ProjectKey::Saved(Uuid::from_u128(1)));
+        // Equal value in two kinds: the first kind wins; one local day with use.
+        assert_eq!(r.threads[0].kind, Some(TaskKind::WritingCode));
+        assert_eq!(r.threads[0].days, 1);
         assert_eq!(r.threads[1].title, None);
+        assert_eq!(r.threads[1].kind, Some(TaskKind::ReadingSearching));
+        assert_eq!(r.thread_count, 2);
         assert_eq!(r.models[0].key, "claude-opus-5-5");
 
         // Nothing priced: shares by work tokens.

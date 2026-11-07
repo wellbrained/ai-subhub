@@ -1,6 +1,6 @@
 # Statistics → Overview (plan)
 
-Status: planned 2026-11-07. Built: step 1 (Core: scan v2, `insights`, demo fixtures; 2026-11-07); steps 2-5 open. CoreHub #470. Mockups: `overview2.html` (page), `warmup.html` (5-hour row) in the session scratch folder; screenshots go to `docs/images/` once built.
+Status: planned 2026-11-07. Built: step 1 (Core: scan v2, `insights`, demo fixtures; 2026-11-07), step 2 (App: Overview tab; 2026-11-08); steps 3-5 open. CoreHub #470. Mockups: `overview2.html` (page), `warmup.html` (5-hour row) in the session scratch folder; screenshots go to `docs/images/` once built.
 
 ## Goal
 
@@ -98,7 +98,7 @@ Inputs: `readings-history.jsonl` (per refresh: account, window, used %, resets_a
 ## Build order (one commit each, docs and CHANGELOG with it)
 
 1. **Built (2026-11-07).** Core: scan v2 (task kinds, project, thread, sidechain), `insights` (cycles, windows, plan fit, what-if, rhythm, warm-up suggestion and simulation, tips, collecting) with unit tests; demo fixtures with 4+ weeks of history, limit hits, tool calls and thread titles. Entry point `insights::analyze`; how it was built and the choices made: `app.md`, "Overview analysis".
-2. App: Overview tab as default; header, Plans, Renewals, Where usage goes; tips with dismiss; collecting states; both themes.
+2. **Built (2026-11-08).** App: Overview tab as default; header, Plans, Renewals, Where usage goes; tips with dismiss; collecting states; both themes. How it was built: `app.md`, "Overview tab".
 3. App: 5-hour windows row (explainer, timelines, numbers).
 4. Warm-up: settings, scheduler, runner, catch-up, Start a window now, wake task + `--warm-up`, demo-safe.
 5. Tray nudge.
@@ -106,3 +106,14 @@ Inputs: `readings-history.jsonl` (per refresh: account, window, used %, resets_a
 Built-step notes (2026-11-07): buckets keep the working folder (`cwd`), and the project is resolved at analysis time (`insights::project_of`), so editing projects needs no re-scan; the shell command word skips a leading `cd <dir> &&`, environment assignments and `sudo` / `&` (still one word kept); Codex subagent steps are not marked yet (no reliable field); a what-if for a suggested downgrade keeps what fits in the smaller tier and moves only the rest (usually nothing, since the downgrade rule keeps the peak under 90 %).
 
 Edge cases to test: no history; history gaps (PC off); an account added mid-cycle; plan unknown; benched hub logins; resets_at moving by seconds between readings; DST change on a warm-up day; a window running at warm-up time; CLI missing; Codex without a 5-hour window; logs without `cwd` or title.
+
+Step 2 notes (2026-11-08), where it differs from the plan or mockups:
+
+- The window opens on the Overview at a fixed 760 px. The one-time height fit to the Tokens & cost content no longer runs (it would resize the window on the first switch to that tab, against "switching never resizes").
+- The 5-hour row shows only its line and the numbers (hits, hits a week, waited, times another account was free, usual start / first run-out, warm-up estimate); explainer, timelines and warm-up controls are step 3. The warm-up tip's "Show me how" opens that row.
+- "Not for me" sits on every tip (faint); "Show hidden tips (N)" brings all hidden tips back at once (no per-tip restore).
+- Benched logins are left out of the verdict and the Plans line (never capacity); their Plans row shows a "Benched" pill and the fit line plus a benched note. Their tips (e.g. "sits unused") stay.
+- Two accounts with the same name are told apart by provider ("Personal (Codex)"); the demo has two such pairs.
+- Thread rows needed a main kind and active days: `ThreadShare::kind` / `days` and `UsageReport::thread_count` were added to the core.
+- The demo seeds every account's plan label at start (the stale account would otherwise have none, and no what-if). Its weekly grid moves with the start time, so the Side project (12 days of history) always gets two counted cycles: the demo shows Unused, not a Collecting state. The Collecting rendering was checked with a temporary 9-day history.
+- Statistics title in the bar is "AI SubHub" (mockup); the taskbar title stays "AI SubHub · Statistics".

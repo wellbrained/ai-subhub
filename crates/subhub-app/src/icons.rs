@@ -39,6 +39,12 @@ pub enum Icon {
     ChevronLeft,
     Ellipsis,
     Route,
+    Lightbulb,
+    Clock,
+    DollarSign,
+    CircleCheck,
+    Bell,
+    BellOff,
     Provider(ProviderKind),
 }
 
@@ -79,6 +85,12 @@ impl Icon {
             Icon::ChevronLeft => "icons/chevron-left.svg",
             Icon::Ellipsis => "icons/ellipsis.svg",
             Icon::Route => "icons/route.svg",
+            Icon::Lightbulb => "icons/lightbulb.svg",
+            Icon::Clock => "icons/clock.svg",
+            Icon::DollarSign => "icons/dollar-sign.svg",
+            Icon::CircleCheck => "icons/circle-check.svg",
+            Icon::Bell => "icons/bell.svg",
+            Icon::BellOff => "icons/bell-off.svg",
             Icon::Provider(ProviderKind::Claude) => "icons/provider-claude.svg",
             Icon::Provider(ProviderKind::Codex) => "icons/provider-openai.svg",
         }

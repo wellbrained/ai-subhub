@@ -25,6 +25,66 @@ pub fn on() -> bool {
     SANDBOX.get().is_some()
 }
 
+/// Screenshot helpers (`--demo-open-row`, `--demo-height`), set once at start; ignored without
+/// `--demo`.
+static OPEN_ROW: OnceLock<String> = OnceLock::new();
+static STATS_HEIGHT: OnceLock<f32> = OnceLock::new();
+static HIDDEN: OnceLock<bool> = OnceLock::new();
+
+/// `--demo-hidden`: screenshots without touching the desktop (owner, 2026-11-07: demo runs on
+/// the PC he works on). No tray icon, balloons, taskbar display or hover cards; windows open far
+/// off-screen, never activated and without a taskbar button (`PrintWindow` still captures them).
+pub fn hidden() -> bool {
+    HIDDEN.get().copied().unwrap_or(false)
+}
+
+/// Where hidden windows are placed (physical px), far outside any monitor.
+pub const OFF_SCREEN: i32 = -20000;
+
+/// Remembers the screenshot flags from the start arguments (only in demo mode).
+pub fn read_flags(args: &[String]) {
+    if !on() {
+        return;
+    }
+    let value = |flag: &str| {
+        args.iter()
+            .position(|a| a == flag)
+            .and_then(|i| args.get(i + 1).cloned())
+    };
+    let _ = HIDDEN.set(args.iter().any(|a| a == "--demo-hidden"));
+    if let Some(row) = value("--demo-open-row") {
+        let _ = OPEN_ROW.set(row);
+    }
+    if let Some(h) = value("--demo-height").and_then(|h| h.parse::<f32>().ok()) {
+        let _ = STATS_HEIGHT.set(h.clamp(480.0, 2000.0));
+    }
+}
+
+/// The Overview row (`plans`, `windows`, `renewals`, `usage`) or `tips` the Statistics window
+/// opens with.
+pub fn open_row() -> Option<&'static str> {
+    OPEN_ROW.get().map(String::as_str)
+}
+
+/// The Statistics window's opening height.
+pub fn stats_height() -> Option<f32> {
+    STATS_HEIGHT.get().copied()
+}
+
+/// `--demo-theme light|dark`: the theme the demo starts with (None: as seeded, System).
+pub fn theme(args: &[String]) -> Option<subhub_core::settings::ThemeMode> {
+    use subhub_core::settings::ThemeMode;
+    if !on() {
+        return None;
+    }
+    let i = args.iter().position(|a| a == "--demo-theme")?;
+    match args.get(i + 1)?.as_str() {
+        "light" => Some(ThemeMode::Light),
+        "dark" => Some(ThemeMode::Dark),
+        _ => None,
+    }
+}
+
 /// Sets demo mode up. Must run first in `main`, while the process has a single thread (it
 /// changes environment variables). An error means no demo: the caller must exit rather than
 /// run on the real data.

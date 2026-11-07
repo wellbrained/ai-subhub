@@ -4,6 +4,8 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 
 ## Unreleased
 
+- Statistics opens on a new Overview: one sentence on how much of your plans you use, four key numbers, the most useful tip, and short answers for Plans, 5-hour windows, Renewals and Where usage goes that open for details.
+- Tips you don't want can be hidden with "Not for me" (and brought back with "Show hidden tips"). The former tabs are now "Limits now" and "Tokens & cost".
 - Demo mode: start with `--demo` to try SubHub (or take screenshots) on made-up accounts and usage; it runs next to your real SubHub and never touches your accounts, hub, settings or startup.
 - Choose where new hub threads go from the ⋯ menu on each account card (Use for new hub threads / Back to Auto); the Hub badge now only shows the state. The menu also opens the account's settings.
 

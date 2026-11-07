@@ -195,6 +195,45 @@ pub fn set_visible(window: &mut Window, visible: bool) {
     }
 }
 
+/// Demo `--demo-hidden`: turns a window that was created hidden into a tool window (no taskbar
+/// or alt-tab entry), puts it far off every monitor at `x, y` (physical px; GPUI itself replaces
+/// off-display bounds with on-screen defaults), shows it there without activating it and sizes
+/// its client area to `w x h` logical px. `PrintWindow` still renders its content.
+///
+/// Like GPUI's own `resize`, the Win32 calls run in a later foreground task: their `WM_SIZE`
+/// must reach GPUI while no window update is running, or the new size is lost.
+pub fn show_off_screen(window: &Window, cx: &mut gpui::App, x: i32, y: i32, w: f32, h: f32) {
+    let Some(hwnd) = hwnd(window) else { return };
+    let raw = hwnd.0 as isize;
+    let s = window.scale_factor();
+    cx.spawn(async move |_| unsafe {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GWL_EXSTYLE, GetClientRect, GetWindowLongPtrW, GetWindowRect, IsWindowVisible,
+            SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW,
+            SetWindowPos, ShowWindow, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW,
+        };
+        let hwnd = HWND(raw as *mut _);
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        let ex = (ex | WS_EX_TOOLWINDOW.0 as isize) & !(WS_EX_APPWINDOW.0 as isize);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex);
+        // Move while still hidden, show there, then size.
+        let flags = SWP_NOACTIVATE | SWP_NOZORDER;
+        let _ = SetWindowPos(hwnd, None, x, y, 0, 0, flags | SWP_NOSIZE);
+        if !IsWindowVisible(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        let (mut outer, mut client) = (RECT::default(), RECT::default());
+        if GetWindowRect(hwnd, &mut outer).is_ok() && GetClientRect(hwnd, &mut client).is_ok() {
+            let extra_w = (outer.right - outer.left) - (client.right - client.left);
+            let extra_h = (outer.bottom - outer.top) - (client.bottom - client.top);
+            let (pw, ph) = ((w * s).round() as i32, (h * s).round() as i32);
+            let _ = SetWindowPos(hwnd, None, x, y, pw + extra_w, ph + extra_h, flags);
+        }
+    })
+    .detach();
+}
+
 /// Puts the window back on top of other topmost windows (the taskbar) without activating it.
 pub fn raise_topmost(window: &mut Window) {
     use windows::Win32::UI::WindowsAndMessaging::{

@@ -49,6 +49,8 @@ static SENDER: OnceLock<UnboundedSender<TrayEvent>> = OnceLock::new();
 pub struct Tray {
     hwnd: HWND,
     icon: HICON,
+    /// No notify icon (demo `--demo-hidden`): tips and balloons are skipped.
+    hidden: bool,
 }
 
 /// Tray icon rectangle in physical screen pixels.
@@ -94,16 +96,23 @@ impl Tray {
             nid.uCallbackMessage = WM_TRAY;
             nid.hIcon = icon;
             set_tip(&mut nid, tip);
-            Shell_NotifyIconW(NIM_ADD, &nid).ok()?;
-            nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
-            Shell_NotifyIconW(NIM_SETVERSION, &nid).ok()?;
-            Ok(Self { hwnd, icon })
+            // Demo `--demo-hidden` (screenshots without disturbing the desktop): no icon.
+            let hidden = crate::demo::hidden();
+            if !hidden {
+                Shell_NotifyIconW(NIM_ADD, &nid).ok()?;
+                nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
+                Shell_NotifyIconW(NIM_SETVERSION, &nid).ok()?;
+            }
+            Ok(Self { hwnd, icon, hidden })
         }
     }
 
     /// Updates the tooltip text and whether Windows draws it (`rich` = our hover card instead).
     /// The icon itself is the static logo (never live, ADR 0001).
     pub fn set_tip(&mut self, tip: &str, rich: bool) -> anyhow::Result<()> {
+        if self.hidden {
+            return Ok(());
+        }
         unsafe {
             let mut nid = base_nid(self.hwnd);
             nid.uFlags = tip_flags(rich);
@@ -115,6 +124,9 @@ impl Tray {
 
     /// A balloon / toast notice from the tray icon (billing reminders).
     pub fn balloon(&mut self, title: &str, text: &str) {
+        if self.hidden {
+            return;
+        }
         unsafe {
             let mut nid = base_nid(self.hwnd);
             nid.uFlags = NIF_INFO;

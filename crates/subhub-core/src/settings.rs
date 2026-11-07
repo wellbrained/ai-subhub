@@ -356,6 +356,8 @@ pub struct Settings {
     pub updates: UpdateSettings,
     /// Statistics window: breakdown view and chart metric.
     pub stats: StatsSettings,
+    /// Overview tips the user hid with "Not for me" (stable tip ids, `insights::Tip::id`).
+    pub dismissed_tips: Vec<String>,
 }
 
 impl Default for Settings {
@@ -377,6 +379,7 @@ impl Default for Settings {
             projects: vec![],
             updates: UpdateSettings::default(),
             stats: StatsSettings::default(),
+            dismissed_tips: vec![],
         }
     }
 }
@@ -487,6 +490,32 @@ mod compat_tests {
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains(r#""breakdown":"days""#) && json.contains(r#""metric":"cost""#));
         let back: Settings = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    /// Files written before the Overview's "Not for me" load with no hidden tips; hidden tips
+    /// roundtrip.
+    #[test]
+    fn older_files_without_dismissed_tips_still_load() {
+        let s: Settings = serde_json::from_str(r#"{"refresh_minutes": 7}"#).unwrap();
+        assert!(s.dismissed_tips.is_empty());
+        assert_eq!(s.refresh_minutes, 7);
+
+        let mut v = serde_json::to_value(Settings::default()).unwrap();
+        assert!(
+            v.as_object_mut()
+                .unwrap()
+                .remove("dismissed_tips")
+                .is_some()
+        );
+        let s: Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(s, Settings::default());
+
+        let s = Settings {
+            dismissed_tips: vec!["warm-up".into(), format!("downgrade:{}", Uuid::new_v4())],
+            ..Settings::default()
+        };
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
     }
 
