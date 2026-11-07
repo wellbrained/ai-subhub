@@ -430,7 +430,13 @@ impl Render for HoverCard {
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .min_w_0();
+                .min_w_0()
+                // Provider mark in the validated series colour (icons::series_color).
+                .child(crate::icons::icon(
+                    crate::icons::Icon::Provider(a.provider),
+                    13.0,
+                    crate::icons::series_color(a.provider, t.dark),
+                ));
             if let Some(acc) = acc {
                 let (tag, tag_bg) = crate::taskbar::account_tag(s, acc);
                 name = name.child(
