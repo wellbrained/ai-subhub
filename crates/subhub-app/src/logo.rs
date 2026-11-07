@@ -5,8 +5,13 @@
 //!   with 4x4 supersampling so it stays crisp at 16 px: orange dot with the tag pill overlapping
 //!   its lower edge, a long blue bar over a short amber bar. Both are static, never live values.
 
-/// The app icon SVG (also served to GPUI as `icons/app-logo.svg`).
+/// The app icon SVG for 48 px and up (also served to GPUI as `icons/app-logo.svg`).
 pub const APP_SVG: &[u8] = include_bytes!("../assets/logo.svg");
+/// Small-size master of the app icon for 16-32 px: the same mark with fewer, thicker shapes and
+/// no glow, so it stays recognisable in title bars and small icons (owner, 2026-11-07).
+pub const APP_SMALL_SVG: &[u8] = include_bytes!("../assets/logo-small.svg");
+/// Sizes up to this use the small master.
+const SMALL_MAX: u32 = 32;
 
 /// One shape in grid units: circle (cx, cy, r) or rounded rect (x, y, w, h, radius).
 enum Shape {
@@ -94,10 +99,16 @@ pub fn rgba(size: u32) -> Vec<u8> {
     out
 }
 
-/// The app icon, `size` px square, rendered from the SVG; straight (non-premultiplied) RGBA.
+/// The app icon, `size` px square: the small master up to 32 px, the full icon above;
+/// straight (non-premultiplied) RGBA.
 pub fn app_rgba(size: u32) -> Vec<u8> {
+    svg_rgba(if size <= SMALL_MAX { APP_SMALL_SVG } else { APP_SVG }, size)
+}
+
+/// Renders an SVG to `size` x `size` straight RGBA (falls back to the tray mark).
+fn svg_rgba(svg: &[u8], size: u32) -> Vec<u8> {
     use resvg::{tiny_skia, usvg};
-    let Ok(tree) = usvg::Tree::from_data(APP_SVG, &usvg::Options::default()) else {
+    let Ok(tree) = usvg::Tree::from_data(svg, &usvg::Options::default()) else {
         return rgba(size);
     };
     let Some(mut pixmap) = tiny_skia::Pixmap::new(size, size) else {
@@ -115,15 +126,16 @@ pub fn app_rgba(size: u32) -> Vec<u8> {
         .collect()
 }
 
-/// The app icon in a title bar, `size` px square.
+/// The app icon in a title bar, `size` px square (the small master: title bars are 16-32 px).
 pub fn app_mark(size: f32) -> gpui::Img {
     use gpui::{Styled, px};
-    gpui::img("icons/app-logo.svg").size(px(size)).flex_none()
+    gpui::img("icons/app-logo-small.svg").size(px(size)).flex_none()
 }
 
 /// Window icon for GPUI (`WindowOptions.icon`).
 pub fn window_icon() -> Option<std::sync::Arc<image::RgbaImage>> {
-    image::RgbaImage::from_raw(64, 64, app_rgba(64)).map(std::sync::Arc::new)
+    // Windows shows the window icon at 16-32 px (taskbar, alt-tab): the small master.
+    image::RgbaImage::from_raw(64, 64, svg_rgba(APP_SMALL_SVG, 64)).map(std::sync::Arc::new)
 }
 
 /// Multi-size .ico (16–256 px, PNG entries) for the exe resource; written by `--write-icon`.

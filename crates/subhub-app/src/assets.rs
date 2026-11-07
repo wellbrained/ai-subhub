@@ -4,8 +4,9 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, Result, SharedString};
 
-const OWN: [(&str, &[u8]); 7] = [
+const OWN: [(&str, &[u8]); 8] = [
     ("icons/app-logo.svg", crate::logo::APP_SVG),
+    ("icons/app-logo-small.svg", crate::logo::APP_SMALL_SVG),
     (
         "icons/provider-claude.svg",
         include_bytes!("../assets/icons/provider-claude.svg"),

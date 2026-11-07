@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Small-size master of the "Night glow" app icon (16-32 px: title bars, small exe/Start
+       icons). Same mark, fewer and thicker shapes: no glow, no bar tracks, a bigger orb and tag,
+       bars on whole pixels at 16/24/32 px. -->
+  <defs>
+    <clipPath id="sq"><path d="M32 1C7 1 1 7 1 32s6 31 31 31 31-6 31-31S57 1 32 1Z"/></clipPath>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3366"/><stop offset="1" stop-color="#191530"/>
+    </linearGradient>
+    <linearGradient id="orb" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffa07a"/><stop offset="1" stop-color="#f06a35"/>
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#sq)">
+    <rect width="64" height="64" fill="url(#bg)"/>
+    <!-- 5-hour (long) and weekly (short) bars. -->
+    <rect x="34" y="14" width="24" height="12" rx="6" fill="#38bdf8"/>
+    <rect x="34" y="38" width="14" height="12" rx="6" fill="#fbbf24"/>
+    <!-- Provider orb, the tag pill overlapping its lower edge with a gap ring. -->
+    <circle cx="18" cy="24" r="12" fill="url(#orb)"/>
+    <rect x="3" y="34" width="30" height="18" rx="9" fill="#1f1a3b"/>
+    <rect x="6" y="37" width="24" height="12" rx="6" fill="#ffffff"/>
+  </g>
+</svg>

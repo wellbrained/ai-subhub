@@ -115,7 +115,7 @@ pub fn bar(
                 .gap(px(10.0))
                 .pl(px(14.0))
                 .pr(px(14.0))
-                .child(logo::app_mark(22.0))
+                .child(logo::app_mark(26.0))
                 .child(
                     div()
                         .text_sm()
