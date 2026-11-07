@@ -30,6 +30,7 @@ pub enum Icon {
     SquareTerminal,
     Code,
     AppWindow,
+    ScanSearch,
     Provider(ProviderKind),
 }
 
@@ -61,6 +62,7 @@ impl Icon {
             Icon::SquareTerminal => "icons/square-terminal.svg",
             Icon::Code => "icons/code-xml.svg",
             Icon::AppWindow => "icons/app-window.svg",
+            Icon::ScanSearch => "icons/scan-search.svg",
             Icon::Provider(ProviderKind::Claude) => "icons/provider-claude.svg",
             Icon::Provider(ProviderKind::Codex) => "icons/provider-openai.svg",
         }

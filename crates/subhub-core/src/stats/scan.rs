@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use super::parse::{ClaudeMessage, CodexEvent, RawUsage, parse_claude_line, parse_codex_line};
 use super::{Tokens, hour_index};
 use crate::model::ProviderKind;
+use crate::profile::{ProfileEnv, discover_dirs, home_dir};
 
 const CACHE_VERSION: u32 = 1;
 
@@ -134,21 +135,17 @@ impl Roots {
     }
 }
 
-/// `<home>\.claude*\projects` and `<home>\.codex*\sessions` + `archived_sessions`.
-pub fn discover_roots(home: &Path) -> Roots {
+/// `projects` of every Claude profile folder and `sessions` + `archived_sessions` of every Codex
+/// one, as found by `profile::discover_dirs` (the same discovery as profile detection).
+pub fn discover_roots(home: &Path, env: &ProfileEnv) -> Roots {
     let mut roots = Roots::default();
-    let mut names: Vec<_> = fs::read_dir(home)
-        .map(|rd| rd.flatten().map(|e| e.file_name()).collect())
-        .unwrap_or_default();
-    names.sort();
-    for n in names {
-        let name = n.to_string_lossy();
-        let dir = home.join(&n);
-        if name.starts_with(".claude") {
-            roots.add_claude(&dir.join("projects"));
-        } else if name.starts_with(".codex") {
-            roots.add_codex(&dir.join("sessions"));
-            roots.add_codex(&dir.join("archived_sessions"));
+    for (provider, dir) in discover_dirs(home, env) {
+        match provider {
+            ProviderKind::Claude => roots.add_claude(&dir.join("projects")),
+            ProviderKind::Codex => {
+                roots.add_codex(&dir.join("sessions"));
+                roots.add_codex(&dir.join("archived_sessions"));
+            }
         }
     }
     roots
@@ -163,11 +160,11 @@ pub fn cache_path() -> PathBuf {
 
 /// Scans the real logs of the current user with the default cache.
 pub fn scan_default() -> anyhow::Result<Scan> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .context("No home folder")?;
-    scan(&discover_roots(&home), Some(&cache_path()))
+    let home = home_dir().context("No home folder")?;
+    scan(
+        &discover_roots(&home, &ProfileEnv::from_process()),
+        Some(&cache_path()),
+    )
 }
 
 struct Listed {
@@ -742,7 +739,7 @@ mod tests {
         fs::create_dir_all(home.join(".codex").join("sessions")).unwrap();
         fs::create_dir_all(home.join(".codex").join("archived_sessions")).unwrap();
         fs::write(home.join(".claude.json"), "{}").unwrap();
-        let r = discover_roots(home);
+        let r = discover_roots(home, &ProfileEnv::default());
         assert_eq!((r.claude.len(), r.codex.len()), (1, 2));
         let mut r2 = Roots::default();
         r2.add_claude(&home.join(".claude").join("projects"));

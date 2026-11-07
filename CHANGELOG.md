@@ -4,6 +4,8 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 
 ## Unreleased
 
+- Detect / Import: finds your Claude and Codex CLI profiles and imports the ones you pick, without duplicates. Offered on first start and in Settings.
+
 ## 0.1.0 – 2026-11-07
 
 - Tray popover with every Claude and Codex account: remaining allowance per window, reset countdowns, stale and cooldown states.
