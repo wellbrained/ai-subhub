@@ -4,6 +4,8 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 
 ## Unreleased
 
+## 0.1.2 – 2026-11-07
+
 - After an update, the patch notes no longer pop up at startup; they appear as a small dialog the next time you open the popover.
 - Simpler Settings: six fixed sections (General, Appearance, Accounts, Hub, Projects, About & updates), one Accounts list with Add accounts, and rarely used options tucked under Advanced / More options.
 - Removed options that had no real choice: tray icon metric, density, reset time format, running-out level (now 25%) and the Numbers / Focus taskbar styles; hover a reset time for the exact date. The price table is now behind the ⓘ on "API estimate" in Statistics.
