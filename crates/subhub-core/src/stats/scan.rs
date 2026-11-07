@@ -1,33 +1,51 @@
-//! Log discovery, incremental per-file cache and aggregation into hourly per-model buckets.
+//! Log discovery, incremental per-file cache and aggregation into hourly buckets per model, task
+//! kind, main thread / subagent, working folder and thread.
 //!
 //! Each file keeps its own aggregated buckets plus how many bytes were read, so a later scan reads
 //! only appended bytes. A file that shrank (or whose size and time disagree) is read again from
 //! the start; a file that vanished drops out (a Codex session moved to `archived_sessions` is the
 //! same data under a new path, so keeping the old entry would count it twice).
+//!
+//! Scan v2 (owner 2026-11-07): a step's tokens are split evenly over its tool calls by task kind
+//! (`kind.rs`), integer parts with the remainder on the first kind, so every total stays exact
+//! and the Usage view adds up as before.
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::Context;
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
-use super::parse::{ClaudeMessage, CodexEvent, RawUsage, parse_claude_line, parse_codex_line};
+use super::kind::{TaskKind, ToolCall, step_kinds};
+use super::parse::{
+    ClaudeMessage, CodexEvent, RawUsage, parse_claude_line, parse_claude_title, parse_codex_line,
+};
 use super::{Tokens, hour_index};
 use crate::model::ProviderKind;
 use crate::profile::{ProfileEnv, discover_dirs, home_dir};
 
-const CACHE_VERSION: u32 = 1;
+/// 2: buckets gained task kind, sidechain, cwd and thread; thread titles (one full re-scan).
+const CACHE_VERSION: u32 = 2;
 
-/// Aggregated tokens of one file for one local hour and model.
+/// Aggregated tokens of one file for one local hour, model, task kind, main/sub thread, working
+/// folder and thread. `cwd` and `thread` index the entry's `cwds` / `threads` tables (they repeat
+/// in every bucket, so the cache stores each once per file).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FileBucket {
     pub hour: i64,
     pub model: String,
     pub tokens: Tokens,
+    pub kind: TaskKind,
+    #[serde(default)]
+    pub sidechain: bool,
+    #[serde(default)]
+    pub cwd: Option<u32>,
+    #[serde(default)]
+    pub thread: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -47,12 +65,27 @@ pub struct FileEntry {
     /// Codex: model of the latest turn.
     #[serde(default)]
     pub model: Option<String>,
+    /// Codex: working folder of the latest turn.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// Codex: tool calls since the last token count (they belong to the next one).
+    #[serde(default)]
+    pub pending: Vec<ToolCall>,
     /// Codex: running total after the previous token count, to take per-request deltas.
     #[serde(default)]
     pub prev_total: Option<RawUsage>,
     /// Claude: hashes of message id + request id already counted from this file.
     #[serde(default)]
     pub seen: Vec<u64>,
+    /// Working folders the buckets refer to.
+    #[serde(default)]
+    pub cwds: Vec<String>,
+    /// Thread (session) ids the buckets refer to.
+    #[serde(default)]
+    pub threads: Vec<String>,
+    /// Claude: thread titles (`custom-title` lines) by session id; the last one wins.
+    #[serde(default)]
+    pub titles: BTreeMap<String, String>,
     pub buckets: Vec<FileBucket>,
     pub sessions: Vec<SessionRec>,
 }
@@ -65,8 +98,13 @@ impl FileEntry {
             mtime_ms: 0,
             offset: 0,
             model: None,
+            cwd: None,
+            pending: vec![],
             prev_total: None,
             seen: vec![],
+            cwds: vec![],
+            threads: vec![],
+            titles: BTreeMap::new(),
             buckets: vec![],
             sessions: vec![],
         }
@@ -79,13 +117,22 @@ struct CacheFile {
     files: BTreeMap<String, FileEntry>,
 }
 
-/// One merged bucket: all files, one local hour, one provider and model.
+/// One merged bucket: all files, one local hour, provider, model, task kind, main/sub thread,
+/// working folder and thread.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bucket {
     pub hour: i64,
     pub provider: ProviderKind,
     pub model: String,
     pub tokens: Tokens,
+    pub kind: TaskKind,
+    /// Subagent work (Claude `isSidechain`; Codex: always false for now).
+    pub sidechain: bool,
+    /// Working folder of the steps (None when the log has none). Resolved to a project folder
+    /// later (`insights::project_of`), so editing projects needs no re-scan.
+    pub cwd: Option<Arc<str>>,
+    /// Session id (Claude `sessionId`, Codex file name).
+    pub thread: Arc<str>,
 }
 
 /// A session and the local hours it had usage in.
@@ -100,6 +147,8 @@ pub struct ScanSession {
 pub struct Scan {
     pub buckets: Vec<Bucket>,
     pub sessions: Vec<ScanSession>,
+    /// Thread titles by session id (Claude `custom-title`); threads without one are missing.
+    pub titles: HashMap<String, String>,
     /// Log files found.
     pub files: usize,
     /// Files read (new or grown) in this scan.
@@ -244,11 +293,64 @@ fn save_cache(path: &Path, cache: &CacheFile) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Splits `t` over kind shares: each part gets `count / total` of every counter (integer), the
+/// first part also the remainder, so the parts add up to `t` exactly.
+pub(crate) fn split_tokens(t: &Tokens, shares: &[(TaskKind, u32)]) -> Vec<(TaskKind, Tokens)> {
+    let total: u64 = shares.iter().map(|(_, c)| *c as u64).sum();
+    if total <= 1 || shares.len() <= 1 {
+        return shares.first().map(|(k, _)| (*k, *t)).into_iter().collect();
+    }
+    let part = |n: u64, c: u32| n * c as u64 / total;
+    let mut out: Vec<(TaskKind, Tokens)> = shares
+        .iter()
+        .map(|(k, c)| {
+            (
+                *k,
+                Tokens {
+                    input: part(t.input, *c),
+                    cache_read: part(t.cache_read, *c),
+                    cache_write: part(t.cache_write, *c),
+                    output: part(t.output, *c),
+                },
+            )
+        })
+        .collect();
+    let mut sum = Tokens::default();
+    for (_, p) in &out {
+        sum.add(p);
+    }
+    let first = &mut out[0].1;
+    first.input += t.input - sum.input;
+    first.cache_read += t.cache_read - sum.cache_read;
+    first.cache_write += t.cache_write - sum.cache_write;
+    first.output += t.output - sum.output;
+    out
+}
+
+/// A Claude assistant message being collected: its content blocks arrive as separate lines with
+/// the same key, each adding its tool uses.
+struct Step {
+    key: Option<u64>,
+    hour: i64,
+    model: String,
+    session: String,
+    sidechain: bool,
+    cwd: Option<String>,
+    tokens: Tokens,
+    tools: Vec<ToolCall>,
+}
+
+type BucketKey = (i64, String, TaskKind, bool, Option<u32>, u32);
+
 /// Per-file accumulation of lines into buckets.
 struct FileProc {
     entry: FileEntry,
-    buckets: HashMap<(i64, String), Tokens>,
+    buckets: HashMap<BucketKey, Tokens>,
     sessions: HashMap<String, BTreeSet<i64>>,
+    cwd_ix: HashMap<String, u32>,
+    thread_ix: HashMap<String, u32>,
+    /// Claude: the message whose blocks are still coming.
+    step: Option<Step>,
     /// Session id when a line has none (the file name).
     default_session: String,
 }
@@ -257,42 +359,104 @@ fn local_hour(ts: DateTime<Utc>) -> i64 {
     hour_index(ts.with_timezone(&Local).naive_local())
 }
 
+fn index_of(table: &mut Vec<String>, ix: &mut HashMap<String, u32>, value: &str) -> u32 {
+    if let Some(i) = ix.get(value) {
+        return *i;
+    }
+    let i = table.len() as u32;
+    table.push(value.to_string());
+    ix.insert(value.to_string(), i);
+    i
+}
+
 impl FileProc {
     fn new(entry: FileEntry, default_session: String) -> Self {
         let buckets = entry
             .buckets
             .iter()
-            .map(|b| ((b.hour, b.model.clone()), b.tokens))
+            .map(|b| {
+                (
+                    (
+                        b.hour,
+                        b.model.clone(),
+                        b.kind,
+                        b.sidechain,
+                        b.cwd,
+                        b.thread,
+                    ),
+                    b.tokens,
+                )
+            })
             .collect();
         let sessions = entry
             .sessions
             .iter()
             .map(|s| (s.id.clone(), s.hours.iter().copied().collect()))
             .collect();
+        let table = |t: &[String]| {
+            t.iter()
+                .enumerate()
+                .map(|(i, s)| (s.clone(), i as u32))
+                .collect()
+        };
         Self {
+            cwd_ix: table(&entry.cwds),
+            thread_ix: table(&entry.threads),
             entry,
             buckets,
             sessions,
+            step: None,
             default_session,
         }
     }
 
-    fn add(&mut self, hour: i64, model: &str, session: &str, t: &Tokens) {
-        self.buckets
-            .entry((hour, model.to_string()))
-            .or_default()
-            .add(t);
+    /// Adds one step: its tokens split over the kinds of its tool calls.
+    #[allow(clippy::too_many_arguments)]
+    fn add(
+        &mut self,
+        hour: i64,
+        model: &str,
+        session: &str,
+        sidechain: bool,
+        cwd: Option<&str>,
+        tools: &[ToolCall],
+        t: &Tokens,
+    ) {
+        let cwd = cwd.map(|c| index_of(&mut self.entry.cwds, &mut self.cwd_ix, c));
+        let thread = index_of(&mut self.entry.threads, &mut self.thread_ix, session);
+        for (kind, part) in split_tokens(t, &step_kinds(tools)) {
+            self.buckets
+                .entry((hour, model.to_string(), kind, sidechain, cwd, thread))
+                .or_default()
+                .add(&part);
+        }
         self.sessions
             .entry(session.to_string())
             .or_default()
             .insert(hour);
     }
 
+    fn flush_step(&mut self) {
+        if let Some(s) = self.step.take() {
+            self.add(
+                s.hour,
+                &s.model,
+                &s.session,
+                s.sidechain,
+                s.cwd.as_deref(),
+                &s.tools,
+                &s.tokens,
+            );
+        }
+    }
+
     /// One Claude log line. `seen` holds message hashes already counted (streamed messages repeat).
     fn feed_claude(&mut self, line: &[u8], seen: &Mutex<HashSet<u64>>) {
-        if memchr::memmem::find(line, b"\"usage\"").is_none()
-            || memchr::memmem::find(line, b"\"assistant\"").is_none()
-        {
+        let assistant = memchr::memmem::find(line, b"\"assistant\"").is_some();
+        if !assistant || memchr::memmem::find(line, b"\"usage\"").is_none() {
+            if !assistant && memchr::memmem::find(line, b"\"customTitle\"").is_some() {
+                self.feed_title(line);
+            }
             return;
         }
         let Ok(text) = std::str::from_utf8(line) else {
@@ -304,10 +468,22 @@ impl FileProc {
             session,
             model,
             tokens,
+            sidechain,
+            cwd,
+            tools,
         }) = parse_claude_line(text)
         else {
             return;
         };
+        // Another block of the message being collected: only its tool uses are new.
+        if let Some(step) = self.step.as_mut()
+            && key.is_some()
+            && step.key == key
+        {
+            step.tools.extend(tools);
+            return;
+        }
+        self.flush_step();
         if let Some(k) = key {
             let fresh = seen.lock().map(|mut s| s.insert(k)).unwrap_or(true);
             if !fresh {
@@ -315,14 +491,43 @@ impl FileProc {
             }
             self.entry.seen.push(k);
         }
-        let session = session.unwrap_or_else(|| self.default_session.clone());
-        self.add(local_hour(ts), &model, &session, &tokens);
+        self.step = Some(Step {
+            key,
+            hour: local_hour(ts),
+            model,
+            session: session.unwrap_or_else(|| self.default_session.clone()),
+            sidechain,
+            cwd,
+            tokens,
+            tools,
+        });
+        if key.is_none() {
+            self.flush_step();
+        }
     }
 
-    /// One Codex log line: model changes and token counts (per-request deltas of the running total).
+    fn feed_title(&mut self, line: &[u8]) {
+        if let Ok(text) = std::str::from_utf8(line)
+            && let Some((session, title)) = parse_claude_title(text)
+        {
+            self.entry.titles.insert(session, title);
+        }
+    }
+
+    /// One Codex log line: turns (model, cwd), tool calls and token counts (per-request deltas of
+    /// the running total). Tool calls belong to the next token count.
     fn feed_codex(&mut self, line: &[u8]) {
-        if memchr::memmem::find(line, b"\"token_count\"").is_none()
-            && memchr::memmem::find(line, b"\"turn_context\"").is_none()
+        let wanted: [&[u8]; 6] = [
+            b"\"token_count\"",
+            b"\"turn_context\"",
+            b"\"function_call\"",
+            b"\"custom_tool_call\"",
+            b"\"local_shell_call\"",
+            b"\"web_search_call\"",
+        ];
+        if !wanted
+            .iter()
+            .any(|w| memchr::memmem::find(line, w).is_some())
         {
             return;
         }
@@ -330,7 +535,15 @@ impl FileProc {
             return;
         };
         match parse_codex_line(text) {
-            Some(CodexEvent::Model(m)) => self.entry.model = Some(m),
+            Some(CodexEvent::Turn { model, cwd }) => {
+                if model.is_some() {
+                    self.entry.model = model;
+                }
+                if cwd.is_some() {
+                    self.entry.cwd = cwd;
+                }
+            }
+            Some(CodexEvent::Tool(call)) => self.entry.pending.push(call),
             Some(CodexEvent::Usage { ts, last, total }) => {
                 let delta = match (total, self.entry.prev_total) {
                     (Some(t), Some(p)) => t.checked_sub(&p).or(last),
@@ -345,23 +558,51 @@ impl FileProc {
                 };
                 let model = self.entry.model.clone().unwrap_or_else(|| "unknown".into());
                 let session = self.default_session.clone();
-                self.add(local_hour(ts), &model, &session, &d.tokens());
+                let cwd = self.entry.cwd.clone();
+                let tools = std::mem::take(&mut self.entry.pending);
+                self.add(
+                    local_hour(ts),
+                    &model,
+                    &session,
+                    false,
+                    cwd.as_deref(),
+                    &tools,
+                    &d.tokens(),
+                );
             }
             None => {}
         }
     }
 
     fn finish(mut self) -> FileEntry {
+        // A message cut by the end of what was written so far is counted with the blocks read;
+        // its later blocks repeat a seen key and add nothing (a rare, small misattribution).
+        self.flush_step();
         let mut buckets: Vec<_> = self
             .buckets
             .into_iter()
-            .map(|((hour, model), tokens)| FileBucket {
-                hour,
-                model,
-                tokens,
-            })
+            .map(
+                |((hour, model, kind, sidechain, cwd, thread), tokens)| FileBucket {
+                    hour,
+                    model,
+                    tokens,
+                    kind,
+                    sidechain,
+                    cwd,
+                    thread,
+                },
+            )
             .collect();
-        buckets.sort_by(|a, b| (a.hour, &a.model).cmp(&(b.hour, &b.model)));
+        buckets.sort_by(|a, b| {
+            (a.hour, &a.model, a.kind, a.sidechain, a.cwd, a.thread).cmp(&(
+                b.hour,
+                &b.model,
+                b.kind,
+                b.sidechain,
+                b.cwd,
+                b.thread,
+            ))
+        });
         let mut sessions: Vec<_> = self
             .sessions
             .into_iter()
@@ -531,14 +772,50 @@ pub fn scan(roots: &Roots, cache_file: Option<&Path>) -> anyhow::Result<Scan> {
     Ok(scan)
 }
 
+type MergeKey = (
+    i64,
+    bool,
+    String,
+    TaskKind,
+    bool,
+    Option<Arc<str>>,
+    Arc<str>,
+);
+
 fn merge(files: &BTreeMap<String, FileEntry>) -> Scan {
-    let mut buckets: HashMap<(i64, bool, String), Tokens> = HashMap::new();
+    let mut buckets: HashMap<MergeKey, Tokens> = HashMap::new();
     let mut sessions: HashMap<(bool, String), BTreeSet<i64>> = HashMap::new();
+    let mut titles: HashMap<String, String> = HashMap::new();
+    // One shared string per distinct folder / thread across files.
+    let mut strings: HashSet<Arc<str>> = HashSet::new();
+    let mut intern = |s: &str| -> Arc<str> {
+        if let Some(a) = strings.get(s) {
+            return a.clone();
+        }
+        let a: Arc<str> = Arc::from(s);
+        strings.insert(a.clone());
+        a
+    };
     let is_claude = |p: ProviderKind| p == ProviderKind::Claude;
     for e in files.values() {
+        let cwds: Vec<Arc<str>> = e.cwds.iter().map(|c| intern(c)).collect();
+        let threads: Vec<Arc<str>> = e.threads.iter().map(|t| intern(t)).collect();
         for b in &e.buckets {
+            let cwd = b.cwd.and_then(|i| cwds.get(i as usize).cloned());
+            let thread = threads
+                .get(b.thread as usize)
+                .cloned()
+                .unwrap_or_else(|| intern(""));
             buckets
-                .entry((b.hour, is_claude(e.provider), b.model.clone()))
+                .entry((
+                    b.hour,
+                    is_claude(e.provider),
+                    b.model.clone(),
+                    b.kind,
+                    b.sidechain,
+                    cwd,
+                    thread,
+                ))
                 .or_default()
                 .add(&b.tokens);
         }
@@ -547,6 +824,9 @@ fn merge(files: &BTreeMap<String, FileEntry>) -> Scan {
                 .entry((is_claude(e.provider), s.id.clone()))
                 .or_default()
                 .extend(s.hours.iter().copied());
+        }
+        for (k, v) in &e.titles {
+            titles.insert(k.clone(), v.clone());
         }
     }
     let provider = |claude: bool| {
@@ -558,14 +838,29 @@ fn merge(files: &BTreeMap<String, FileEntry>) -> Scan {
     };
     let mut out_b: Vec<Bucket> = buckets
         .into_iter()
-        .map(|((hour, c, model), tokens)| Bucket {
-            hour,
-            provider: provider(c),
-            model,
-            tokens,
-        })
+        .map(
+            |((hour, c, model, kind, sidechain, cwd, thread), tokens)| Bucket {
+                hour,
+                provider: provider(c),
+                model,
+                tokens,
+                kind,
+                sidechain,
+                cwd,
+                thread,
+            },
+        )
         .collect();
-    out_b.sort_by(|a, b| (a.hour, &a.model).cmp(&(b.hour, &b.model)));
+    out_b.sort_by(|a, b| {
+        (a.hour, &a.model, a.kind, a.sidechain, &a.cwd, &a.thread).cmp(&(
+            b.hour,
+            &b.model,
+            b.kind,
+            b.sidechain,
+            &b.cwd,
+            &b.thread,
+        ))
+    });
     let mut out_s: Vec<ScanSession> = sessions
         .into_iter()
         .map(|((c, id), hours)| ScanSession {
@@ -578,6 +873,7 @@ fn merge(files: &BTreeMap<String, FileEntry>) -> Scan {
     Scan {
         buckets: out_b,
         sessions: out_s,
+        titles,
         ..Default::default()
     }
 }
@@ -751,5 +1047,209 @@ mod tests {
                 .join("projects"),
         );
         assert_eq!(r2.claude.len(), 1);
+    }
+
+    fn claude_block(id: &str, block: &str, session: &str, extra: &str) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"2026-11-05T10:00:00Z","sessionId":"{session}","requestId":"r-{id}"{extra},"message":{{"id":"{id}","model":"claude-opus-5-5","content":[{block}],"usage":{{"input_tokens":3,"output_tokens":9,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}}}}"#
+        )
+    }
+
+    fn by_kind(scan: &Scan) -> BTreeMap<TaskKind, Tokens> {
+        let mut m: BTreeMap<TaskKind, Tokens> = BTreeMap::new();
+        for b in &scan.buckets {
+            m.entry(b.kind).or_default().add(&b.tokens);
+        }
+        m
+    }
+
+    #[test]
+    fn claude_steps_merge_blocks_split_by_kind_and_keep_dims() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("projects").join("p");
+        fs::create_dir_all(proj.join("s1").join("subagents")).unwrap();
+        let mut roots = Roots::default();
+        roots.add_claude(&dir.path().join("projects"));
+        let cwd = r#","cwd":"D:\\Github\\app\\src","isSidechain":false"#;
+        let lines = [
+            // m1: thinking, then Edit and Bash cargo in later lines with the same ids.
+            claude_block(
+                "m1",
+                r#"{"type":"thinking","thinking":"SECRET"}"#,
+                "s1",
+                cwd,
+            ),
+            claude_block(
+                "m1",
+                r#"{"type":"tool_use","name":"Edit","input":{"file_path":"x"}}"#,
+                "s1",
+                cwd,
+            ),
+            claude_block(
+                "m1",
+                r#"{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}"#,
+                "s1",
+                cwd,
+            ),
+            // m2: text only (Talking), no cwd.
+            claude_block("m2", r#"{"type":"text","text":"SECRET"}"#, "s1", ""),
+            r#"{"type":"custom-title","customTitle":"Fix the login","sessionId":"s1"}"#.to_string(),
+        ];
+        fs::write(proj.join("s1.jsonl"), lines.join("\n") + "\n").unwrap();
+        // A subagent file of the same thread.
+        let side = claude_block(
+            "m3",
+            r#"{"type":"tool_use","name":"Grep","input":{"pattern":"SECRET"}}"#,
+            "s1",
+            r#","isSidechain":true,"cwd":"D:\\Github\\app""#,
+        );
+        fs::write(
+            proj.join("s1").join("subagents").join("agent-a.jsonl"),
+            side + "\n",
+        )
+        .unwrap();
+
+        let cache = dir.path().join("c.json");
+        let s = scan(&roots, Some(&cache)).unwrap();
+        // Totals unchanged by the split: 3 messages x (3 in, 9 out).
+        let t = totals(&s, ProviderKind::Claude);
+        assert_eq!((t.input, t.output), (9, 27));
+        let k = by_kind(&s);
+        // m1's 3 in / 9 out split over Edit and Bash cargo: remainder on the first kind.
+        assert_eq!(
+            (
+                k[&TaskKind::WritingCode].input,
+                k[&TaskKind::WritingCode].output
+            ),
+            (2, 5)
+        );
+        assert_eq!(
+            (
+                k[&TaskKind::BuildsTests].input,
+                k[&TaskKind::BuildsTests].output
+            ),
+            (1, 4)
+        );
+        assert_eq!(k[&TaskKind::Talking].output, 9);
+        assert_eq!(k[&TaskKind::ReadingSearching].output, 9);
+        let sub: Vec<_> = s.buckets.iter().filter(|b| b.sidechain).collect();
+        assert_eq!(sub.len(), 1);
+        assert_eq!(sub[0].kind, TaskKind::ReadingSearching);
+        assert_eq!(sub[0].cwd.as_deref(), Some(r"D:\Github\app"));
+        assert!(s.buckets.iter().all(|b| &*b.thread == "s1"));
+        let talking = s
+            .buckets
+            .iter()
+            .find(|b| b.kind == TaskKind::Talking)
+            .unwrap();
+        assert_eq!(talking.cwd, None);
+        assert_eq!(
+            s.titles.get("s1").map(String::as_str),
+            Some("Fix the login")
+        );
+        // One thread (the subagent file shares the session id).
+        assert_eq!(s.sessions.len(), 1);
+
+        // From the cache: the same buckets and titles; nothing kept of the text.
+        let s2 = scan(&roots, Some(&cache)).unwrap();
+        assert_eq!(s2.files_read, 0);
+        assert_eq!(s2.buckets, s.buckets);
+        assert_eq!(s2.titles, s.titles);
+        let raw = fs::read_to_string(&cache).unwrap();
+        assert!(!raw.contains("SECRET") && !raw.contains("cargo test"));
+        assert!(raw.contains("\"version\":2"));
+    }
+
+    #[test]
+    fn old_cache_versions_are_read_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("projects").join("p");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(
+            proj.join("a.jsonl"),
+            format!("{}\n", claude_line("m1", "r1", 5, "s1")),
+        )
+        .unwrap();
+        let mut roots = Roots::default();
+        roots.add_claude(&dir.path().join("projects"));
+        let cache = dir.path().join("c.json");
+        fs::write(&cache, r#"{"version":1,"files":{}}"#).unwrap();
+        let s = scan(&roots, Some(&cache)).unwrap();
+        assert_eq!(s.files_read, 1);
+        assert_eq!(totals(&s, ProviderKind::Claude).output, 5);
+    }
+
+    #[test]
+    fn codex_tool_calls_and_cwd_attach_to_the_next_token_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        fs::create_dir_all(&sessions).unwrap();
+        let file = sessions.join("rollout-9.jsonl");
+        let mut roots = Roots::default();
+        roots.add_codex(&sessions);
+        let count = |i: u64, total: u64| {
+            format!(
+                r#"{{"timestamp":"2026-11-05T10:0{i}:00Z","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{total},"cached_input_tokens":0,"output_tokens":{total}}},"last_token_usage":{{"input_tokens":10,"cached_input_tokens":0,"output_tokens":10}}}}}}}}"#
+            )
+        };
+        let text = [
+            r#"{"timestamp":"2026-11-05T10:00:00Z","type":"turn_context","payload":{"model":"gpt-6.1-sol","cwd":"C:\\work\\api"}}"#.to_string(),
+            r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"cargo build --SECRET\"}"}}"#.to_string(),
+            r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"SECRET"}}"#.to_string(),
+            count(1, 10),
+            count(2, 20),
+        ]
+        .join("\n")
+            + "\n";
+        let cache = dir.path().join("c.json");
+        fs::write(&file, &text).unwrap();
+        let s = scan(&roots, Some(&cache)).unwrap();
+        let k = by_kind(&s);
+        assert_eq!(k[&TaskKind::BuildsTests].output, 5);
+        assert_eq!(k[&TaskKind::WritingCode].output, 5);
+        assert_eq!(k[&TaskKind::Talking].output, 10);
+        assert!(
+            s.buckets
+                .iter()
+                .all(|b| b.cwd.as_deref() == Some(r"C:\work\api") && &*b.thread == "rollout-9")
+        );
+
+        // A tool call read in one scan belongs to the token count appended later.
+        let more = r#"{"type":"response_item","payload":{"type":"web_search_call"}}"#;
+        fs::write(&file, format!("{text}{more}\n")).unwrap();
+        let _ = scan(&roots, Some(&cache)).unwrap();
+        fs::write(&file, format!("{text}{more}\n{}\n", count(3, 30))).unwrap();
+        let s2 = scan(&roots, Some(&cache)).unwrap();
+        assert_eq!(by_kind(&s2)[&TaskKind::WebResearch].output, 10);
+        assert!(!fs::read_to_string(&cache).unwrap().contains("SECRET"));
+    }
+
+    #[test]
+    fn split_keeps_totals_exact() {
+        let t = Tokens {
+            input: 10,
+            cache_read: 7,
+            cache_write: 1,
+            output: 100,
+        };
+        let parts = split_tokens(
+            &t,
+            &[
+                (TaskKind::WritingCode, 1),
+                (TaskKind::BuildsTests, 1),
+                (TaskKind::OtherTools, 1),
+            ],
+        );
+        let mut sum = Tokens::default();
+        for (_, p) in &parts {
+            sum.add(p);
+        }
+        assert_eq!(sum, t);
+        assert_eq!(parts[0].1.output, 34);
+        assert_eq!(parts[1].1.output, 33);
+        assert_eq!(
+            split_tokens(&t, &[(TaskKind::Talking, 1)]),
+            vec![(TaskKind::Talking, t)]
+        );
     }
 }

@@ -1,11 +1,16 @@
-//! Pure line parsers. Only usage, model, timestamp and session fields are declared, so serde skips
-//! everything else (message text included) without keeping it.
+//! Pure line parsers. Only usage, model, timestamp, session, `isSidechain`, `cwd`, tool names and
+//! thread title fields are declared, so serde skips everything else (message text included)
+//! without keeping it. Of a shell tool's input only the command's first word survives
+//! ([`super::kind::command_word`]; scan v2, owner 2026-11-07).
 use chrono::{DateTime, Utc};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use super::Tokens;
+use super::kind::{ToolCall, command_word, is_shell_tool};
 
-/// One assistant message of a Claude Code log.
+/// One assistant message line of a Claude Code log. Claude Code writes one line per content
+/// block (thinking, text, each tool use), all with the same ids and usage; the scan merges their
+/// `tools` into one step.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClaudeMessage {
     /// Hash of message id + request id (streamed messages repeat); None when there is no id.
@@ -14,6 +19,12 @@ pub struct ClaudeMessage {
     pub session: Option<String>,
     pub model: String,
     pub tokens: Tokens,
+    /// A subagent's step (`isSidechain`).
+    pub sidechain: bool,
+    /// Working folder of the step.
+    pub cwd: Option<String>,
+    /// Tool uses in this line's content blocks.
+    pub tools: Vec<ToolCall>,
 }
 
 #[derive(Deserialize)]
@@ -25,6 +36,9 @@ struct CLine {
     session_id: Option<String>,
     #[serde(rename = "requestId")]
     request_id: Option<String>,
+    #[serde(rename = "isSidechain", default)]
+    sidechain: Option<bool>,
+    cwd: Option<String>,
     message: Option<CMessage>,
 }
 
@@ -33,6 +47,60 @@ struct CMessage {
     id: Option<String>,
     model: Option<String>,
     usage: Option<CUsage>,
+    #[serde(default, deserialize_with = "blocks")]
+    content: Vec<CBlock>,
+}
+
+/// A content block: only its type, a tool's name and its `input.command`.
+#[derive(Deserialize)]
+struct CBlock {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    name: Option<String>,
+    input: Option<CInput>,
+}
+
+#[derive(Deserialize)]
+struct CInput {
+    command: Option<serde_json::Value>,
+}
+
+/// `content` is a list of blocks for assistant lines; anything else (a plain string) gives none.
+fn blocks<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<CBlock>, D::Error> {
+    struct V;
+    impl<'de> serde::de::Visitor<'de> for V {
+        type Value = Vec<CBlock>;
+        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            f.write_str("content")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut out = vec![];
+            while let Some(b) = seq.next_element::<Option<CBlock>>()? {
+                out.extend(b);
+            }
+            Ok(out)
+        }
+        fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+            Ok(vec![])
+        }
+        fn visit_unit<E>(self) -> Result<Self::Value, E> {
+            Ok(vec![])
+        }
+        fn visit_map<A: serde::de::MapAccess<'de>>(
+            self,
+            mut map: A,
+        ) -> Result<Self::Value, A::Error> {
+            while map
+                .next_entry::<serde::de::IgnoredAny, serde::de::IgnoredAny>()?
+                .is_some()
+            {}
+            Ok(vec![])
+        }
+    }
+    d.deserialize_any(V)
 }
 
 #[derive(Deserialize)]
@@ -53,6 +121,36 @@ fn fnv(parts: &[&str]) -> u64 {
         }
     }
     h
+}
+
+/// The first word of a shell `command` given as a string or as an argv list (`["bash", "-lc",
+/// "cargo test"]`: a shell wrapper's script is used).
+fn shell_word(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => command_word(s),
+        serde_json::Value::Array(a) => {
+            let parts: Vec<&str> = a.iter().filter_map(|x| x.as_str()).collect();
+            let first = command_word(parts.first()?)?;
+            let wrapper = matches!(
+                first.as_str(),
+                "bash" | "sh" | "zsh" | "pwsh" | "powershell" | "cmd"
+            );
+            match parts.last() {
+                Some(script) if wrapper && parts.len() > 1 => command_word(script),
+                _ => Some(first),
+            }
+        }
+        _ => None,
+    }
+}
+
+fn tool_call(name: &str, command: Option<&serde_json::Value>) -> ToolCall {
+    let word = if is_shell_tool(name) {
+        command.and_then(shell_word)
+    } else {
+        None
+    };
+    ToolCall::new(name, word)
 }
 
 /// Parses one line of a Claude Code `projects/**/*.jsonl` file. Only `type == "assistant"` lines
@@ -80,13 +178,49 @@ pub fn parse_claude_line(line: &str) -> Option<ClaudeMessage> {
     let key =
         m.id.as_deref()
             .map(|id| fnv(&[id, l.request_id.as_deref().unwrap_or("")]));
+    let tools = m
+        .content
+        .iter()
+        .filter(|b| b.kind.as_deref() == Some("tool_use"))
+        .filter_map(|b| {
+            let name = b.name.as_deref().filter(|n| !n.is_empty())?;
+            Some(tool_call(
+                name,
+                b.input.as_ref().and_then(|i| i.command.as_ref()),
+            ))
+        })
+        .collect();
     Some(ClaudeMessage {
         key,
         ts,
         session: l.session_id,
         model,
         tokens,
+        sidechain: l.sidechain.unwrap_or(false),
+        cwd: l.cwd.filter(|c| !c.is_empty()),
+        tools,
     })
+}
+
+#[derive(Deserialize)]
+struct TitleLine {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    #[serde(rename = "customTitle")]
+    custom_title: Option<String>,
+    #[serde(rename = "sessionId")]
+    session_id: Option<String>,
+}
+
+/// A Claude Code `custom-title` line (the thread name the user gave a session): session id and
+/// title. Blank titles give None.
+pub fn parse_claude_title(line: &str) -> Option<(String, String)> {
+    let l: TitleLine = serde_json::from_str(line).ok()?;
+    if l.kind.as_deref().is_some_and(|k| k != "custom-title") {
+        return None;
+    }
+    let title = l.custom_title?.trim().to_string();
+    (!title.is_empty()).then_some((l.session_id?, title))
 }
 
 /// Raw Codex usage counters (OpenAI semantics: `input` includes the cached part).
@@ -129,8 +263,14 @@ impl RawUsage {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodexEvent {
-    /// A turn started with this model.
-    Model(String),
+    /// A turn started: its model and working folder.
+    Turn {
+        model: Option<String>,
+        cwd: Option<String>,
+    },
+    /// A tool call of the coming request (`function_call`, `custom_tool_call`,
+    /// `local_shell_call`, `web_search_call`).
+    Tool(ToolCall),
     /// A token count: the last request's usage and the running total of the session.
     Usage {
         ts: DateTime<Utc>,
@@ -152,7 +292,23 @@ struct XPayload {
     #[serde(rename = "type")]
     kind: Option<String>,
     model: Option<String>,
+    cwd: Option<String>,
     info: Option<XInfo>,
+    name: Option<String>,
+    /// `function_call` arguments: a JSON string; only `command` / `cmd` is read from it.
+    arguments: Option<String>,
+    action: Option<XAction>,
+}
+
+#[derive(Deserialize)]
+struct XAction {
+    command: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct XArgs {
+    command: Option<serde_json::Value>,
+    cmd: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -180,13 +336,38 @@ impl From<XUsage> for RawUsage {
     }
 }
 
-/// Parses one line of a Codex `sessions/**/*.jsonl` file: `turn_context` (model) and
-/// `event_msg` / `token_count` (usage). Everything else is ignored.
+/// Parses one line of a Codex `sessions/**/*.jsonl` file: `turn_context` (model, cwd), tool calls
+/// in `response_item`s and `event_msg` / `token_count` (usage). Everything else is ignored.
 pub fn parse_codex_line(line: &str) -> Option<CodexEvent> {
     let l: XLine = serde_json::from_str(line).ok()?;
     let p = l.payload?;
     match l.kind.as_deref()? {
-        "turn_context" => p.model.filter(|m| !m.is_empty()).map(CodexEvent::Model),
+        "turn_context" => Some(CodexEvent::Turn {
+            model: p.model.filter(|m| !m.is_empty()),
+            cwd: p.cwd.filter(|c| !c.is_empty()),
+        }),
+        "response_item" => {
+            let kind = p.kind.as_deref()?;
+            let call = match kind {
+                "function_call" | "custom_tool_call" => {
+                    let name = p.name.as_deref().filter(|n| !n.is_empty())?;
+                    let args = p
+                        .arguments
+                        .as_deref()
+                        .filter(|_| is_shell_tool(name))
+                        .and_then(|a| serde_json::from_str::<XArgs>(a).ok());
+                    let command = args.and_then(|a| a.command.or(a.cmd));
+                    tool_call(name, command.as_ref())
+                }
+                "local_shell_call" => tool_call(
+                    "local_shell",
+                    p.action.as_ref().and_then(|a| a.command.as_ref()),
+                ),
+                "web_search_call" => ToolCall::new("web_search", None),
+                _ => return None,
+            };
+            Some(CodexEvent::Tool(call))
+        }
         "event_msg" if p.kind.as_deref() == Some("token_count") => {
             let info = p.info?;
             let ts = DateTime::parse_from_rfc3339(&l.timestamp?)
@@ -227,6 +408,49 @@ mod tests {
         assert_eq!(m.key, again.key);
         let other = parse_claude_line(&line.replace("r1", "r2")).unwrap();
         assert_ne!(m.key, other.key);
+        // No cwd, no sidechain flag, no tools: defaults.
+        assert!(!m.sidechain && m.cwd.is_none() && m.tools.is_empty());
+    }
+
+    #[test]
+    fn claude_tool_use_keeps_only_names_and_the_first_command_word() {
+        let line = r#"{"type":"assistant","isSidechain":true,"cwd":"D:\\Github\\x","timestamp":"2026-11-05T10:00:00Z","sessionId":"s1","requestId":"r1","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test --secret-flag","description":"SECRET"}},{"type":"tool_use","name":"Edit","input":{"file_path":"C:\\private.rs","old_string":"SECRET","new_string":"SECRET"}},{"type":"thinking","thinking":"SECRET"}],"usage":{"input_tokens":1,"output_tokens":5}}}"#;
+        let m = parse_claude_line(line).unwrap();
+        assert!(m.sidechain);
+        assert_eq!(m.cwd.as_deref(), Some(r"D:\Github\x"));
+        assert_eq!(
+            m.tools,
+            vec![
+                ToolCall::new("Bash", Some("cargo".into())),
+                ToolCall::new("Edit", None)
+            ]
+        );
+        assert!(!format!("{m:?}").contains("SECRET"));
+        assert!(!format!("{m:?}").contains("secret-flag"));
+        // A plain-string content is fine (no tools).
+        let s = line.replace(
+            r#""content":[{"type":"tool_use""#,
+            r#""content":"x","c":[{"type":"tool_use""#,
+        );
+        assert!(parse_claude_line(&s).unwrap().tools.is_empty());
+    }
+
+    #[test]
+    fn claude_titles() {
+        let t = r#"{"type":"custom-title","customTitle":"Fix login","sessionId":"s1"}"#;
+        assert_eq!(
+            parse_claude_title(t),
+            Some(("s1".to_string(), "Fix login".to_string()))
+        );
+        assert_eq!(
+            parse_claude_title(r#"{"type":"custom-title","customTitle":"  ","sessionId":"s1"}"#),
+            None
+        );
+        assert_eq!(
+            parse_claude_title(r#"{"type":"user","customTitle":"x","sessionId":"s1"}"#),
+            None
+        );
+        assert_eq!(parse_claude_title("nope"), None);
     }
 
     #[test]
@@ -245,7 +469,10 @@ mod tests {
         let turn = r#"{"timestamp":"2026-11-05T10:00:00Z","type":"turn_context","payload":{"turn_id":"t","model":"gpt-6.1-sol","cwd":"C:\\x"}}"#;
         assert_eq!(
             parse_codex_line(turn),
-            Some(CodexEvent::Model("gpt-6.1-sol".into()))
+            Some(CodexEvent::Turn {
+                model: Some("gpt-6.1-sol".into()),
+                cwd: Some(r"C:\x".into())
+            })
         );
         let tc = r#"{"timestamp":"2026-11-05T10:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110},"last_token_usage":{"input_tokens":100,"cached_input_tokens":40,"cache_write_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":4,"total_tokens":110}},"rate_limits":null}}"#;
         let Some(CodexEvent::Usage { last, total, .. }) = parse_codex_line(tc) else {
@@ -268,6 +495,36 @@ mod tests {
         assert!(parse_codex_line(none).is_none());
         let msg = r#"{"timestamp":"2026-11-05T10:00:01Z","type":"response_item","payload":{"type":"message","content":"token_count"}}"#;
         assert!(parse_codex_line(msg).is_none());
+    }
+
+    #[test]
+    fn codex_tool_calls_keep_only_names_and_the_first_command_word() {
+        let tool = |l: &str| match parse_codex_line(l) {
+            Some(CodexEvent::Tool(t)) => t,
+            other => panic!("{other:?}"),
+        };
+        let exec = r#"{"type":"response_item","payload":{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"git status --secret\",\"workdir\":\"C:\\\\x\"}","call_id":"c"}}"#;
+        assert_eq!(
+            tool(exec),
+            ToolCall::new("exec_command", Some("git".into()))
+        );
+        let shell = r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cargo build\"]}"}}"#;
+        assert_eq!(tool(shell), ToolCall::new("shell", Some("cargo".into())));
+        let argv = r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"rg\",\"SECRET\"]}"}}"#;
+        assert_eq!(tool(argv), ToolCall::new("shell", Some("rg".into())));
+        let patch = r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"*** SECRET"}}"#;
+        assert_eq!(tool(patch), ToolCall::new("apply_patch", None));
+        let other = r#"{"type":"response_item","payload":{"type":"function_call","name":"update_plan","arguments":"{\"command\":\"SECRET\"}"}}"#;
+        assert_eq!(tool(other), ToolCall::new("update_plan", None));
+        let local = r#"{"type":"response_item","payload":{"type":"local_shell_call","action":{"type":"exec","command":["npm","test"]}}}"#;
+        assert_eq!(
+            tool(local),
+            ToolCall::new("local_shell", Some("npm".into()))
+        );
+        let web = r#"{"type":"response_item","payload":{"type":"web_search_call","action":{"query":"SECRET"}}}"#;
+        assert_eq!(tool(web), ToolCall::new("web_search", None));
+        let bad = r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"not json"}}"#;
+        assert_eq!(tool(bad), ToolCall::new("shell", None));
     }
 
     #[test]

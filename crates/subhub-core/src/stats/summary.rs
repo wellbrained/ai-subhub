@@ -399,6 +399,10 @@ mod tests {
             provider,
             model: model.into(),
             tokens,
+            kind: super::super::TaskKind::Talking,
+            sidechain: false,
+            cwd: None,
+            thread: "t".into(),
         }
     }
 

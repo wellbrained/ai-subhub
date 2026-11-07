@@ -1,10 +1,13 @@
 //! Usage statistics from the CLIs' local session logs (ADR 0001, "Usage statistics").
 //!
-//! Privacy: the logs contain conversation text. Parsers read only usage numbers, model, timestamp
-//! and session fields; nothing else is deserialized, kept, logged or reported.
+//! Privacy: the logs contain conversation text. Parsers read only usage numbers, model, timestamp,
+//! session, subagent flag, working folder, tool names, the first word of shell commands and thread
+//! titles; nothing else is deserialized, kept, logged or reported.
 //!
-//! Layout: `parse` (pure line parsers), `price` (price table, cost), `scan` (file discovery,
-//! incremental per-file cache, aggregation), `summary` (range summaries for the UI).
+//! Layout: `kind` (task kinds from tool calls), `parse` (pure line parsers), `price` (price
+//! table, cost), `scan` (file discovery, incremental per-file cache, aggregation), `summary`
+//! (range summaries for the UI).
+mod kind;
 mod parse;
 mod price;
 mod prices;
@@ -14,7 +17,10 @@ mod summary;
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize};
 
-pub use parse::{ClaudeMessage, CodexEvent, RawUsage, parse_claude_line, parse_codex_line};
+pub use kind::{TaskKind, ToolCall, classify_tool, command_word, step_kinds};
+pub use parse::{
+    ClaudeMessage, CodexEvent, RawUsage, parse_claude_line, parse_claude_title, parse_codex_line,
+};
 pub use price::{ModelPrice, builtin_lookup, builtin_prices};
 pub use prices::{
     LITELLM_URL, PriceBook, PriceSource, default_path as prices_path, parse_litellm,
@@ -77,6 +83,11 @@ pub fn hour_of_day(h: i64) -> u32 {
 
 pub fn day_index(d: NaiveDate) -> i64 {
     d.num_days_from_ce() as i64
+}
+
+/// API estimate (USD) of `t` at `price`.
+pub fn cost(t: &Tokens, price: &ModelPrice) -> f64 {
+    price::cost_parts(t, price).total()
 }
 
 /// Plain-text aggregate report of a scan for the last 90 days (`--stats-dump`): numbers only,

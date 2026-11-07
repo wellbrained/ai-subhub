@@ -9,6 +9,7 @@ pub mod detect;
 pub mod history;
 pub mod hover;
 pub mod hub;
+pub mod insights;
 pub mod launch;
 pub mod limits;
 pub mod merge;

@@ -77,6 +77,25 @@ _Avoid_: Tooltip, which means the plain Windows text tip (still set for screen r
 
 **Run-rate**: This calendar month's API estimate so far, extrapolated linearly to the end of the month (shown once 24 hours of the month have passed). Independent of the selected range.
 
+**Task kind**: What an assistant step in the session logs spent its tokens on, from the tools it called: Writing code, Builds & tests, Git & pull requests, Reading & searching, Running agents & threads, Web research, Design previews, Other tools, or Talking & planning (no tool). A step with several tool calls is split evenly between their kinds.
+
+**Subagent work**: Steps a subagent ran for the main thread (Claude Code `isSidechain`), shown apart from the main thread.
+
+**Thread**: One session in the logs (a Claude Code session id or a Codex session file), with the title the user gave it when there is one.
+
+**Weekly cycle**: One run of an account's weekly window, from reset to reset. Its use is the highest % used seen; it counts for plan fit once it ended and was read on at least 3 of its 7 days.
+
+**Limit hit**: The first reading of a 5-hour window at 99.5 % used or more. The time to its reset is time waited. A window not read in its last 2 hours has an unknown end and is never a hit.
+
+**Plan fit**: Whether an account's plan matches its use, from at least 2 counted weekly cycles: Unused, Could downgrade, At the limit, or Fits. Price changes come from a fixed, dated price table.
+_Avoid_: Recommendation, which suggests SubHub changes the plan; it never does.
+
+**Work rhythm**: When the user's workday (Monday to Friday) usually starts and how long the first 5-hour window usually lasts before its limit hit.
+
+**Warm-up**: Starting an account's 5-hour window early with a tiny prompt, so its reset lands when the user would otherwise run out. The suggested time comes from the work rhythm.
+
+**Collecting data**: An Overview result that needs more readings than there are; it names the day the first result is expected instead of guessing.
+
 **Update**: A newer SubHub version published as a GitHub Release. Offered only when newer than the running version, never as a downgrade.
 
 **Update mode**: Auto (check, download in the background, install when idle) or Manual (show "Update available", install on click). Both modes check.

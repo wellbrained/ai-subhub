@@ -192,7 +192,7 @@ const CODEX_MODEL: &str = "gpt-6.1-sol";
 
 /// Days of session logs and of reading history.
 pub const LOG_DAYS: i64 = 60;
-pub const HISTORY_DAYS: i64 = 14;
+pub const HISTORY_DAYS: i64 = 35;
 
 fn spec(id: Uuid) -> Option<&'static Spec> {
     SPECS.iter().find(|s| s.id == id)
@@ -331,6 +331,14 @@ pub fn settings(home: &Path, now: DateTime<Utc>, version: &str) -> Settings {
     let today: NaiveDate = now.date_naive();
     s.billing
         .insert(CLAUDE_WORK, MonthlyBilling::new(today + Duration::days(4)));
+    // Canceled: access ends in 12 days (the Overview's ending-plan tip and what-if).
+    s.billing.insert(
+        CODEX_PERSONAL,
+        MonthlyBilling {
+            auto_renew: false,
+            ..MonthlyBilling::new(today + Duration::days(12))
+        },
+    );
     s.projects = PROJECTS
         .iter()
         .map(|&(id, dir, label)| Project {
@@ -453,10 +461,121 @@ pub fn profile_files() -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// Synthetic Claude Code (`<profile>\projects\<project>\<session>.jsonl`) and Codex
-/// (`<profile>\sessions\YYYY\MM\DD\rollout-….jsonl`) logs over [`LOG_DAYS`], relative to the
-/// sandbox home, in the exact shape `stats::parse` reads. Usage fields only; no message text.
-pub fn session_logs(now: DateTime<Utc>) -> Vec<(PathBuf, String)> {
+/// Made-up thread titles (Claude `custom-title` lines).
+const TITLES: &[&str] = &[
+    "Fix login redirect",
+    "Speed up the search page",
+    "Add CSV export",
+    "Rate limits for the API",
+    "Dark mode polish",
+    "Flaky checkout test",
+    "Docs: getting started",
+    "Upgrade the build pipeline",
+    "Refactor settings storage",
+    "Release notes 2.4",
+];
+
+/// What a demo step does: tool calls as (name, shell command) pairs. Commands are made up and
+/// only their first word is ever read.
+/// Tool calls of one step: (name, shell command).
+type Tools = &'static [(&'static str, Option<&'static str>)];
+
+const STEP_KINDS: &[(u64, Tools)] = &[
+    (24, &[]),
+    (12, &[("Edit", None)]),
+    (6, &[("Edit", None), ("Write", None)]),
+    (3, &[("MultiEdit", None)]),
+    (6, &[("Bash", Some("cargo test --workspace"))]),
+    (3, &[("PowerShell", Some("npm run build"))]),
+    (2, &[("Bash", Some("cd app && pnpm test"))]),
+    (4, &[("Bash", Some("git status"))]),
+    (2, &[("Bash", Some("gh pr view"))]),
+    (10, &[("Read", None)]),
+    (5, &[("Grep", None), ("Read", None)]),
+    (3, &[("Glob", None)]),
+    (2, &[("PowerShell", Some("Get-Content README.md"))]),
+    (4, &[("Agent", None)]),
+    (3, &[("WebSearch", None)]),
+    (2, &[("WebFetch", None)]),
+    (3, &[("mcp__preview__preview_screenshot", None)]),
+    (6, &[("TodoWrite", None)]),
+];
+
+/// Codex tool calls before a token count: one JSON `response_item` payload each.
+const CODEX_CALLS: &[&str] = &[
+    r#"{"type":"function_call","name":"exec_command","arguments":"{\"cmd\":\"cargo build\"}"}"#,
+    r#"{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"git diff\"]}"}"#,
+    r#"{"type":"function_call","name":"shell_command","arguments":"{\"command\":\"rg TODO\"}"}"#,
+    r#"{"type":"custom_tool_call","name":"apply_patch","input":""}"#,
+    r#"{"type":"web_search_call","status":"completed"}"#,
+    r#"{"type":"function_call","name":"update_plan","arguments":"{}"}"#,
+];
+
+fn pick<'a, T>(rng: &mut Rng, table: &'a [(u64, T)]) -> &'a T {
+    let total: u64 = table.iter().map(|(w, _)| w).sum();
+    let mut x = rng.range(0, total - 1);
+    for (w, v) in table {
+        if x < *w {
+            return v;
+        }
+        x -= w;
+    }
+    &table[0].1
+}
+
+/// A JSON string literal (paths carry backslashes).
+fn json_str(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+}
+
+/// One Claude Code assistant step in the log's shape: one line per tool use (same ids and usage,
+/// as Claude Code writes content blocks), or one line without content for a step without tools.
+#[allow(clippy::too_many_arguments)]
+fn claude_step(
+    text: &mut String,
+    rng: &mut Rng,
+    t: DateTime<Utc>,
+    session: Uuid,
+    model: &str,
+    head: &str,
+    tools: &[(&str, Option<&str>)],
+    usage: (u64, u64, u64, u64),
+) {
+    let (input, output, cache_write, cache_read) = usage;
+    let (req, msg) = (rng.next(), rng.next());
+    let blocks: Vec<String> = if tools.is_empty() {
+        vec![String::new()]
+    } else {
+        tools
+            .iter()
+            .map(|(name, cmd)| {
+                let input = match cmd {
+                    Some(c) => format!(r#"{{"command":{}}}"#, json_str(c)),
+                    None => "{}".into(),
+                };
+                format!(
+                    r#","content":[{{"type":"tool_use","id":"toolu_demo_{:012x}","name":"{name}","input":{input}}}]"#,
+                    rng.next() >> 16
+                )
+            })
+            .collect()
+    };
+    for block in blocks {
+        let _ = writeln!(
+            text,
+            r#"{{"type":"assistant"{head},"timestamp":"{}","sessionId":"{session}","requestId":"req_demo_{req:016x}","message":{{"id":"msg_demo_{msg:016x}","model":"{model}"{block},"usage":{{"input_tokens":{input},"output_tokens":{output},"cache_creation_input_tokens":{cache_write},"cache_read_input_tokens":{cache_read}}}}}}}"#,
+            ts(t),
+        );
+    }
+}
+
+/// Synthetic Claude Code (`<profile>\projects\<project>\<session>.jsonl`, subagents in
+/// `<session>\subagents\agent-….jsonl`) and Codex (`<profile>\sessions\YYYY\MM\DD\rollout-….jsonl`)
+/// logs over [`LOG_DAYS`], relative to the sandbox home, in the exact shape `stats::parse` reads:
+/// usage, tool calls with made-up commands, `isSidechain`, `cwd` inside the demo projects under
+/// `home` (some in a scratch folder, some without), thread titles. No message text.
+pub fn session_logs(now: DateTime<Utc>, home: &Path) -> Vec<(PathBuf, String)> {
+    let projects = home.join("Projects");
     let mut out = vec![];
     for day in 0..LOG_DAYS {
         let factor = day_factor(now, day);
@@ -470,51 +589,113 @@ pub fn session_logs(now: DateTime<Utc>) -> Vec<(PathBuf, String)> {
                 ".claude-personal"
             };
             let project = PROJECTS[rng.range(0, PROJECTS.len() as u64 - 1) as usize].1;
-            let pick = rng.range(0, 99);
+            let pick_model = rng.range(0, 99);
             let mut acc = 0;
             let model = CLAUDE_MODELS
                 .iter()
                 .find(|(_, share)| {
                     acc += share;
-                    pick < acc
+                    pick_model < acc
                 })
                 .map_or(CLAUDE_MODELS[0].0, |m| m.0);
             let session = rng.uuid();
+            // Mostly in a project (sometimes a subfolder), some in a scratch folder, a few old
+            // logs without a working folder.
+            let cwd = match rng.range(0, 99) {
+                0..=59 => Some(projects.join(project)),
+                60..=79 => Some(projects.join(project).join("src")),
+                80..=91 => Some(home.join("scratch").join("notes")),
+                _ => None,
+            };
+            let head = |sidechain: bool| match &cwd {
+                Some(c) => format!(
+                    r#","isSidechain":{sidechain},"cwd":{}"#,
+                    json_str(&c.to_string_lossy())
+                ),
+                None => String::new(),
+            };
             let mut t =
                 now - Duration::days(day) - Duration::minutes(rng.range(30, 14 * 60) as i64);
             let msgs = rng.range(15, 60);
             let mut text = String::new();
-            for i in 0..msgs {
-                let first = i == 0;
-                let input = rng.range(1, 40);
-                let cache_write = if first {
-                    rng.range(15_000, 30_000)
-                } else {
-                    rng.range(300, 6_000)
-                };
-                let cache_read = if first {
-                    0
-                } else {
-                    18_000 + i * 2_400 + rng.range(0, 4_000)
-                };
-                let output = rng.range(80, 2_500);
+            if rng.range(0, 1) == 0 {
+                let title = TITLES[rng.range(0, TITLES.len() as u64 - 1) as usize];
                 let _ = writeln!(
                     text,
-                    r#"{{"type":"assistant","timestamp":"{}","sessionId":"{session}","requestId":"req_demo_{:016x}","message":{{"id":"msg_demo_{:016x}","model":"{model}","usage":{{"input_tokens":{input},"output_tokens":{output},"cache_creation_input_tokens":{cache_write},"cache_read_input_tokens":{cache_read}}}}}}}"#,
-                    ts(t),
-                    rng.next(),
-                    rng.next(),
+                    r#"{{"type":"custom-title","customTitle":"{title}","sessionId":"{session}"}}"#
+                );
+            }
+            let mut agent_at: Option<DateTime<Utc>> = None;
+            for i in 0..msgs {
+                let first = i == 0;
+                let usage = (
+                    rng.range(1, 40),
+                    rng.range(80, 2_500),
+                    if first {
+                        rng.range(15_000, 30_000)
+                    } else {
+                        rng.range(300, 6_000)
+                    },
+                    if first {
+                        0
+                    } else {
+                        18_000 + i * 2_400 + rng.range(0, 4_000)
+                    },
+                );
+                let tools = *pick(&mut rng, STEP_KINDS);
+                if tools.iter().any(|(n, _)| *n == "Agent") {
+                    agent_at.get_or_insert(t);
+                }
+                claude_step(
+                    &mut text,
+                    &mut rng,
+                    t,
+                    session,
+                    model,
+                    &head(false),
+                    tools,
+                    usage,
                 );
                 t += Duration::seconds(rng.range(40, 180) as i64);
             }
-            let encoded = format!("C--Users-demo-Projects-{project}");
-            out.push((
-                Path::new(profile)
-                    .join("projects")
-                    .join(encoded)
-                    .join(format!("{session}.jsonl")),
-                text,
-            ));
+            let dir = Path::new(profile)
+                .join("projects")
+                .join(format!("C--Users-demo-Projects-{project}"));
+            // A subagent started by an Agent call: its own file, same thread, marked sidechain.
+            if let Some(mut at) = agent_at {
+                let mut sub = String::new();
+                for i in 0..rng.range(5, 15) {
+                    let tools: &[(&str, Option<&str>)] = match i % 3 {
+                        0 => &[("Grep", None)],
+                        1 => &[("Read", None)],
+                        _ => &[("Bash", Some("cargo check"))],
+                    };
+                    let usage = (
+                        rng.range(1, 20),
+                        rng.range(50, 900),
+                        rng.range(300, 4_000),
+                        12_000 + i * 1_500,
+                    );
+                    claude_step(
+                        &mut sub,
+                        &mut rng,
+                        at,
+                        session,
+                        CLAUDE_MODELS[1].0,
+                        &head(true),
+                        tools,
+                        usage,
+                    );
+                    at += Duration::seconds(rng.range(10, 60) as i64);
+                }
+                out.push((
+                    dir.join(session.to_string())
+                        .join("subagents")
+                        .join(format!("agent-{:016x}.jsonl", rng.next())),
+                    sub,
+                ));
+            }
+            out.push((dir.join(format!("{session}.jsonl")), text));
         }
         // Codex.
         let sessions = ((rng.range(1, 3) as f64) * factor).round() as u64;
@@ -524,6 +705,7 @@ pub fn session_logs(now: DateTime<Utc>) -> Vec<(PathBuf, String)> {
             } else {
                 ".codex-personal"
             };
+            let project = PROJECTS[rng.range(0, PROJECTS.len() as u64 - 1) as usize].1;
             let session = rng.uuid();
             let start =
                 now - Duration::days(day) - Duration::minutes(rng.range(20, 12 * 60) as i64);
@@ -531,11 +713,20 @@ pub fn session_logs(now: DateTime<Utc>) -> Vec<(PathBuf, String)> {
             let mut text = String::new();
             let _ = writeln!(
                 text,
-                r#"{{"timestamp":"{}","type":"turn_context","payload":{{"model":"{CODEX_MODEL}","cwd":"C:\\Users\\demo\\Projects"}}}}"#,
-                ts(t)
+                r#"{{"timestamp":"{}","type":"turn_context","payload":{{"model":"{CODEX_MODEL}","cwd":{}}}}}"#,
+                ts(t),
+                json_str(&projects.join(project).to_string_lossy())
             );
             let (mut ti, mut tc, mut to) = (0u64, 0u64, 0u64);
             for turn in 0..rng.range(8, 30) {
+                for _ in 0..rng.range(0, 2) {
+                    let call = CODEX_CALLS[rng.range(0, CODEX_CALLS.len() as u64 - 1) as usize];
+                    let _ = writeln!(
+                        text,
+                        r#"{{"timestamp":"{}","type":"response_item","payload":{call}}}"#,
+                        ts(t)
+                    );
+                }
                 let input = 20_000 + turn * 3_500 + rng.range(0, 8_000);
                 let cached = input * rng.range(85, 92) / 100;
                 let output = rng.range(200, 3_000);
@@ -567,65 +758,269 @@ pub fn session_logs(now: DateTime<Utc>) -> Vec<(PathBuf, String)> {
     out
 }
 
-/// Hourly readings over [`HISTORY_DAYS`] that end at each account's seeded reading: % used climbs
-/// within each window cycle and drops at its reset. Oldest first.
+/// The 5-hour and weekly window of a demo account and how it works: 5-hour windows per weekday
+/// (UTC start hour and % used per hour; Mon = 0) and the target weekly peak of past cycles
+/// (base + up to `spread`).
+struct Pattern {
+    id: Uuid,
+    session_key: &'static str,
+    weekly_key: &'static str,
+    /// Scoped weekly windows that follow the all-models one (key, share of it).
+    scoped: &'static [(&'static str, f64)],
+    days: [&'static [(u32, f64)]; 7],
+    weekly_base: f64,
+    weekly_spread: u64,
+    /// Days of history (an account added later has less).
+    history_days: i64,
+}
+
+const NO_WINDOWS: &[(u32, f64)] = &[];
+
+/// The story the Overview tells about the demo: Personal (Pro) runs out about 3 hours into its
+/// first window on Mon/Wed/Fri while Work had room (at the limit, warm-up, "switch instead of
+/// waiting"); Work (Max 20x) peaks near 20 % of its week (could drop to Max 5x); Team (Max 5x)
+/// fits; Side project (benched, added 12 days ago) sits idle; Codex Work (Pro) fits; Codex
+/// Personal (Plus, its access ends soon) uses afternoons, past the PC's evening switch-off
+/// (windows with an unknown end).
+const PATTERNS: &[Pattern] = &[
+    Pattern {
+        id: CLAUDE_PERSONAL,
+        session_key: "five_hour",
+        weekly_key: "seven_day",
+        scoped: &[],
+        days: [
+            &[(8, 34.0), (14, 12.0)],
+            &[(8, 22.0), (14, 10.0)],
+            &[(8, 34.0), (14, 12.0)],
+            &[(8, 22.0)],
+            &[(8, 34.0), (14, 8.0)],
+            NO_WINDOWS,
+            NO_WINDOWS,
+        ],
+        weekly_base: 72.0,
+        weekly_spread: 14,
+        history_days: HISTORY_DAYS,
+    },
+    Pattern {
+        id: CLAUDE_WORK,
+        session_key: "five_hour",
+        weekly_key: "seven_day",
+        scoped: &[("seven_day_opus", 0.48)],
+        days: [
+            &[(9, 8.0), (15, 5.0)],
+            &[(9, 9.0)],
+            &[(9, 8.0), (15, 6.0)],
+            &[(9, 7.0)],
+            &[(9, 8.0)],
+            &[(10, 4.0)],
+            NO_WINDOWS,
+        ],
+        weekly_base: 18.0,
+        weekly_spread: 4,
+        history_days: HISTORY_DAYS,
+    },
+    Pattern {
+        id: CLAUDE_TEAM,
+        session_key: "five_hour",
+        weekly_key: "seven_day",
+        scoped: &[],
+        days: [
+            &[(10, 15.0)],
+            &[(10, 30.0)],
+            &[(10, 15.0)],
+            &[(10, 30.0)],
+            &[(10, 12.0)],
+            NO_WINDOWS,
+            NO_WINDOWS,
+        ],
+        weekly_base: 60.0,
+        weekly_spread: 12,
+        history_days: HISTORY_DAYS,
+    },
+    Pattern {
+        id: CLAUDE_SIDE,
+        session_key: "five_hour",
+        weekly_key: "seven_day",
+        scoped: &[],
+        days: [
+            NO_WINDOWS,
+            &[(11, 3.0)],
+            NO_WINDOWS,
+            NO_WINDOWS,
+            NO_WINDOWS,
+            NO_WINDOWS,
+            NO_WINDOWS,
+        ],
+        weekly_base: 2.0,
+        weekly_spread: 2,
+        history_days: 12,
+    },
+    Pattern {
+        id: CODEX_WORK,
+        session_key: "codex:primary",
+        weekly_key: "codex:secondary",
+        scoped: &[],
+        days: [
+            &[(13, 12.0)],
+            &[(13, 10.0)],
+            &[(13, 12.0)],
+            &[(13, 9.0)],
+            &[(13, 6.0)],
+            NO_WINDOWS,
+            NO_WINDOWS,
+        ],
+        weekly_base: 28.0,
+        weekly_spread: 8,
+        history_days: HISTORY_DAYS,
+    },
+    Pattern {
+        id: CODEX_PERSONAL,
+        session_key: "codex:primary",
+        weekly_key: "codex:secondary",
+        scoped: &[],
+        days: [
+            &[(16, 18.0)],
+            NO_WINDOWS,
+            &[(16, 18.0)],
+            NO_WINDOWS,
+            &[(16, 15.0)],
+            NO_WINDOWS,
+            NO_WINDOWS,
+        ],
+        weekly_base: 35.0,
+        weekly_spread: 10,
+        history_days: HISTORY_DAYS,
+    },
+];
+
+/// The PC is on (SubHub reads every 15 minutes) 07:00-18:30 UTC on weekdays and 09:00-12:00 on
+/// Saturdays; off at night and on Sundays (gaps).
+fn pc_on(t: DateTime<Utc>) -> bool {
+    use chrono::{Datelike, Timelike, Weekday};
+    let m = t.hour() * 60 + t.minute();
+    match t.weekday() {
+        Weekday::Sun => false,
+        Weekday::Sat => (9 * 60..=12 * 60).contains(&m),
+        _ => (7 * 60..=18 * 60 + 30).contains(&m),
+    }
+}
+
+/// % used of a window (start, % per hour) at `t`.
+fn session_used(start: DateTime<Utc>, rate: f64, t: DateTime<Utc>) -> f64 {
+    let h = (t - start).num_seconds() as f64 / 3600.0;
+    (rate * h).clamp(0.0, 100.0)
+}
+
+/// Readings over [`HISTORY_DAYS`] that end at each account's seeded reading: every 15 minutes
+/// while the PC is on, 5-hour windows per the account's weekday pattern (the seeded window is
+/// the last one), weekly use summing up its windows and dropping at each weekly reset. Resets
+/// carry a few seconds of jitter, as the providers' do. Oldest first per account.
 pub fn history_lines(now: DateTime<Utc>) -> Vec<HistoryLine> {
+    use chrono::{Datelike, DurationRound};
     let mut out = vec![];
-    let start = now - Duration::days(HISTORY_DAYS);
-    let mut at = start;
-    let mut rng = Rng::new(0x5eed);
-    while at <= now {
-        for sp in SPECS {
-            let last = now - Duration::minutes(sp.fetched_mins_ago);
-            if at > last {
-                continue;
+    let five = Duration::hours(5);
+    let week = Duration::days(7);
+    for p in PATTERNS {
+        let Some(sp) = spec(p.id) else { continue };
+        let last = now - Duration::minutes(sp.fetched_mins_ago);
+        let start = now - Duration::days(p.history_days);
+        let seeded = |key: &str| sp.windows.iter().find(|w| w.0 == key).copied();
+        let Some((_, _, cur_used, cur_mins)) = seeded(p.session_key) else {
+            continue;
+        };
+        let Some((_, _, week_used, week_mins)) = seeded(p.weekly_key) else {
+            continue;
+        };
+        // The running 5-hour window ends at the seeded reading's value.
+        let cur_reset = now + Duration::minutes(cur_mins);
+        let cur_start = cur_reset - five;
+        let elapsed_h = ((last - cur_start).num_seconds() as f64 / 3600.0).max(0.05);
+        let cur_rate = if cur_used >= 100.0 {
+            100.0 / (elapsed_h * 0.75)
+        } else {
+            cur_used / elapsed_h
+        };
+        let mut wins: Vec<(DateTime<Utc>, f64)> = vec![];
+        let mut day = start.date_naive();
+        while day <= now.date_naive() {
+            let pattern = p.days[day.weekday().num_days_from_monday() as usize];
+            for &(hour, rate) in pattern {
+                let Some(s) = day.and_hms_opt(hour, 0, 0).map(|d| d.and_utc()) else {
+                    continue;
+                };
+                let overlaps = s < cur_reset && cur_start < s + five;
+                if s >= start && !overlaps && s < last {
+                    wins.push((s, rate));
+                }
             }
-            for &(key, _, used_now, mins) in sp.windows {
-                let len = window_len(key);
-                let reset_now = now + Duration::minutes(mins);
-                // Time since the window's last reset, now and at `at`.
-                let cycle = |t: DateTime<Utc>| {
-                    let behind = (reset_now - t).num_seconds();
-                    let n = behind.div_euclid(len.num_seconds());
-                    let reset = reset_now - Duration::seconds(n * len.num_seconds());
-                    (
-                        reset,
-                        n,
-                        1.0 - (reset - t).num_seconds() as f64 / len.num_seconds() as f64,
-                    )
-                };
-                let (_, _, frac_now) = cycle(last);
-                let (reset, n, frac) = cycle(at);
-                let scale = if n == 0 {
-                    1.0
+            day = day.succ_opt().unwrap_or(day);
+        }
+        wins.push((cur_start, cur_rate));
+        // Reading times: the PC's schedule, plus the running window up to the seeded reading.
+        let first = start.duration_trunc(Duration::minutes(15)).unwrap_or(start);
+        let mut times: Vec<DateTime<Utc>> =
+            std::iter::successors(Some(first), |t| Some(*t + Duration::minutes(15)))
+                .take_while(|t| *t < last)
+                .filter(|t| *t >= start && (pc_on(*t) || *t >= cur_start))
+                .collect();
+        times.push(last);
+        // Weekly cycles: the seeded reset and the ones before it.
+        let week_reset = now + Duration::minutes(week_mins);
+        let cycle_of = |t: DateTime<Utc>| {
+            let n = (week_reset - t)
+                .num_seconds()
+                .div_euclid(week.num_seconds());
+            week_reset - Duration::seconds(n * week.num_seconds())
+        };
+        let raw = |t: DateTime<Utc>| -> f64 {
+            let cycle_start = cycle_of(t) - week;
+            wins.iter()
+                .filter(|(s, _)| *s >= cycle_start && *s <= t)
+                .map(|(s, r)| session_used(*s, *r, t.min(*s + five)))
+                .sum()
+        };
+        let mut rng = Rng::new(p.id.as_u128() as u64);
+        let mut scale: HashMap<DateTime<Utc>, f64> = HashMap::new();
+        for (n, t) in times.iter().enumerate() {
+            let reset = cycle_of(*t);
+            let k = *scale.entry(reset).or_insert_with(|| {
+                let (target, at) = if reset == week_reset {
+                    (week_used, last)
                 } else {
-                    0.6 + rng.range(0, 45) as f64 / 100.0
+                    let base = p.weekly_base + rng.range(0, p.weekly_spread) as f64;
+                    (base, reset - Duration::seconds(1))
                 };
-                let used = (used_now * frac / frac_now.max(0.05) * scale)
-                    .clamp(0.0, 100.0)
-                    .round();
+                let r = raw(at);
+                if r > 0.0 { target / r } else { 0.0 }
+            });
+            let jitter = Duration::seconds(n as i64 % 5 - 2);
+            let session = wins
+                .iter()
+                .find(|(s, _)| *s <= *t && *t < *s + five)
+                .map(|(s, r)| (session_used(*s, *r, *t).round(), Some(*s + five + jitter)));
+            let (s_used, s_reset) = session.unwrap_or((0.0, None));
+            let weekly = (k * raw(*t)).clamp(0.0, 100.0).round();
+            let mut push = |key: &str, used: f64, resets_at: Option<DateTime<Utc>>| {
                 out.push(HistoryLine {
-                    account: sp.id,
-                    fetched_at: at,
+                    account: p.id,
+                    fetched_at: *t,
                     window: key.into(),
                     used_percent: used,
-                    resets_at: Some(reset),
-                });
+                    resets_at,
+                })
+            };
+            if *t == last {
+                // The seeded reading itself closes the history.
+                for w in spec_windows(sp, now) {
+                    push(&w.key, w.used_percent, w.resets_at);
+                }
+                continue;
             }
-        }
-        at += Duration::hours(1);
-    }
-    // The seeded reading itself closes each account's history.
-    for sp in SPECS {
-        let last = now - Duration::minutes(sp.fetched_mins_ago);
-        for w in spec_windows(sp, now) {
-            out.push(HistoryLine {
-                account: sp.id,
-                fetched_at: last,
-                window: w.key,
-                used_percent: w.used_percent,
-                resets_at: w.resets_at,
-            });
+            push(p.session_key, s_used, s_reset);
+            push(p.weekly_key, weekly, Some(reset + jitter));
+            for (key, share) in p.scoped {
+                push(key, (weekly * share).round(), Some(reset + jitter));
+            }
         }
     }
     out
@@ -636,6 +1031,10 @@ pub fn history_lines(now: DateTime<Utc>) -> Vec<HistoryLine> {
 /// `root\local\AI SubHub`. Returns the settings written.
 pub fn seed(root: &Path, now: DateTime<Utc>, version: &str) -> anyhow::Result<Settings> {
     let home = root.join("home");
+    std::fs::create_dir_all(&home)?;
+    // Stored folders and the logs' working folders are canonical, like the ones profile
+    // detection and project matching compare against.
+    let canonical = crate::profile::plain(std::fs::canonicalize(&home)?);
     let write = |rel: &Path, body: &str| -> anyhow::Result<()> {
         let path = home.join(rel);
         if let Some(dir) = path.parent() {
@@ -649,15 +1048,16 @@ pub fn seed(root: &Path, now: DateTime<Utc>, version: &str) -> anyhow::Result<Se
             std::fs::create_dir_all(home.join(p))?;
         }
     }
-    for (rel, body) in profile_files().iter().chain(session_logs(now).iter()) {
+    for (rel, body) in profile_files()
+        .iter()
+        .chain(session_logs(now, &canonical).iter())
+    {
         write(rel, body)?;
     }
     for (_, dir, _) in PROJECTS {
         std::fs::create_dir_all(home.join("Projects").join(dir))?;
     }
-    // Stored folders are canonical, like the ones profile detection compares against.
-    let home = crate::profile::plain(std::fs::canonicalize(&home)?);
-    let s = settings(&home, now, version);
+    let s = settings(&canonical, now, version);
     let data = root.join("local").join("AI SubHub");
     settings::save(&data.join("settings.json"), &s)?;
     let mut text = String::new();
@@ -673,6 +1073,7 @@ pub fn seed(root: &Path, now: DateTime<Utc>, version: &str) -> anyhow::Result<Se
 mod tests {
     use super::*;
     use crate::detect::{self, DetectStatus};
+    use crate::insights;
     use crate::profile::ProfileEnv;
     use crate::stats::{self, PriceBook, Range};
 
@@ -763,7 +1164,8 @@ mod tests {
 
     #[test]
     fn generated_files_are_deterministic() {
-        assert_eq!(session_logs(now()), session_logs(now()));
+        let home = Path::new(r"C:\demo\home");
+        assert_eq!(session_logs(now(), home), session_logs(now(), home));
         assert_eq!(history_lines(now()), history_lines(now()));
         let h = history_lines(now());
         assert!(h.iter().all(|l| (0.0..=100.0).contains(&l.used_percent)));
@@ -775,17 +1177,26 @@ mod tests {
             .find(|l| l.account == CLAUDE_PERSONAL && l.window == "five_hour")
             .unwrap();
         assert_eq!(last.used_percent, 81.0);
-        // No secrets or message text in what is written.
-        for (_, body) in profile_files().iter().chain(session_logs(now()).iter()) {
+        // No secrets or message text in what is written: content blocks are tool uses only (scan
+        // v2; before it, no content at all).
+        for (_, body) in profile_files()
+            .iter()
+            .chain(session_logs(now(), home).iter())
+        {
             for bad in [
                 "token\":\"",
                 "access_token",
                 "refresh_token",
-                "content",
+                "\"text\"",
+                "thinking",
                 "apiKey",
             ] {
                 assert!(!body.contains(bad), "{bad}");
             }
+            assert_eq!(
+                body.matches("\"content\":").count(),
+                body.matches("\"content\":[{\"type\":\"tool_use\"").count()
+            );
         }
     }
 
@@ -869,5 +1280,104 @@ mod tests {
             assert!(sum.work() > 0, "{range:?}");
             assert_eq!(sum.unpriced_models, 0, "{range:?}");
         }
+
+        // Scan v2 dims: every task kind, subagent steps, the demo projects, titles, Codex too.
+        let kinds: std::collections::BTreeSet<_> = scan.buckets.iter().map(|b| b.kind).collect();
+        assert_eq!(kinds.len(), stats::TaskKind::ALL.len(), "{kinds:?}");
+        assert!(scan.buckets.iter().any(|b| b.sidechain));
+        assert!(!scan.titles.is_empty());
+        assert!(scan.buckets.iter().any(|b| b.cwd.is_none()));
+        let o = overview(&s, Some(&scan), now());
+        let saved: Vec<_> = o
+            .usage
+            .projects
+            .iter()
+            .filter(|p| matches!(p.key, insights::ProjectKey::Saved(_)))
+            .collect();
+        assert_eq!(saved.len(), 3, "{:?}", o.usage.projects);
+        assert!(
+            o.usage
+                .projects
+                .iter()
+                .any(|p| p.key == insights::ProjectKey::Folder("notes".into()))
+        );
+        assert!(o.usage.threads.iter().any(|t| t.title.is_some()));
+        assert!(o.usage.sub_share() > 0.0);
+    }
+
+    fn overview(
+        s: &Settings,
+        scan: Option<&stats::Scan>,
+        now: DateTime<Utc>,
+    ) -> insights::Overview {
+        let plans: HashMap<Uuid, String> = SPECS
+            .iter()
+            .map(|sp| (sp.id, sp.plan.to_string()))
+            .collect();
+        let history = history_lines(now);
+        insights::analyze(&insights::Input {
+            history: &history,
+            scan,
+            settings: s,
+            plans: &plans,
+            prices: &PriceBook::default(),
+            range: insights::InsightRange::FourWeeks,
+            now,
+            zone: &insights::Zone::utc(),
+        })
+    }
+
+    /// The Overview story the demo history tells (see `PATTERNS`).
+    #[test]
+    fn history_tells_the_overview_story() {
+        use insights::{FitVerdict, PlanTier, TipKind};
+        let s = settings(Path::new(r"C:\demo\home"), now(), "0.1.2");
+        let o = overview(&s, None, now());
+        let fit = |id| o.account(id).unwrap().fit.ready().map(|f| f.verdict);
+        assert_eq!(fit(CLAUDE_PERSONAL), Some(FitVerdict::AtLimit));
+        assert_eq!(fit(CLAUDE_WORK), Some(FitVerdict::Downgrade));
+        assert_eq!(fit(CLAUDE_TEAM), Some(FitVerdict::Fits));
+        assert_eq!(fit(CODEX_WORK), Some(FitVerdict::Fits));
+        assert_eq!(fit(CODEX_PERSONAL), Some(FitVerdict::Fits));
+        let work = o.account(CLAUDE_WORK).unwrap().fit.ready().unwrap();
+        assert_eq!(work.suggested, Some(PlanTier::ClaudeMax5x));
+        // Weekly cycles over 4+ weeks, several 5-hour hits, one while another account was free.
+        assert!(o.account(CLAUDE_PERSONAL).unwrap().cycles.len() >= 4);
+        let w = o.windows.ready().expect("enough workdays");
+        assert!(w.hits >= 10, "{}", w.hits);
+        assert!(w.hits_with_free_account >= 1);
+        // PC off in the evening: Codex Personal's late windows have an unknown end.
+        assert!(
+            o.account(CODEX_PERSONAL)
+                .unwrap()
+                .windows
+                .iter()
+                .any(|w| w.end == insights::WindowEnd::Unknown)
+        );
+        // The benched login never counts as a free account.
+        assert!(
+            o.accounts
+                .iter()
+                .flat_map(|a| a.windows.iter())
+                .all(|w| !w.free_elsewhere.contains(&CLAUDE_SIDE))
+        );
+        // Warm-up: Personal's first window runs out about 3 h in.
+        let warm = w.warmup.as_ref().expect("warm-up suggestion");
+        assert_eq!(warm.accounts.first(), Some(&CLAUDE_PERSONAL));
+        assert!(warm.simulation.saved() > Duration::zero());
+        // Codex Personal's access ends: its use moves to Codex Work.
+        let wi = o.account(CODEX_PERSONAL).unwrap().what_if.as_ref().unwrap();
+        assert_eq!(wi.others.len(), 1);
+        assert_eq!(wi.others[0].account, CODEX_WORK);
+        let kinds: Vec<_> = o.tips.iter().map(|t| &t.kind).collect();
+        for want in ["ending", "upgrade", "switch", "warm-up", "downgrade"] {
+            assert!(
+                o.tips.iter().any(|t| t.id.starts_with(want)),
+                "{want}: {kinds:?}"
+            );
+        }
+        assert!(matches!(o.tips[0].kind, TipKind::EndingPlan { .. }));
+        // Deterministic for a given now.
+        assert_eq!(overview(&s, None, now()), o);
     }
 }

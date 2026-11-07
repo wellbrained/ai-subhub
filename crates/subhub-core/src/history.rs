@@ -244,6 +244,21 @@ pub fn load_series(path: &Path, since: DateTime<Utc>, until: DateTime<Utc>) -> V
     build_series(lines.iter().map(String::as_str), since, until)
 }
 
+/// Every line fetched at or after `since`, in file order (the Overview analysis input). Lines
+/// that do not parse are skipped; a missing file gives none. Blocking: call it from a background
+/// executor.
+pub fn load_lines(path: &Path, since: DateTime<Utc>) -> Vec<HistoryLine> {
+    let Ok(file) = File::open(path) else {
+        return Vec::new();
+    };
+    BufReader::new(file)
+        .lines()
+        .map_while(Result::ok)
+        .filter_map(|l| serde_json::from_str::<HistoryLine>(&l).ok())
+        .filter(|l| l.fetched_at >= since)
+        .collect()
+}
+
 /// Splits points into runs wherever two neighbours are more than `max_gap` apart, so a chart
 /// does not draw a line across time the app was not running.
 pub fn split_gaps(points: &[SeriesPoint], max_gap: chrono::Duration) -> Vec<&[SeriesPoint]> {
@@ -314,10 +329,16 @@ mod tests {
             "2026-11-08T00:00:00Z".parse().unwrap(),
         );
         assert!(load_series(&path, since, until).is_empty());
+        assert!(load_lines(&path, since).is_empty());
         let a = Uuid::new_v4();
         let mut h = History::open(path.clone());
         h.record(a, &reading("2026-11-07T10:00:00Z", 10.0));
         h.record(a, &reading("2026-11-07T10:05:00Z", 12.0));
+        assert_eq!(load_lines(&path, since).len(), 4);
+        assert_eq!(
+            load_lines(&path, "2026-11-07T10:01:00Z".parse().unwrap()).len(),
+            2
+        );
         let s = load_series(&path, since, until);
         assert_eq!(
             (s.len(), s[0].weekly.len(), s[0].five_hour.len()),
