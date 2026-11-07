@@ -156,7 +156,7 @@ fn link(account: &mut Account, h: &HubAccount, report: &mut MergeReport) {
 }
 
 /// "<local> · <first part of the domain>", cut to 60 characters.
-fn qualify(email: &str) -> String {
+pub(crate) fn qualify(email: &str) -> String {
     let (local, domain) = email.split_once('@').unwrap_or((email, ""));
     let first = domain.split('.').next().unwrap_or("");
     let label = if first.is_empty() {

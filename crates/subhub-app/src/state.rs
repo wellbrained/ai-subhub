@@ -6,10 +6,12 @@ use std::path::PathBuf;
 use chrono::{DateTime, Duration, Local, NaiveDate, Utc};
 use gpui::{Context, WeakEntity};
 use subhub_core::billing;
+use subhub_core::detect::{self, Attach, DetectedProfile, ImportReport};
 use subhub_core::history::{self, History};
 use subhub_core::hub::{HubAccount, HubClient, HubError};
 use subhub_core::launch::{self, DesktopApps, LaunchEnv, LoginCompletion, Target};
 use subhub_core::model::{Account, ProviderKind, ReadSource, UsageResult, UsageState};
+use subhub_core::profile::ProfileEnv;
 use subhub_core::projects;
 use subhub_core::schedule::Schedule;
 use subhub_core::settings::{self, DisplaySettings, Settings, Terminal};
@@ -41,13 +43,12 @@ pub struct AccountStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTarget {
     Projects,
+    /// Detect / Import (first start without accounts).
+    Detect,
 }
 
-/// Result of adding a CLI profile.
-enum Attach {
-    Added,
-    Linked(String),
-    Duplicate,
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "" } else { "s" }
 }
 
 pub struct AppState {
@@ -807,56 +808,51 @@ impl AppState {
             hidden_windows: vec![],
             pinned_windows: vec![],
         };
-        match self.attach_profile(account) {
+        // No duplicates (owner rule): see `detect::attach_profile`.
+        match detect::attach_profile(&mut self.settings.accounts, account) {
             Attach::Duplicate => Err("This profile is already connected.".into()),
-            Attach::Linked(name) => {
+            Attach::Linked { label, .. } => {
                 self.save_user();
                 self.message_for_user = Some(format!(
-                    "Linked the profile to {name}, which already uses this login."
+                    "Linked the profile to {label}, which already uses this login."
                 ));
                 Ok(())
             }
-            Attach::Added => {
+            Attach::Added(_) => {
                 self.save_user();
                 Ok(())
             }
         }
     }
 
-    /// Adds a CLI-profile account without ever creating a duplicate (owner rule): a profile that
-    /// is already connected is skipped; a profile whose login (email from the profile's own
-    /// metadata) belongs to an existing account is attached to that account, keeping its name,
-    /// tag, star, order and readings; only a new login becomes a new account.
-    fn attach_profile(&mut self, mut acc: Account) -> Attach {
-        let Some(dir) = acc.profile_dir.clone() else {
-            return Attach::Duplicate;
+    /// Profile detection against the current accounts (reads only folder names and the email
+    /// metadata; cheap enough for the UI thread: a handful of small files).
+    pub fn detect_profiles(&self) -> Vec<DetectedProfile> {
+        let Some(home) = subhub_core::profile::home_dir() else {
+            return vec![];
         };
-        if self.settings.accounts.iter().any(|a| {
-            a.provider == acc.provider
-                && a.profile_dir
-                    .as_deref()
-                    .is_some_and(|p| subhub_core::profile::same_dir(p, &dir))
-        }) {
-            return Attach::Duplicate;
+        detect::detect(&home, &ProfileEnv::from_process(), &self.settings.accounts)
+    }
+
+    /// Imports the picked profiles, saves, starts a refresh and returns the report plus a
+    /// summary for the toast.
+    pub fn import_profiles(
+        &mut self,
+        picks: &[DetectedProfile],
+        cx: &mut Context<Self>,
+    ) -> (ImportReport, String) {
+        let report = detect::import(&mut self.settings.accounts, picks);
+        // New account or linked to the one with this login: the same to the user (owner).
+        let n = report.added.len() + report.linked.len();
+        let msg = match n {
+            0 => "Nothing to import: these profiles are already added.".to_string(),
+            n => format!("Imported {n} profile{}.", plural(n)),
+        };
+        if n > 0 {
+            self.save_user();
+            self.refresh(false, cx);
         }
-        acc.email = subhub_core::profile::profile_email(acc.provider, &dir);
-        if let Some(email) = acc.email.clone()
-            && let Some(existing) = self.settings.accounts.iter_mut().find(|a| {
-                a.provider == acc.provider
-                    && a.email
-                        .as_deref()
-                        .is_some_and(|e| e.eq_ignore_ascii_case(&email))
-            })
-        {
-            if existing.profile_dir.is_some() {
-                // Same login already has another profile folder: keep the first.
-                return Attach::Duplicate;
-            }
-            existing.profile_dir = Some(dir);
-            return Attach::Linked(existing.label.clone());
-        }
-        self.settings.accounts.push(acc);
-        Attach::Added
+        (report, msg)
     }
 
     // ---- projects ----

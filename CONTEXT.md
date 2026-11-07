@@ -35,6 +35,11 @@ _Avoid_: Project as a synonym for a provider chat project.
 
 **Visible project / Hidden project**: A hidden project stays listed and editable in Settings at its place in the order but is left out of the Launch menus; showing it again restores it at that place.
 
+**Profile detection**: Looking through the usual places on this PC for CLI profiles (the provider's default folder, its `-suffix` account folders, and folders named by the provider's own environment variables) and offering to import them. It reads only a profile's login email, never its token.
+
+**Detected profile**: A profile folder found by profile detection, together with what importing it would do: become a new account, join an existing account with the same login, nothing because it is already added, or nothing because another folder already has that login.
+_Avoid_: Import as a name for the old one-time import from the C# app, which no longer exists.
+
 **Group**: A user-chosen label such as Work or Personal that groups accounts in the views.
 
 **Pinned window**: An allowance window the user pinned to the top of the Priority view.
