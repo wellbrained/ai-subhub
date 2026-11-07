@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- AI SubHub app icon "Night glow" (owner pick E, 2026-11-07): the S4 skeleton badge on a
+       violet squircle. Provider orb with the tag pill overlapping its lower edge, a long 5-hour
+       bar and a short weekly bar. Static: never shows live values. -->
+  <defs>
+    <clipPath id="sq"><path d="M32 2C9 2 2 9 2 32s7 30 30 30 30-7 30-30S55 2 32 2Z"/></clipPath>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#25213f"/><stop offset="1" stop-color="#0e0c1c"/>
+    </linearGradient>
+    <radialGradient id="halo" cx=".3" cy=".3" r=".8">
+      <stop offset="0" stop-color="#7c5cff" stop-opacity=".45"/><stop offset="1" stop-color="#7c5cff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="orb" cx=".35" cy=".3" r=".75">
+      <stop offset="0" stop-color="#ffc2a3"/><stop offset=".45" stop-color="#ff8a5c"/><stop offset="1" stop-color="#d9531f"/>
+    </radialGradient>
+    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#22d3ee"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#f97316"/><stop offset="1" stop-color="#fbbf24"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-80%" width="200%" height="260%">
+      <feGaussianBlur stdDeviation="2.4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g clip-path="url(#sq)">
+    <rect width="64" height="64" fill="url(#bg)"/>
+    <rect width="64" height="64" fill="url(#halo)"/>
+    <!-- Bar tracks, then the 5-hour (long) and weekly (short) bars. -->
+    <rect x="33" y="21" width="22" height="8" rx="4" fill="#ffffff" fill-opacity=".1"/>
+    <rect x="33" y="21" width="20" height="8" rx="4" fill="url(#blue)" filter="url(#glow)"/>
+    <rect x="33" y="38.5" width="22" height="8" rx="4" fill="#ffffff" fill-opacity=".1"/>
+    <rect x="33" y="38.5" width="10" height="8" rx="4" fill="url(#amber)" filter="url(#glow)"/>
+    <!-- Provider orb, lowered so the tag overlaps it. -->
+    <circle cx="19" cy="28.5" r="9.5" fill="url(#orb)" filter="url(#glow)"/>
+    <!-- Gap ring in the background colour separates tag from orb, like the real badge. -->
+    <rect x="7.4" y="35.4" width="23.2" height="12.2" rx="6.1" fill="#141127"/>
+    <rect x="9" y="37" width="20" height="9" rx="4.5" fill="#ffffff" fill-opacity=".94"/>
+  </g>
+  <path d="M32 2C9 2 2 9 2 32" fill="none" stroke="#ffffff" stroke-opacity=".16" stroke-width="1.5" clip-path="url(#sq)"/>
+</svg>

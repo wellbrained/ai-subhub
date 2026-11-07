@@ -265,6 +265,33 @@ pub struct UpdateSettings {
     pub last_seen_version: String,
 }
 
+/// What the Usage view breaks the numbers down by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatsBreakdown {
+    #[default]
+    Models,
+    Providers,
+    Days,
+}
+
+/// What the daily chart (and the share bars) measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StatsMetric {
+    #[default]
+    Tokens,
+    Cost,
+}
+
+/// Remembered choices of the Statistics window.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StatsSettings {
+    pub breakdown: StatsBreakdown,
+    pub metric: StatsMetric,
+}
+
 /// Persisted refresh schedule per account (failure backoff + provider cooldown survive restarts).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CachedSchedule {
@@ -300,6 +327,8 @@ pub struct Settings {
     pub projects: Vec<Project>,
     /// Update mode, last check and the version whose patch notes were shown.
     pub updates: UpdateSettings,
+    /// Statistics window: breakdown view and chart metric.
+    pub stats: StatsSettings,
 }
 
 impl Default for Settings {
@@ -320,6 +349,7 @@ impl Default for Settings {
             billing_reminders: HashMap::new(),
             projects: vec![],
             updates: UpdateSettings::default(),
+            stats: StatsSettings::default(),
         }
     }
 }
@@ -410,6 +440,26 @@ mod compat_tests {
         s.updates.last_check = Some(Utc::now());
         s.updates.last_seen_version = "0.1.0".into();
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn older_files_without_stats_choices_still_load() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.stats.breakdown, StatsBreakdown::Models);
+        assert_eq!(s.stats.metric, StatsMetric::Tokens);
+
+        let mut v = serde_json::to_value(Settings::default()).unwrap();
+        assert!(v.as_object_mut().unwrap().remove("stats").is_some());
+        let s: Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(s, Settings::default());
+
+        let mut s = Settings::default();
+        s.stats.breakdown = StatsBreakdown::Days;
+        s.stats.metric = StatsMetric::Cost;
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains(r#""breakdown":"days""#) && json.contains(r#""metric":"cost""#));
+        let back: Settings = serde_json::from_str(&json).unwrap();
         assert_eq!(back, s);
     }
 

@@ -5834,6 +5834,7 @@ dependencies = [
  "gpui-pre-platform",
  "image",
  "raw-window-handle",
+ "resvg 0.45.1",
  "serde_json",
  "subhub-core",
  "uuid",

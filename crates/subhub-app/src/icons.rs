@@ -30,6 +30,10 @@ pub enum Icon {
     SquareTerminal,
     Code,
     AppWindow,
+    WinMinimize,
+    WinMaximize,
+    WinRestore,
+    WinClose,
     Provider(ProviderKind),
 }
 
@@ -61,6 +65,10 @@ impl Icon {
             Icon::SquareTerminal => "icons/square-terminal.svg",
             Icon::Code => "icons/code-xml.svg",
             Icon::AppWindow => "icons/app-window.svg",
+            Icon::WinMinimize => "icons/win-minimize.svg",
+            Icon::WinMaximize => "icons/win-maximize.svg",
+            Icon::WinRestore => "icons/win-restore.svg",
+            Icon::WinClose => "icons/win-close.svg",
             Icon::Provider(ProviderKind::Claude) => "icons/provider-claude.svg",
             Icon::Provider(ProviderKind::Codex) => "icons/provider-openai.svg",
         }
@@ -74,6 +82,19 @@ pub fn icon(i: Icon, size: f32, color: Hsla) -> Svg {
         .size(px(size))
         .flex_none()
         .text_color(color)
+}
+
+/// Series colour of a provider in the statistics and the limits board (owner-approved, checked
+/// with the dataviz palette validator, 2026-11-07). A coloured dot or mark carries the identity;
+/// text never takes it.
+pub fn series_color(p: ProviderKind, dark: bool) -> Hsla {
+    let hex = match (p, dark) {
+        (ProviderKind::Claude, false) => 0xc96a4a,
+        (ProviderKind::Codex, false) => 0x3f74cc,
+        (ProviderKind::Claude, true) => 0xd07052,
+        (ProviderKind::Codex, true) => 0x4f84dc,
+    };
+    gpui::rgb(hex).into()
 }
 
 /// Provider brand colour (Claude orange; Codex follows the text colour).

@@ -23,7 +23,9 @@ pub use prices::{
 pub use scan::{
     Bucket, FileEntry, Roots, Scan, ScanSession, cache_path, discover_roots, scan, scan_default,
 };
-pub use summary::{CostParts, DayRow, ModelRow, Point, ProviderSummary, Range, Summary, summarize};
+pub use summary::{
+    CostParts, DayRow, ModelRow, MonthPace, Point, ProviderSummary, Range, Summary, summarize,
+};
 
 /// Token counts of one kind of work, normalized across providers: `input` is uncached input,
 /// `cache_read` cached input, `cache_write` input written to the cache. "Processed" is the sum.
@@ -46,6 +48,11 @@ impl Tokens {
     /// Everything the model processed: input, cache reads and writes, output.
     pub fn processed(&self) -> u64 {
         self.input + self.cache_read + self.cache_write + self.output
+    }
+
+    /// Work tokens: input + output + cache writes, i.e. processed without the cache reads.
+    pub fn work(&self) -> u64 {
+        self.input + self.cache_write + self.output
     }
 
     pub fn is_zero(&self) -> bool {

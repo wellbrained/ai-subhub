@@ -38,6 +38,8 @@ windows = { version = "0.61", features = [
 ] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 gpui-kit-assets = "=0.9.0"
+# Same version GPUI already builds: renders the app icon SVG for the window and exe icons.
+resvg = { version = "0.45", default-features = false }
 
 [build-dependencies]
 embed-resource = "3"

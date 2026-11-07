@@ -1,50 +1,56 @@
-//! Statistics window, modelled on T3 Code's usage board: range and Cost / Tokens / Limits at the
-//! top, then the total with the provider split next to a daily chart, totals, cost (or tokens) by
-//! type and a breakdown by model or day. Data: `subhub_core::stats` (local session logs).
-use std::rc::Rc;
+//! Statistics window (owner-approved redesign, 2026-11-07): a merged title bar with the
+//! `Usage | Limits` tabs, the range switch, Copy as image and Rescan; below it the Usage view
+//! (tiles, "By type", then a Models / Providers / Days breakdown with the daily chart) or the
+//! live Limits board. Data: `subhub_core::stats` (local session logs).
+use std::time::{Duration, Instant};
 
-use chrono::{Datelike, Utc};
+use chrono::Utc;
 use gpui::{
-    Context, Entity, FontWeight, Hsla, IntoElement, ParentElement, Render, SharedString, Styled,
-    Subscription, Window, div, prelude::*, px, relative,
+    AnyElement, Context, Entity, FontFeatures, FontWeight, Hsla, IntoElement, ParentElement,
+    Render, SharedString, Styled, Subscription, Window, div, prelude::*, px, relative,
 };
-use gpui_component::chart::AreaChart;
 use gpui_component::scroll::ScrollableElement;
+use gpui_component::tooltip::Tooltip;
 use subhub_core::model::ProviderKind;
+use subhub_core::settings::{StatsBreakdown, StatsMetric, StatsSettings};
 use subhub_core::stats::{ModelRow, Point, Range, Summary, summarize};
 
-use crate::icons::{Icon, icon, provider_color};
+use crate::icons::{Icon, icon, series_color};
 use crate::state::AppState;
 use crate::theme::{self, Tokens};
+use crate::title_bar::{self, icon_button, seg};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
-    Cost,
-    Tokens,
+    Usage,
     Limits,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Breakdown {
-    Model,
-    Day,
+/// The one-time fit of the window height to the Usage content (Models view).
+#[derive(Clone, Copy)]
+enum Fit {
+    /// No data yet.
+    Pending,
+    /// Sized from an estimate, now following the measured content height until it is stable.
+    Measuring {
+        since: Instant,
+        last: f32,
+        stable: u8,
+    },
+    /// Never resized by the app again (owner rule: switching tabs or views keeps the height).
+    Done,
 }
 
 pub struct StatsWindow {
     state: Entity<AppState>,
     range: Range,
     tab: Tab,
-    by: Breakdown,
-    /// Sized to its content once, when the first data arrived.
-    sized: bool,
-    /// When the window was first sized; for a short while after, overflow found by the first
-    /// layout grows the window to fit exactly.
-    fitted_at: Option<std::time::Instant>,
+    fit: Fit,
     scroll: gpui::ScrollHandle,
-    /// Last client height asked for by the exact fit.
-    fit_target: f32,
+    /// The Days table's own scroll area (7 rows visible).
+    days_scroll: gpui::ScrollHandle,
     /// Result of the last "Copy as image" and when (true = copied).
-    copied: Option<(std::time::Instant, bool)>,
+    copied: Option<(Instant, bool)>,
     /// The summary for (range, state.stats_rev); recomputed only when either changes.
     summary: Option<((Range, u64), Summary)>,
     _sub: Subscription,
@@ -58,7 +64,7 @@ impl StatsWindow {
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
-                    .timer(std::time::Duration::from_secs(30))
+                    .timer(Duration::from_secs(30))
                     .await;
                 let alive = this.update(cx, |this, cx| {
                     if this.tab == Tab::Limits {
@@ -74,16 +80,86 @@ impl StatsWindow {
         Self {
             state,
             range: Range::Quarter,
-            // Tokens first: the popover already shows the limits (owner, 2026-11-07).
-            tab: Tab::Tokens,
-            by: Breakdown::Model,
-            sized: false,
-            fitted_at: None,
+            // Opens on Usage: the popover already shows the limits (owner, 2026-11-07).
+            tab: Tab::Usage,
+            fit: Fit::Pending,
             scroll: gpui::ScrollHandle::new(),
-            fit_target: 0.0,
+            days_scroll: gpui::ScrollHandle::new(),
             copied: None,
             summary: None,
             _sub: sub,
+        }
+    }
+
+    /// Re-renders after each delay (ms): the fit follows layouts that happen after a resize.
+    fn renotify(&self, cx: &mut Context<Self>, delays: &[u64]) {
+        for ms in delays {
+            let ms = *ms;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(ms))
+                    .await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
+    }
+
+    /// Sizes the window once to the Usage content: first from an estimate, then to the measured
+    /// height of the content column until two layouts agree (at most 2 s). While this runs the
+    /// Models view is shown whatever the saved choice, so the height never depends on it.
+    fn drive_fit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, summary)) = &self.summary else {
+            return;
+        };
+        if self.tab != Tab::Usage {
+            return;
+        }
+        match self.fit {
+            Fit::Done => {}
+            Fit::Pending => {
+                self.fit = Fit::Measuring {
+                    since: Instant::now(),
+                    last: 0.0,
+                    stable: 0,
+                };
+                fit_window(window, cx, estimate_height(summary.models.len()));
+                self.renotify(cx, &[150, 400, 900, 1600]);
+            }
+            Fit::Measuring {
+                since,
+                last,
+                stable,
+            } => {
+                let timed_out = since.elapsed() >= Duration::from_secs(2);
+                let h = self
+                    .scroll
+                    .bounds_for_item(0)
+                    .map_or(0.0, |b| f32::from(b.size.height));
+                if h <= 0.0 && !timed_out {
+                    return;
+                }
+                let target = title_bar::HEIGHT + h;
+                if h > 0.0 && (target - last).abs() > 0.5 && !timed_out {
+                    self.fit = Fit::Measuring {
+                        since,
+                        last: target,
+                        stable: 0,
+                    };
+                    fit_window(window, cx, target);
+                    self.renotify(cx, &[150, 400]);
+                } else if stable >= 1 || timed_out {
+                    self.fit = Fit::Done;
+                    self.renotify(cx, &[30]);
+                } else {
+                    self.fit = Fit::Measuring {
+                        since,
+                        last,
+                        stable: stable + 1,
+                    };
+                    self.renotify(cx, &[120]);
+                }
+            }
         }
     }
 }
@@ -118,22 +194,38 @@ fn tokens_text(n: f64) -> String {
 fn money(v: f64) -> String {
     let cents = (v * 100.0).round() as i64;
     let (whole, frac) = (cents / 100, cents % 100);
-    let digits = whole.to_string();
+    format!("${}.{frac:02}", thousands(whole))
+}
+
+/// Whole dollars from $10,000 up ("$48,705"), otherwise with cents: tile values stay short.
+fn money_short(v: f64) -> String {
+    if v >= 10_000.0 {
+        format!("${}", thousands(v.round() as i64))
+    } else {
+        money(v)
+    }
+}
+
+fn thousands(n: i64) -> String {
+    let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);
     }
-    format!("${out}.{frac:02}")
+    out
 }
 
-fn percent(part: f64, whole: f64) -> String {
-    if whole <= 0.0 {
+/// "63%", "<1%", "—" for nothing.
+fn share_text(frac: f64) -> String {
+    if frac <= 0.0 || !frac.is_finite() {
         "—".into()
+    } else if frac < 0.01 {
+        "<1%".into()
     } else {
-        format!("{:.1}%", part / whole * 100.0)
+        format!("{:.0}%", frac * 100.0)
     }
 }
 
@@ -144,64 +236,101 @@ fn provider_label(p: ProviderKind) -> &'static str {
     }
 }
 
-// ---------- building blocks ----------
+/// Stack order of the series: Claude at the bottom of a bar, Codex on top.
+const SERIES: [ProviderKind; 2] = [ProviderKind::Claude, ProviderKind::Codex];
 
-fn seg<T: PartialEq + Clone + 'static>(
-    id: &'static str,
-    options: &[(T, &'static str)],
-    current: &T,
-    t: &Tokens,
-    on_pick: impl Fn(T, &mut gpui::App) + 'static,
-) -> impl IntoElement {
-    let on_pick = Rc::new(on_pick);
-    let mut bar = div()
-        .flex()
-        .flex_none()
-        .h(px(28.0))
-        .gap(px(2.0))
-        .p(px(2.0))
-        .rounded(px(8.0))
-        .bg(t.surface);
-    for (i, (value, label)) in options.iter().enumerate() {
-        let active = value == current;
-        let value = value.clone();
-        let on_pick = on_pick.clone();
-        bar = bar.child(
-            div()
-                .id((id, i))
-                .h(px(24.0))
-                .flex()
-                .items_center()
-                .px(px(10.0))
-                .rounded(px(6.0))
-                .text_xs()
-                .cursor_pointer()
-                .when(active, |d| {
-                    d.bg(t.accent.opacity(if t.dark { 0.2 } else { 0.14 }))
-                        .text_color(t.accent_text())
-                        .font_weight(FontWeight::MEDIUM)
-                })
-                .when(!active, |d| {
-                    d.text_color(t.muted).hover(|s| s.text_color(t.text))
-                })
-                .child(*label)
-                .on_click(move |_, _, cx| on_pick(value.clone(), cx)),
-        );
+fn slot(p: ProviderKind) -> usize {
+    match p {
+        ProviderKind::Claude => 0,
+        ProviderKind::Codex => 1,
     }
-    bar
 }
 
-fn icon_btn(id: &'static str, glyph: Icon, t: &Tokens) -> gpui::Stateful<gpui::Div> {
+/// The metric value of a chart point for one provider slot.
+fn point_value(p: &Point, slot: usize, metric: StatsMetric) -> f64 {
+    match metric {
+        StatsMetric::Tokens => p.work[slot] as f64,
+        StatsMetric::Cost => p.cost[slot],
+    }
+}
+
+fn value_text(v: f64, metric: StatsMetric) -> String {
+    match metric {
+        StatsMetric::Tokens => tokens_text(v),
+        StatsMetric::Cost => money(v),
+    }
+}
+
+/// An axis step and the top of a 3-step axis for a maximum: 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8 x 10^k.
+fn nice_axis(max: f64) -> (f64, f64) {
+    if max <= 0.0 || !max.is_finite() {
+        return (3.0, 1.0);
+    }
+    let raw = max / 3.0;
+    let mag = 10f64.powf(raw.log10().floor());
+    let n = raw / mag;
+    let mult = [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0]
+        .into_iter()
+        .find(|c| *c >= n - 1e-9)
+        .unwrap_or(10.0);
+    let step = mult * mag;
+    (step * 3.0, step)
+}
+
+/// Axis label: "1.5M", "250K", "$15".
+fn axis_text(v: f64, metric: StatsMetric) -> String {
+    if v <= 0.0 {
+        return match metric {
+            StatsMetric::Tokens => "0".into(),
+            StatsMetric::Cost => "$0".into(),
+        };
+    }
+    match metric {
+        StatsMetric::Cost => {
+            if v >= 1.0 {
+                format!("${}", thousands(v.round() as i64))
+            } else {
+                format!("${v:.2}")
+            }
+        }
+        StatsMetric::Tokens => {
+            let (x, suffix) = if v >= 1e9 {
+                (v / 1e9, "B")
+            } else if v >= 1e6 {
+                (v / 1e6, "M")
+            } else if v >= 1e3 {
+                (v / 1e3, "K")
+            } else {
+                (v, "")
+            };
+            let s = format!("{x:.2}");
+            let s = if s.contains('.') {
+                s.trim_end_matches('0').trim_end_matches('.').to_string()
+            } else {
+                s
+            };
+            format!("{s}{suffix}")
+        }
+    }
+}
+
+/// Tabular figures, so columns of numbers line up.
+fn tabular() -> FontFeatures {
+    FontFeatures(std::sync::Arc::new(vec![("tnum".into(), 1)]))
+}
+
+// ---------- building blocks ----------
+
+fn card(t: &Tokens) -> gpui::Div {
     div()
-        .id(id)
-        .size(px(28.0))
-        .rounded(px(8.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hover(|s| s.bg(t.accent.opacity(0.16)))
-        .child(icon(glyph, 15.0, t.muted))
+        .bg(t.surface)
+        .border_1()
+        .border_color(t.border)
+        .rounded(px(10.0))
+}
+
+fn dot(color: Hsla) -> gpui::Div {
+    div().size(px(8.0)).flex_none().rounded_full().bg(color)
 }
 
 fn heading(text: &str) -> gpui::Div {
@@ -211,15 +340,113 @@ fn heading(text: &str) -> gpui::Div {
         .child(SharedString::from(text.to_string()))
 }
 
-/// Colours of the four token kinds in the "by type" bar: input, cache read, cache write, output.
-fn kind_colors(t: &Tokens) -> [Hsla; 4] {
-    let c = |h: u32| -> Hsla { gpui::rgb(h).into() };
-    if t.dark {
-        [c(0x8a8a8f), c(0x55555a), c(0xb8b5b0), c(0xf4efe6)]
+/// A small info icon with a tooltip.
+fn info(id: &'static str, text: String, t: &Tokens) -> AnyElement {
+    div()
+        .id(id)
+        .flex_none()
+        .rounded_full()
+        .hover(|s| s.bg(t.accent.opacity(0.18)))
+        .child(icon(Icon::Info, 12.0, t.faint))
+        .tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
+        .into_any_element()
+}
+
+/// A bar of `frac` (0..1) of the row in `color` on the neutral track.
+fn share_bar(frac: f64, color: Hsla, t: &Tokens) -> gpui::Div {
+    let frac = if frac > 0.0 {
+        frac.clamp(0.015, 1.0) as f32
     } else {
-        [c(0x9ca3af), c(0xd4d4d8), c(0x6b7280), c(0x18181b)]
+        0.0
+    };
+    div()
+        .relative()
+        .flex_1()
+        .min_w(px(40.0))
+        .h(px(8.0))
+        .rounded(px(4.0))
+        .bg(t.track)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .h_full()
+                .w(relative(frac))
+                .rounded(px(4.0))
+                .bg(color),
+        )
+}
+
+/// A right-aligned table cell of a fixed width.
+fn cell(w: f32) -> gpui::Div {
+    div().w(px(w)).flex_none().text_right()
+}
+
+fn header_row(t: &Tokens) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(12.0))
+        .h(px(28.0))
+        .px(px(4.0))
+        .text_xs()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(t.muted)
+        .border_b_1()
+        .border_color(t.border)
+}
+
+fn body_row(t: &Tokens, first: bool) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(12.0))
+        .h(px(32.0))
+        .px(px(4.0))
+        .text_sm()
+        .when(!first, |d| {
+            d.border_t_1().border_color(t.border.opacity(0.6))
+        })
+}
+
+/// What the share bars and the daily chart measure.
+fn total_value(s: &Summary, metric: StatsMetric) -> f64 {
+    match metric {
+        StatsMetric::Tokens => s.work() as f64,
+        StatsMetric::Cost => s.cost.total(),
     }
 }
+
+fn model_value(m: &ModelRow, metric: StatsMetric) -> f64 {
+    match metric {
+        StatsMetric::Tokens => m.tokens.work() as f64,
+        StatsMetric::Cost => m.cost.unwrap_or(0.0),
+    }
+}
+
+fn model_cost_cell(m: &ModelRow, t: &Tokens) -> gpui::Div {
+    match m.cost {
+        Some(c) => cell(100.0)
+            .font_weight(FontWeight::SEMIBOLD)
+            .child(SharedString::from(money(c))),
+        None => cell(100.0).text_color(t.muted).child("Unpriced"),
+    }
+}
+
+/// Models of one provider by the metric, largest first.
+fn models_of(s: &Summary, p: ProviderKind, metric: StatsMetric) -> Vec<&ModelRow> {
+    let mut v: Vec<&ModelRow> = s.models.iter().filter(|m| m.provider == p).collect();
+    v.sort_by(|a, b| {
+        model_value(b, metric)
+            .total_cmp(&model_value(a, metric))
+            .then(b.tokens.work().cmp(&a.tokens.work()))
+            .then(a.model.cmp(&b.model))
+    });
+    v
+}
+
+// ---------- the window ----------
 
 impl Render for StatsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -236,6 +463,7 @@ impl Render for StatsWindow {
                 s.stats_error.clone(),
             )
         };
+        let prefs: StatsSettings = self.state.read(cx).settings.stats.clone();
         let on_limits = self.tab == Tab::Limits;
         if has_scan {
             let key = (self.range, rev);
@@ -263,56 +491,19 @@ impl Render for StatsWindow {
                 cx,
             );
         }
-        if !self.sized
-            && let Some((_, summary)) = &self.summary
-        {
-            self.sized = true;
-            self.fitted_at = Some(std::time::Instant::now());
-            fit_window(window, cx, content_height(summary.models.len()));
-            // Re-check after the first layouts: the estimate may be a few px off.
-            for ms in [250u64, 700, 1400] {
-                cx.spawn(async move |this, cx| {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(ms))
-                        .await;
-                    let _ = this.update(cx, |_, cx| cx.notify());
-                })
-                .detach();
-            }
-        } else if self.sized
-            && !on_limits
-            && self
-                .fitted_at
-                .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2))
-        {
-            // The content column's own height (first child of the scroll area) is the height the
-            // window needs, whether or not it overflows now.
-            if let Some(item) = self.scroll.bounds_for_item(0) {
-                let target = TOP_BAR + f32::from(item.size.height);
-                if item.size.height > gpui::px(0.0) && (self.fit_target - target).abs() > 0.5 {
-                    self.fit_target = target;
-                    fit_window(window, cx, target);
-                }
-            }
-        }
 
-        let range_options = Range::ALL.map(|r| (r, r.label()));
-        let range_bar = seg("range", &range_options, &self.range, &t, {
-            let me = me.clone();
-            move |r, cx| {
-                me.update(cx, |this, cx| {
-                    this.range = r;
-                    cx.notify();
-                })
-            }
-        });
-        let tab_bar = seg(
+        self.drive_fit(window, cx);
+        // While the height is being fitted the Models view is shown whatever was saved.
+        let view = if matches!(self.fit, Fit::Done) {
+            prefs.breakdown
+        } else {
+            StatsBreakdown::Models
+        };
+
+        // ----- title bar -----
+        let tabs = seg(
             "tab",
-            &[
-                (Tab::Cost, "Cost"),
-                (Tab::Tokens, "Tokens"),
-                (Tab::Limits, "Limits"),
-            ],
+            &[(Tab::Usage, "Usage"), (Tab::Limits, "Limits")],
             &self.tab,
             &t,
             {
@@ -325,10 +516,16 @@ impl Render for StatsWindow {
                 }
             },
         );
-        let state = self.state.clone();
+        let status = |text: &'static str| {
+            div()
+                .text_xs()
+                .text_color(t.muted)
+                .child(text)
+                .into_any_element()
+        };
         let copy_note = self
             .copied
-            .filter(|(at, _)| at.elapsed() < std::time::Duration::from_secs(2))
+            .filter(|(at, _)| at.elapsed() < Duration::from_secs(2))
             .map(|(_, ok)| {
                 if ok {
                     "Copied to clipboard"
@@ -336,66 +533,61 @@ impl Render for StatsWindow {
                     "Could not copy"
                 }
             });
-        let top = div()
-            .flex()
-            .items_center()
-            .gap_3()
-            .h(px(52.0))
-            .flex_none()
-            .pt(px(12.0))
-            .pb(px(8.0))
-            .px(px(16.0))
-            .border_b_1()
-            .border_color(t.border)
-            .child(heading("Usage").text_base())
-            .when(scanning && has_scan, |d| {
-                d.child(div().text_xs().text_color(t.muted).child("Scanning…"))
-            })
-            .when_some(copy_note, |d, note| {
-                d.child(div().text_xs().text_color(t.muted).child(note))
-            })
-            .child(div().flex_1())
-            .when(!on_limits, |d| d.child(range_bar))
-            .child(tab_bar)
-            .child(
-                icon_btn("stats-copy", Icon::Copy, &t)
-                    .tooltip(|window, cx| {
-                        gpui_component::tooltip::Tooltip::new("Copy as image").build(window, cx)
-                    })
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let ok = crate::window_style::copy_client_to_clipboard(window).is_some();
-                        this.copied = Some((std::time::Instant::now(), ok));
+        let mut trailing: Vec<AnyElement> = vec![];
+        if scanning && has_scan {
+            trailing.push(status("Scanning…"));
+        }
+        if let Some(note) = copy_note {
+            trailing.push(status(note));
+        }
+        if !on_limits {
+            let ranges = Range::ALL.map(|r| (r, r.short()));
+            trailing.push(seg("range", &ranges, &self.range, &t, {
+                let me = me.clone();
+                move |r, cx| {
+                    me.update(cx, |this, cx| {
+                        this.range = r;
                         cx.notify();
-                        cx.spawn(async move |this, cx| {
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(2100))
-                                .await;
-                            let _ = this.update(cx, |_, cx| cx.notify());
-                        })
-                        .detach();
-                    })),
-            )
-            .child(
-                icon_btn("stats-refresh", Icon::Refresh, &t)
-                    .tooltip(move |window, cx| {
-                        gpui_component::tooltip::Tooltip::new(if on_limits {
-                            "Refresh accounts"
-                        } else {
-                            "Rescan logs"
-                        })
-                        .build(window, cx)
                     })
-                    .on_click(move |_, _, cx| {
-                        state.update(cx, |s, cx| {
-                            if on_limits {
-                                s.refresh(true, cx)
-                            } else {
-                                s.start_scan(cx)
-                            }
-                        })
-                    }),
-            );
+                }
+            }));
+        }
+        trailing.push(
+            icon_button("stats-copy", Icon::Copy, &t)
+                .tooltip(|window, cx| Tooltip::new("Copy as image").build(window, cx))
+                .on_click(cx.listener(|this, _, window, cx| {
+                    let ok = crate::window_style::copy_client_to_clipboard(window).is_some();
+                    this.copied = Some((Instant::now(), ok));
+                    cx.notify();
+                    this.renotify(cx, &[2100]);
+                }))
+                .into_any_element(),
+        );
+        let state = self.state.clone();
+        trailing.push(
+            icon_button("stats-refresh", Icon::Refresh, &t)
+                .tooltip(move |window, cx| {
+                    Tooltip::new(if on_limits {
+                        "Refresh accounts"
+                    } else {
+                        "Rescan logs"
+                    })
+                    .build(window, cx)
+                })
+                .on_click(move |_, _, cx| {
+                    state.update(cx, |s, cx| {
+                        if on_limits {
+                            s.refresh(true, cx)
+                        } else {
+                            s.start_scan(cx)
+                        }
+                    })
+                })
+                .into_any_element(),
+        );
+        let bar = title_bar::bar("stats-bar", "Usage", &t, window, Some(tabs), trailing);
 
+        // ----- body -----
         let price_note = {
             let book = &self.state.read(cx).prices;
             match book.fetched_at {
@@ -407,10 +599,11 @@ impl Render for StatsWindow {
                 None => "API estimate: tokens priced with the built-in price table (LiteLLM list not fetched yet). Models without a public price are Unpriced.".to_string(),
             }
         };
-        let body: gpui::AnyElement = if on_limits {
+        let body: AnyElement = if on_limits {
             crate::limits_board::board(self.state.read(cx), Utc::now(), &t)
         } else if let Some((_, summary)) = self.summary.as_ref().filter(|_| has_scan) {
-            self.board(summary, &t, me, price_note).into_any_element()
+            let state = self.state.clone();
+            usage(summary, &prefs, view, &t, state, price_note, &self.days_scroll)
         } else {
             let text = match (&error, scanning) {
                 (Some(e), false) => e.clone(),
@@ -430,7 +623,8 @@ impl Render for StatsWindow {
             .flex_col()
             .bg(t.bg)
             .text_color(t.text)
-            .child(top)
+            .font_features(tabular())
+            .child(bar)
             .child(
                 div()
                     .relative()
@@ -449,10 +643,10 @@ impl Render for StatsWindow {
                                     .w_full()
                                     .max_w(px(WIDTH))
                                     .mx_auto()
-                                    .pl(px(16.0))
-                                    .pr(px(16.0 + GUTTER))
-                                    .pt(px(14.0))
-                                    .pb(px(16.0))
+                                    .pl(px(PAD))
+                                    .pr(px(PAD + GUTTER))
+                                    .pt(px(16.0))
+                                    .pb(px(20.0))
                                     .flex()
                                     .flex_col()
                                     .gap(px(14.0))
@@ -466,8 +660,8 @@ impl Render for StatsWindow {
 
 /// Window client width: the 1000 px board plus the scrollbar gutter.
 pub const WIDTH: f32 = 1000.0 + GUTTER;
-/// Height of the top bar including its border (the scroll area sits below it).
-const TOP_BAR: f32 = 53.0;
+/// Side padding of the content (the board is 960 px wide at the default width).
+const PAD: f32 = 20.0;
 /// Right gutter reserved for the overlay scrollbar.
 const GUTTER: f32 = 12.0;
 
@@ -486,497 +680,1065 @@ fn fit_window(window: &mut Window, cx: &mut gpui::App, height: f32) {
     });
 }
 
-/// Client height that shows every section and `rows` breakdown rows (at most 12; more scroll):
-/// top bar, padding, chart block, totals, by-type, breakdown header and rows, section gaps.
-fn content_height(rows: usize) -> f32 {
-    558.0 + 34.0 * rows.clamp(1, 12) as f32
+/// First guess of the client height for the Models view with `models` rows, before the content
+/// has been measured: title bar, padding, tiles, by-type card, breakdown header, chart card,
+/// model table with two group rows.
+fn estimate_height(models: usize) -> f32 {
+    46.0 + 16.0
+        + 20.0
+        + 112.0
+        + 14.0
+        + 190.0
+        + 14.0
+        + 30.0
+        + 14.0
+        + 262.0
+        + 14.0
+        + 76.0
+        + 28.0
+        + 32.0 * (models.clamp(1, 14) as f32 + 2.0)
 }
 
-impl StatsWindow {
-    fn board(
-        &self,
-        s: &Summary,
-        t: &Tokens,
-        me: Entity<Self>,
-        price_note: String,
-    ) -> impl IntoElement {
-        let cost_tab = self.tab == Tab::Cost;
-        let total_cost = s.cost.total();
-        let total_tokens = s.tokens.processed() as f64;
+// ---------- Usage view ----------
 
-        // Left: big total, sessions, provider rows.
-        let big = if cost_tab {
-            money(total_cost)
-        } else {
-            tokens_text(total_tokens)
-        };
-        let sessions = format!("{} sessions", s.sessions);
-        let mut left = div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .w(px(280.0))
-            .flex_none()
-            .child(
-                div()
-                    .text_size(px(28.0))
-                    .font_weight(FontWeight::BOLD)
-                    .child(SharedString::from(big)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .text_xs()
-                    .text_color(t.muted)
-                    .child(SharedString::from(sessions))
-                    .when(cost_tab, |d| {
-                        d.child("· API estimate").child(
-                            div()
-                                .id("price-info")
-                                .rounded_full()
-                                .hover(|s| s.bg(t.accent.opacity(0.18)))
-                                .child(icon(Icon::Info, 12.0, t.faint))
-                                .tooltip(move |window, cx| {
-                                    gpui_component::tooltip::Tooltip::new(price_note.clone())
-                                        .build(window, cx)
-                                }),
-                        )
-                    }),
-            );
-        for p in &s.providers {
-            let color = provider_color(p.provider, t.text);
-            let (value, detail) = if cost_tab {
-                (
-                    money(p.cost),
-                    format!(
-                        "{} of cost · {} tokens",
-                        percent(p.cost, total_cost),
-                        tokens_text(p.tokens.processed() as f64)
-                    ),
-                )
-            } else {
-                (
-                    tokens_text(p.tokens.processed() as f64),
-                    format!(
-                        "{} of tokens · {}",
-                        percent(p.tokens.processed() as f64, total_tokens),
-                        money(p.cost)
-                    ),
-                )
-            };
-            left = left.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .pt(px(8.0))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().size(px(8.0)).rounded_full().bg(color))
-                            .child(icon(Icon::Provider(p.provider), 15.0, color))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child(provider_label(p.provider)),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(t.muted)
-                                    .child(SharedString::from(format!("{} sessions", p.sessions))),
-                            )
-                            .child(div().flex_1())
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(SharedString::from(value)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .pl(px(16.0))
-                            .text_xs()
-                            .text_color(t.muted)
-                            .child(SharedString::from(detail)),
-                    ),
-            );
+fn usage(
+    s: &Summary,
+    prefs: &StatsSettings,
+    view: StatsBreakdown,
+    t: &Tokens,
+    state: Entity<AppState>,
+    price_note: String,
+    days_scroll: &gpui::ScrollHandle,
+) -> AnyElement {
+    let metric = prefs.metric;
+    let set_metric = {
+        let state = state.clone();
+        move |m: StatsMetric, cx: &mut gpui::App| {
+            state.update(cx, |st, cx| {
+                st.settings.stats.metric = m;
+                st.save();
+                cx.notify();
+            })
         }
+    };
+    let metric_options = [(StatsMetric::Tokens, "Tokens"), (StatsMetric::Cost, "Cost")];
 
-        let top = div().flex().gap(px(24.0)).child(left).child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .child(heading(if cost_tab {
-                    "Daily cost"
-                } else {
-                    "Daily processed tokens"
-                }))
-                .child(
-                    div()
-                        .h(px(190.0))
-                        .w_full()
-                        .child(chart(&s.points, cost_tab, s.range, t)),
-                ),
-        );
+    let mut header = div()
+        .flex()
+        .items_center()
+        .gap(px(10.0))
+        .child(heading("Breakdown"))
+        .child(div().flex_1());
+    if view == StatsBreakdown::Providers {
+        // The daily chart card (with this switch) is not shown in this view.
+        header = header.child(seg(
+            "metric-b",
+            &metric_options,
+            &metric,
+            t,
+            set_metric.clone(),
+        ));
+    }
+    header = header.child(seg(
+        "breakdown",
+        &[
+            (StatsBreakdown::Models, "Models"),
+            (StatsBreakdown::Providers, "Providers"),
+            (StatsBreakdown::Days, "Days"),
+        ],
+        &view,
+        t,
+        {
+            let state = state.clone();
+            move |v, cx| {
+                state.update(cx, |st, cx| {
+                    st.settings.stats.breakdown = v;
+                    st.save();
+                    cx.notify();
+                })
+            }
+        },
+    ));
 
-        div()
+    let chart = || {
+        chart_card(
+            s,
+            metric,
+            t,
+            seg("metric", &metric_options, &metric, t, set_metric.clone()),
+        )
+    };
+    let breakdown: AnyElement = match view {
+        StatsBreakdown::Models => div()
             .flex()
             .flex_col()
             .gap(px(14.0))
-            .child(top)
-            .child(totals(s, t))
-            .child(by_type(s, cost_tab, t))
-            .child(self.breakdown(s, cost_tab, t, me))
-    }
-
-    fn breakdown(
-        &self,
-        s: &Summary,
-        cost_tab: bool,
-        t: &Tokens,
-        me: Entity<Self>,
-    ) -> impl IntoElement {
-        let total_cost = s.cost.total();
-        let total_tokens = s.tokens.processed() as f64;
-        let by = self.by;
-        let toggle = seg(
-            "by",
-            &[(Breakdown::Model, "Model"), (Breakdown::Day, "Day")],
-            &by,
-            t,
-            move |v, cx| {
-                me.update(cx, |this, cx| {
-                    this.by = v;
-                    cx.notify();
-                })
-            },
-        );
-
-        let cell = |w: f32| div().w(px(w)).flex_none().text_right();
-        let header = div()
-            .flex()
-            .items_center()
-            .px_2()
-            .h(px(26.0))
-            .text_xs()
-            .text_color(t.muted)
-            .border_b_1()
-            .border_color(t.border)
-            .child(div().w(px(32.0)).flex_none().child("#"))
-            .child(div().flex_1().child(match by {
-                Breakdown::Model => "Model",
-                Breakdown::Day => "Day",
-            }))
-            .child(cell(110.0).child("Cost"))
-            .child(cell(80.0).child("Share"))
-            .child(cell(90.0).child("Tokens"));
-
-        let mut rows = div().flex().flex_col();
-        match by {
-            Breakdown::Model => {
-                let mut models: Vec<&ModelRow> = s.models.iter().collect();
-                if !cost_tab {
-                    models.sort_by_key(|m| std::cmp::Reverse(m.tokens.processed()));
-                }
-                let value = |m: &ModelRow| {
-                    if cost_tab {
-                        m.cost.unwrap_or(0.0)
-                    } else {
-                        m.tokens.processed() as f64
-                    }
-                };
-                let max = models.iter().map(|m| value(m)).fold(0.0, f64::max);
-                for (i, m) in models.iter().enumerate() {
-                    let color = provider_color(m.provider, t.text);
-                    let share = if cost_tab {
-                        m.cost.map_or("—".to_string(), |c| percent(c, total_cost))
-                    } else {
-                        percent(m.tokens.processed() as f64, total_tokens)
-                    };
-                    let frac = if max > 0.0 { value(m) / max } else { 0.0 };
-                    rows = rows.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .px_2()
-                            .h(px(34.0))
-                            .border_b_1()
-                            .border_color(t.border)
-                            .text_sm()
-                            .child(
-                                div()
-                                    .w(px(32.0))
-                                    .flex_none()
-                                    .text_xs()
-                                    .text_color(t.muted)
-                                    .child(SharedString::from((i + 1).to_string())),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(4.0))
-                                    .child(
-                                        div()
-                                            .flex()
-                                            .items_center()
-                                            .gap_2()
-                                            .child(icon(Icon::Provider(m.provider), 14.0, color))
-                                            .child(SharedString::from(m.model.clone())),
-                                    )
-                                    .child(
-                                        div()
-                                            .h(px(2.0))
-                                            .w(px((190.0 * frac).max(4.0) as f32))
-                                            .rounded_full()
-                                            .bg(color),
-                                    ),
-                            )
-                            .child(match m.cost {
-                                Some(c) => cell(110.0)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(SharedString::from(money(c))),
-                                None => cell(110.0).text_color(t.muted).child("Unpriced"),
-                            })
-                            .child(
-                                cell(80.0)
-                                    .text_color(t.muted)
-                                    .child(SharedString::from(share)),
-                            )
-                            .child(cell(90.0).child(SharedString::from(tokens_text(
-                                m.tokens.processed() as f64,
-                            )))),
-                    );
-                }
-            }
-            Breakdown::Day => {
-                for (i, d) in s.days.iter().enumerate() {
-                    let share = if cost_tab {
-                        percent(d.cost, total_cost)
-                    } else {
-                        percent(d.tokens as f64, total_tokens)
-                    };
-                    let label = format!(
-                        "{}, {} {}",
-                        d.day.format("%a"),
-                        d.day.format("%b"),
-                        d.day.day()
-                    );
-                    rows = rows.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .px_2()
-                            .h(px(34.0))
-                            .border_b_1()
-                            .border_color(t.border)
-                            .text_sm()
-                            .child(
-                                div()
-                                    .w(px(32.0))
-                                    .flex_none()
-                                    .text_xs()
-                                    .text_color(t.muted)
-                                    .child(SharedString::from((i + 1).to_string())),
-                            )
-                            .child(div().flex_1().child(SharedString::from(label)))
-                            .child(
-                                cell(110.0)
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(SharedString::from(money(d.cost))),
-                            )
-                            .child(
-                                cell(80.0)
-                                    .text_color(t.muted)
-                                    .child(SharedString::from(share)),
-                            )
-                            .child(
-                                cell(90.0).child(SharedString::from(tokens_text(d.tokens as f64))),
-                            ),
-                    );
-                }
-            }
-        }
-        div()
+            .child(chart())
+            .child(model_table(s, metric, t))
+            .into_any_element(),
+        StatsBreakdown::Providers => providers_view(s, metric, t),
+        StatsBreakdown::Days => div()
             .flex()
             .flex_col()
-            .gap_2()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .child(heading("Breakdown"))
-                    .child(div().flex_1())
-                    .child(toggle),
-            )
-            .child(header)
-            .child(rows)
-    }
-}
-
-/// Daily (or hourly) area chart, one line per provider: Claude orange, Codex in the text colour.
-fn chart(points: &[Point], cost_tab: bool, range: Range, t: &Tokens) -> impl IntoElement {
-    let claude = provider_color(ProviderKind::Claude, t.text);
-    let codex = provider_color(ProviderKind::Codex, t.text);
-    let value = move |p: &Point, slot: usize| -> f64 {
-        if cost_tab {
-            p.cost[slot]
-        } else {
-            p.tokens[slot] as f64
-        }
+            .gap(px(14.0))
+            .child(chart())
+            .child(day_table(s, t, days_scroll))
+            .into_any_element(),
     };
-    AreaChart::<Point, String, f64>::new(points.to_vec())
-        .id(("stats-chart", range.days() as usize))
-        .x(|p| p.label.clone())
-        .y(move |p| value(p, 0))
-        .stroke(claude)
-        .fill(claude.opacity(0.14))
-        .name("Claude Code")
-        .y(move |p| value(p, 1))
-        .stroke(codex)
-        .fill(codex.opacity(0.08))
-        .name("Codex")
-        .natural()
-        .natural()
-        .y_axis(true)
-        .y_tick_count(5)
-        .y_tick_format(move |v| {
-            if cost_tab {
-                format!("${v:.0}")
-            } else if v <= 0.0 {
-                "0".to_string()
-            } else {
-                tokens_text(v)
-            }
-        })
-        .tooltip_value(move |_, _, v| {
-            if cost_tab {
-                money(v).into()
-            } else {
-                tokens_text(v).into()
-            }
-        })
-        .x_tick_count(3)
-}
 
-fn totals(s: &Summary, t: &Tokens) -> impl IntoElement {
-    let item = |label: &str, value: String| {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(4.0))
-            .min_w(px(150.0))
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(t.muted)
-                    .child(SharedString::from(label.to_string())),
-            )
-            .child(
-                div()
-                    .text_base()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(SharedString::from(value)),
-            )
-    };
-    let n = |v: u64| tokens_text(v as f64);
     div()
         .flex()
         .flex_col()
-        .gap(px(8.0))
-        .child(heading("Totals"))
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .gap_x_8()
-                .gap_y_3()
-                .child(item("Processed tokens", n(s.tokens.processed())))
-                .child(item("Cached input", n(s.tokens.cache_read)))
-                .child(item("Uncached input", n(s.tokens.input)))
-                .child(item("Output", n(s.tokens.output)))
-                .child(item("Cache savings", money(s.cache_savings))),
-        )
+        .gap(px(14.0))
+        .child(tiles(s, t, price_note))
+        .child(by_type(s, t))
+        .child(header)
+        .child(breakdown)
+        .into_any_element()
 }
 
-/// "Cost by type" / "Tokens by type": a stacked bar with a legend.
-fn by_type(s: &Summary, cost_tab: bool, t: &Tokens) -> impl IntoElement {
-    let parts: [(&str, f64, String); 4] = if cost_tab {
-        [
-            ("Input", s.cost.input, money(s.cost.input)),
-            ("Cache read", s.cost.cache_read, money(s.cost.cache_read)),
-            ("Cache write", s.cost.cache_write, money(s.cost.cache_write)),
-            ("Output", s.cost.output, money(s.cost.output)),
-        ]
-    } else {
-        let n = |v: u64| (v as f64, tokens_text(v as f64));
-        let (a, b, c, d) = (
-            n(s.tokens.input),
-            n(s.tokens.cache_read),
-            n(s.tokens.cache_write),
-            n(s.tokens.output),
-        );
-        [
-            ("Input", a.0, a.1),
-            ("Cache read", b.0, b.1),
-            ("Cache write", c.0, c.1),
-            ("Output", d.0, d.1),
-        ]
-    };
-    let colors = kind_colors(t);
-    let total: f64 = parts.iter().map(|p| p.1).sum();
-    let mut bar = div()
+fn tile_label(text: String, extra: Option<AnyElement>, t: &Tokens) -> gpui::Div {
+    div()
         .flex()
-        .gap(px(1.0))
-        .h(px(8.0))
+        .items_center()
+        .gap(px(5.0))
+        .text_xs()
+        .text_color(t.muted)
+        .child(SharedString::from(text))
+        .children(extra)
+}
+
+fn tile_value(text: String) -> gpui::Div {
+    div()
+        .text_size(px(20.0))
+        .font_weight(FontWeight::SEMIBOLD)
+        .child(SharedString::from(text))
+}
+
+fn tile_sub(text: String, t: &Tokens) -> gpui::Div {
+    div()
+        .text_xs()
+        .text_color(t.muted)
+        .child(SharedString::from(text))
+}
+
+fn small_tile(t: &Tokens) -> gpui::Div {
+    card(t)
+        .w(px(158.0))
+        .flex_none()
+        .flex()
+        .flex_col()
+        .gap(px(3.0))
+        .px(px(14.0))
+        .py(px(14.0))
+}
+
+/// The tiles row: work tokens with the provider split, cache, API estimate, cache saved and the
+/// month run-rate.
+fn tiles(s: &Summary, t: &Tokens, price_note: String) -> AnyElement {
+    let work = s.work();
+    let provider_work = |p: ProviderKind| {
+        s.providers
+            .iter()
+            .find(|x| x.provider == p)
+            .map_or(0, |x| x.tokens.work())
+    };
+
+    let mut split = div()
+        .flex()
         .w_full()
-        .max_w(px(480.0))
-        .rounded_full()
+        .h(px(6.0))
+        .gap(px(2.0))
+        .rounded(px(3.0))
         .overflow_hidden()
         .bg(t.track);
-    let mut legend = div().flex().flex_wrap().gap_x_4().gap_y_1();
-    for (i, (label, v, text)) in parts.iter().enumerate() {
-        if total > 0.0 && *v > 0.0 {
-            bar = bar.child(div().h_full().w(relative((v / total) as f32)).bg(colors[i]));
+    let mut legend = div().flex().flex_wrap().gap_x_4().gap_y_1().text_xs();
+    for p in SERIES {
+        let w = provider_work(p);
+        let color = series_color(p, t.dark);
+        if work > 0 && w > 0 {
+            split = split.child(div().h_full().w(relative(w as f32 / work as f32)).bg(color));
         }
         legend = legend.child(
             div()
                 .flex()
                 .items_center()
-                .gap_1()
-                .text_xs()
-                .child(div().size(px(8.0)).rounded(px(2.0)).bg(colors[i]))
-                .child(div().text_color(t.muted).child(*label))
+                .gap(px(6.0))
+                .child(dot(color))
+                .child(div().text_color(t.muted).child(provider_label(p)))
                 .child(
                     div()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(SharedString::from(text.clone())),
+                        .child(SharedString::from(tokens_text(w as f64))),
                 ),
         );
     }
+    let big = card(t)
+        .flex_1()
+        .min_w(px(220.0))
+        .flex()
+        .flex_col()
+        .gap(px(3.0))
+        .px(px(16.0))
+        .py(px(14.0))
+        .child(tile_label(
+            format!("Work tokens · {}", s.range.label()),
+            Some(info(
+                "work-info",
+                "Work tokens are input + output + cache writes: what the models actually had to process. Cache reads are counted separately.".into(),
+                t,
+            )),
+            t,
+        ))
+        .child(
+            div()
+                .text_size(px(30.0))
+                .font_weight(FontWeight::BOLD)
+                .child(SharedString::from(tokens_text(work as f64))),
+        )
+        .child(div().my(px(6.0)).child(split))
+        .child(legend);
+
+    let hit = s.cache_hit_rate.map_or("—".to_string(), |r| {
+        format!("{:.0}% of all tokens read", r * 100.0)
+    });
+    let cache = small_tile(t)
+        .child(tile_label("Served from cache".into(), None, t))
+        .child(tile_value(tokens_text(s.tokens.cache_read as f64)))
+        .child(tile_sub(hit, t));
+
+    let unpriced = match s.unpriced_models {
+        0 => "at API prices".to_string(),
+        1 => "1 model unpriced".to_string(),
+        n => format!("{n} models unpriced"),
+    };
+    let api = small_tile(t)
+        .child(tile_label(
+            "API estimate".into(),
+            Some(info("price-info", price_note, t)),
+            t,
+        ))
+        .child(tile_value(money_short(s.cost.total())))
+        .child(tile_sub(unpriced, t));
+
+    let saved = small_tile(t)
+        .child(tile_label("Cache saved".into(), None, t))
+        .child(tile_value(money_short(s.cache_savings)))
+        .child(tile_sub("vs. uncached input price".into(), t));
+
+    let month = s.month.month.format("%b").to_string();
+    let (rate, rate_sub) = match s.month.projected {
+        Some(p) => (
+            format!("~{}", money_short(p)),
+            format!("{} so far in {month}", money_short(s.month.cost_so_far)),
+        ),
+        None => ("—".to_string(), "needs a full day of data".to_string()),
+    };
+    let run_rate = small_tile(t)
+        .child(tile_label(
+            format!("On track · {month}"),
+            Some(info(
+                "rate-info",
+                "This month's API estimate so far, extrapolated linearly to the end of the month. Independent of the range.".into(),
+                t,
+            )),
+            t,
+        ))
+        .child(tile_value(rate))
+        .child(tile_sub(rate_sub, t));
+
+    div()
+        .flex()
+        .gap(px(12.0))
+        .child(big)
+        .child(cache)
+        .child(api)
+        .child(saved)
+        .child(run_rate)
+        .into_any_element()
+}
+
+/// "By type": tokens, cost and the share of the cost for the four kinds of token.
+fn by_type(s: &Summary, t: &Tokens) -> AnyElement {
+    let rows = [
+        ("Input", s.tokens.input, s.cost.input),
+        ("Output", s.tokens.output, s.cost.output),
+        ("Cache write", s.tokens.cache_write, s.cost.cache_write),
+        ("Cache read", s.tokens.cache_read, s.cost.cache_read),
+    ];
+    let total = s.cost.total();
+    let mut table = div().flex().flex_col().child(
+        header_row(t)
+            .child(div().w(px(150.0)).flex_none().child("Type"))
+            .child(cell(110.0).child("Tokens"))
+            .child(cell(110.0).child("Cost"))
+            .child(div().flex_1().pl(px(16.0)).child("Share of cost")),
+    );
+    for (i, (name, tokens, cost)) in rows.iter().enumerate() {
+        let frac = if total > 0.0 { cost / total } else { 0.0 };
+        table = table.child(
+            body_row(t, i == 0)
+                .child(div().w(px(150.0)).flex_none().child(*name))
+                .child(cell(110.0).child(SharedString::from(tokens_text(*tokens as f64))))
+                .child(
+                    cell(110.0)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(SharedString::from(money(*cost))),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .pl(px(16.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(share_bar(frac, t.faint, t))
+                        .child(
+                            div()
+                                .w(px(40.0))
+                                .flex_none()
+                                .text_right()
+                                .text_xs()
+                                .text_color(t.muted)
+                                .child(SharedString::from(share_text(frac))),
+                        ),
+                ),
+        );
+    }
+    card(t)
+        .px(px(16.0))
+        .py(px(12.0))
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(heading("By type"))
+        .child(table)
+        .into_any_element()
+}
+
+// ---------- daily chart ----------
+
+/// Tooltip content of one chart column.
+#[derive(Clone)]
+struct DayTip {
+    title: String,
+    total: String,
+    rows: [(Hsla, &'static str, String); 2],
+}
+
+impl DayTip {
+    fn new(p: &Point, metric: StatsMetric, dark: bool) -> Self {
+        let v = |slot: usize| point_value(p, slot, metric);
+        let row = |pr: ProviderKind| {
+            (
+                series_color(pr, dark),
+                provider_label(pr),
+                value_text(v(slot(pr)), metric),
+            )
+        };
+        Self {
+            title: p.title.clone(),
+            total: value_text(v(0) + v(1), metric),
+            rows: [row(ProviderKind::Claude), row(ProviderKind::Codex)],
+        }
+    }
+
+    fn view(&self) -> gpui::Div {
+        let mut d = div().flex().flex_col().gap(px(3.0)).child(
+            div()
+                .flex()
+                .gap(px(10.0))
+                .child(
+                    div()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(SharedString::from(self.title.clone())),
+                )
+                .child(div().child(SharedString::from(self.total.clone()))),
+        );
+        for (color, name, value) in &self.rows {
+            d = d.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(dot(*color))
+                    .child(div().child(*name))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(SharedString::from(value.clone())),
+                    ),
+            );
+        }
+        d
+    }
+}
+
+/// The card around the daily chart: title, what it measures (and since when), the Tokens / Cost
+/// switch, the chart and its legend.
+fn chart_card(s: &Summary, metric: StatsMetric, t: &Tokens, switch: AnyElement) -> AnyElement {
+    let unit = if s.range == Range::Day { "hour" } else { "day" };
+    let (title, what) = match metric {
+        StatsMetric::Tokens => (format!("Work per {unit}"), "input + output + cache writes"),
+        StatsMetric::Cost => (format!("Cost per {unit}"), "API estimate"),
+    };
+    let since = match (s.trimmed, s.first_day) {
+        (true, Some(d)) => format!(" · since first use {}", d.format("%b %-d")),
+        _ => String::new(),
+    };
+    let mut legend = div()
+        .flex()
+        .gap_x_4()
+        .mt(px(8.0))
+        .text_xs()
+        .text_color(t.muted);
+    for p in SERIES {
+        legend = legend.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.0))
+                .child(dot(series_color(p, t.dark)))
+                .child(provider_label(p)),
+        );
+    }
+    card(t)
+        .px(px(16.0))
+        .py(px(14.0))
+        .flex()
+        .flex_col()
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .mb(px(10.0))
+                .child(heading(&title))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(t.muted)
+                        .child(SharedString::from(format!("{what}{since}"))),
+                )
+                .child(div().flex_1())
+                .child(switch),
+        )
+        .child(daily_chart(&s.points, metric, t))
+        .child(legend)
+        .into_any_element()
+}
+
+const PLOT_H: f32 = 160.0;
+const AXIS_W: f32 = 44.0;
+
+/// Stacked bars per day (Claude at the bottom, Codex on top, a 2 px gap between the segments),
+/// three recessive gridlines, short date labels and a tooltip per day. Plain elements: the
+/// hover highlight and tooltip come for free.
+fn daily_chart(points: &[Point], metric: StatsMetric, t: &Tokens) -> AnyElement {
+    let totals: Vec<f64> = points
+        .iter()
+        .map(|p| point_value(p, 0, metric) + point_value(p, 1, metric))
+        .collect();
+    let max = totals.iter().copied().fold(0.0, f64::max);
+    if max <= 0.0 {
+        return div()
+            .h(px(PLOT_H))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_sm()
+            .text_color(t.muted)
+            .child("No usage in this range")
+            .into_any_element();
+    }
+    let (top, step) = nice_axis(max);
+
+    let mut axis = div().relative().w(px(AXIS_W)).h(px(PLOT_H)).flex_none();
+    let mut plot = div().relative().flex_1().h(px(PLOT_H));
+    for g in 0..=3 {
+        let y = PLOT_H * (1.0 - g as f32 / 3.0);
+        axis = axis.child(
+            div()
+                .absolute()
+                .top(px(y - 7.0))
+                .right_0()
+                .text_size(px(10.5))
+                .text_color(t.muted)
+                .child(SharedString::from(axis_text(step * g as f64, metric))),
+        );
+        plot = plot.child(
+            div()
+                .absolute()
+                .left_0()
+                .w_full()
+                .top(px((y - 0.5).clamp(0.0, PLOT_H - 1.0)))
+                .h(px(1.0))
+                .bg(if g == 0 {
+                    t.border
+                } else {
+                    t.border.opacity(0.55)
+                }),
+        );
+    }
+
+    let hover_bg = t.text.opacity(0.06);
+    let mut bars = div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .flex()
+        .items_end();
+    let h_of = |v: f64| -> f32 {
+        if v <= 0.0 {
+            0.0
+        } else {
+            ((v / top) as f32 * PLOT_H).max(1.5)
+        }
+    };
+    for (i, p) in points.iter().enumerate() {
+        let (claude, codex) = (
+            h_of(point_value(p, 0, metric)),
+            h_of(point_value(p, 1, metric)),
+        );
+        let tip = DayTip::new(p, metric, t.dark);
+        let mut stack = div().flex().flex_col().w_full().max_w(px(30.0));
+        if codex > 0.0 {
+            stack = stack.child(
+                div()
+                    .w_full()
+                    .h(px(codex))
+                    .flex_none()
+                    .rounded(px(1.5))
+                    .bg(series_color(ProviderKind::Codex, t.dark)),
+            );
+        }
+        if codex > 0.0 && claude > 0.0 {
+            stack = stack.child(div().w_full().h(px(2.0)).flex_none());
+        }
+        if claude > 0.0 {
+            stack = stack.child(
+                div()
+                    .w_full()
+                    .h(px(claude))
+                    .flex_none()
+                    .rounded(px(1.5))
+                    .bg(series_color(ProviderKind::Claude, t.dark)),
+            );
+        }
+        bars = bars.child(
+            div()
+                .id(("day-col", i))
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .px(px(1.0))
+                .flex()
+                .flex_col()
+                .justify_end()
+                .items_center()
+                .hover(move |s| s.bg(hover_bg))
+                .tooltip(move |window, cx| {
+                    let tip = tip.clone();
+                    Tooltip::element(move |_, _| tip.view()).build(window, cx)
+                })
+                .child(stack),
+        );
+    }
+    plot = plot.child(bars);
+
+    // Date labels under the plot, every n-th column, centred on it.
+    let n = points.len();
+    let every = if n <= 8 { 1 } else { n.div_ceil(7) };
+    let mut labels = div().flex().ml(px(AXIS_W + 8.0)).mt(px(4.0)).h(px(16.0));
+    for (i, p) in points.iter().enumerate() {
+        let mut c = div().relative().flex_1().min_w_0().h_full();
+        if i % every == 0 {
+            c = c.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left(relative(0.5))
+                    .ml(px(-30.0))
+                    .w(px(60.0))
+                    .flex()
+                    .justify_center()
+                    .whitespace_nowrap()
+                    .text_size(px(10.5))
+                    .text_color(t.muted)
+                    .child(SharedString::from(p.label.clone())),
+            );
+        }
+        labels = labels.child(c);
+    }
+
     div()
         .flex()
         .flex_col()
-        .gap(px(6.0))
-        .child(heading(if cost_tab {
-            "Cost by type"
+        .child(div().flex().gap(px(8.0)).child(axis).child(plot))
+        .child(labels)
+        .into_any_element()
+}
+
+// ---------- Models ----------
+
+/// Model table grouped by provider: provider rows carry the subtotals; each model has its
+/// provider dot, a share bar (of work tokens or cost, following the chart switch), work tokens,
+/// tokens including cache and cost.
+fn model_table(s: &Summary, metric: StatsMetric, t: &Tokens) -> AnyElement {
+    let total = total_value(s, metric);
+    let share_title = match metric {
+        StatsMetric::Tokens => "Share of work",
+        StatsMetric::Cost => "Share of cost",
+    };
+    let mut groups: Vec<(ProviderKind, Vec<&ModelRow>)> = SERIES
+        .into_iter()
+        .map(|p| (p, models_of(s, p, metric)))
+        .filter(|(_, rows)| !rows.is_empty())
+        .collect();
+    let group_value = |rows: &[&ModelRow]| rows.iter().map(|m| model_value(m, metric)).sum::<f64>();
+    groups.sort_by(|a, b| group_value(&b.1).total_cmp(&group_value(&a.1)));
+
+    let mut table = div().flex().flex_col().child(
+        header_row(t)
+            .child(div().flex_1().min_w_0().child("Model"))
+            .child(div().w(px(220.0)).flex_none().child(share_title))
+            .child(cell(90.0).child("Work"))
+            .child(cell(100.0).child("Incl. cache"))
+            .child(cell(100.0).child("Cost")),
+    );
+    if groups.is_empty() {
+        table = table.child(
+            div()
+                .py(px(20.0))
+                .text_sm()
+                .text_color(t.muted)
+                .child("No usage in this range"),
+        );
+    }
+    for (gi, (p, rows)) in groups.iter().enumerate() {
+        let color = series_color(*p, t.dark);
+        let work: u64 = rows.iter().map(|m| m.tokens.work()).sum();
+        let incl: u64 = rows.iter().map(|m| m.tokens.processed()).sum();
+        let cost: f64 = rows.iter().filter_map(|m| m.cost).sum();
+        let group_share = if total > 0.0 {
+            group_value(rows) / total
         } else {
-            "Tokens by type"
-        }))
-        .child(bar)
-        .child(legend)
+            0.0
+        };
+        table = table.child(
+            body_row(t, gi == 0)
+                .mt(px(if gi == 0 { 0.0 } else { 6.0 }))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(dot(color))
+                        .child(provider_label(*p)),
+                )
+                .child(
+                    div()
+                        .w(px(220.0))
+                        .flex_none()
+                        .text_xs()
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(t.muted)
+                        .child(SharedString::from(share_text(group_share))),
+                )
+                .child(cell(90.0).child(SharedString::from(tokens_text(work as f64))))
+                .child(
+                    cell(100.0)
+                        .font_weight(FontWeight::NORMAL)
+                        .text_color(t.muted)
+                        .child(SharedString::from(tokens_text(incl as f64))),
+                )
+                .child(cell(100.0).child(SharedString::from(money(cost)))),
+        );
+        for m in rows {
+            let frac = if total > 0.0 {
+                model_value(m, metric) / total
+            } else {
+                0.0
+            };
+            table = table.child(
+                body_row(t, false)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.0))
+                            .pl(px(2.0))
+                            .child(dot(color))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(SharedString::from(m.model.clone())),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .w(px(220.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(share_bar(frac, color, t))
+                            .child(
+                                div()
+                                    .w(px(36.0))
+                                    .flex_none()
+                                    .text_right()
+                                    .text_xs()
+                                    .text_color(t.muted)
+                                    .child(SharedString::from(share_text(frac))),
+                            ),
+                    )
+                    .child(
+                        cell(90.0).child(SharedString::from(tokens_text(m.tokens.work() as f64))),
+                    )
+                    .child(
+                        cell(100.0)
+                            .text_color(t.muted)
+                            .child(SharedString::from(tokens_text(m.tokens.processed() as f64))),
+                    )
+                    .child(model_cost_cell(m, t)),
+            );
+        }
+    }
+    card(t)
+        .px(px(16.0))
+        .py(px(12.0))
+        .child(table)
+        .into_any_element()
+}
+
+// ---------- Providers ----------
+
+/// One column per provider: sessions and cost, KPIs, a mini daily chart in the provider colour
+/// and the provider's models.
+fn providers_view(s: &Summary, metric: StatsMetric, t: &Tokens) -> AnyElement {
+    let total = total_value(s, metric);
+    let mut cols = div().flex().gap(px(14.0)).items_start();
+    for p in SERIES {
+        let color = series_color(p, t.dark);
+        let ps = s.providers.iter().find(|x| x.provider == p);
+        let (work, incl, cost, sessions) = ps.map_or((0, 0, 0.0, 0), |x| {
+            (x.tokens.work(), x.tokens.processed(), x.cost, x.sessions)
+        });
+        let own = match metric {
+            StatsMetric::Tokens => work as f64,
+            StatsMetric::Cost => cost,
+        };
+        let share = if total > 0.0 { own / total } else { 0.0 };
+        let share_label = match metric {
+            StatsMetric::Tokens => "Share of work",
+            StatsMetric::Cost => "Share of cost",
+        };
+        let kpi = |label: &str, value: String| {
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(t.muted)
+                        .child(SharedString::from(label.to_string())),
+                )
+                .child(
+                    div()
+                        .text_size(px(17.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(SharedString::from(value)),
+                )
+        };
+        let models = models_of(s, p, metric);
+        let own_total: f64 = models.iter().map(|m| model_value(m, metric)).sum();
+        let mut list = div().flex().flex_col().mt(px(12.0));
+        if models.is_empty() {
+            list = list.child(
+                div()
+                    .py(px(10.0))
+                    .text_sm()
+                    .text_color(t.muted)
+                    .child("No usage in this range"),
+            );
+        }
+        for (i, m) in models.iter().enumerate() {
+            let frac = if own_total > 0.0 {
+                model_value(m, metric) / own_total
+            } else {
+                0.0
+            };
+            list = list.child(
+                body_row(t, i == 0)
+                    .text_size(px(12.5))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from(m.model.clone())),
+                    )
+                    .child(
+                        div()
+                            .w(px(110.0))
+                            .flex_none()
+                            .flex()
+                            .child(share_bar(frac, color, t)),
+                    )
+                    .child(
+                        cell(58.0).child(SharedString::from(tokens_text(m.tokens.work() as f64))),
+                    )
+                    .child(match m.cost {
+                        Some(c) => cell(78.0).child(SharedString::from(money(c))),
+                        None => cell(78.0).text_color(t.muted).child("Unpriced"),
+                    }),
+            );
+        }
+        cols = cols.child(
+            card(t)
+                .flex_1()
+                .min_w_0()
+                .px(px(16.0))
+                .py(px(14.0))
+                .flex()
+                .flex_col()
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.0))
+                        .mb(px(12.0))
+                        .child(dot(color))
+                        .child(
+                            div()
+                                .text_base()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(provider_label(p)),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(t.muted)
+                                .child(SharedString::from(format!("{sessions} sessions"))),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(SharedString::from(money(cost))),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap(px(8.0))
+                        .mb(px(12.0))
+                        .child(kpi("Work", tokens_text(work as f64)))
+                        .child(kpi("Incl. cache", tokens_text(incl as f64)))
+                        .child(kpi(share_label, share_text(share))),
+                )
+                .child(mini_chart(&s.points, p, metric, color, t))
+                .child(list),
+        );
+    }
+    cols.into_any_element()
+}
+
+/// A daily bar chart of one provider, scaled to its own maximum.
+fn mini_chart(
+    points: &[Point],
+    p: ProviderKind,
+    metric: StatsMetric,
+    color: Hsla,
+    t: &Tokens,
+) -> AnyElement {
+    const H: f32 = 70.0;
+    let sl = slot(p);
+    let max = points
+        .iter()
+        .map(|pt| point_value(pt, sl, metric))
+        .fold(0.0, f64::max);
+    if max <= 0.0 {
+        return div()
+            .h(px(H))
+            .flex()
+            .items_center()
+            .text_xs()
+            .text_color(t.muted)
+            .child("No usage in this range")
+            .into_any_element();
+    }
+    let hover_bg = t.text.opacity(0.06);
+    let mut bars = div()
+        .flex()
+        .items_end()
+        .h(px(H))
+        .border_b_1()
+        .border_color(t.border);
+    for (i, pt) in points.iter().enumerate() {
+        let v = point_value(pt, sl, metric);
+        let h = if v > 0.0 {
+            ((v / max) as f32 * H).max(1.5)
+        } else {
+            0.0
+        };
+        let (title, text) = (pt.title.clone(), value_text(v, metric));
+        bars = bars.child(
+            div()
+                .id((if sl == 0 { "mini-claude" } else { "mini-codex" }, i))
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .px(px(0.5))
+                .flex()
+                .flex_col()
+                .justify_end()
+                .hover(move |s| s.bg(hover_bg))
+                .tooltip(move |window, cx| {
+                    let (title, text) = (title.clone(), text.clone());
+                    Tooltip::element(move |_, _| {
+                        div()
+                            .flex()
+                            .gap(px(10.0))
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(SharedString::from(title.clone())),
+                            )
+                            .child(div().child(SharedString::from(text.clone())))
+                    })
+                    .build(window, cx)
+                })
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(h))
+                        .flex_none()
+                        .rounded(px(1.0))
+                        .bg(color),
+                ),
+        );
+    }
+    let (first, last) = (
+        points.first().map(|p| p.label.clone()).unwrap_or_default(),
+        points.last().map(|p| p.label.clone()).unwrap_or_default(),
+    );
+    div()
+        .flex()
+        .flex_col()
+        .child(bars)
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .mt(px(3.0))
+                .text_size(px(10.5))
+                .text_color(t.muted)
+                .child(SharedString::from(first))
+                .child(SharedString::from(last)),
+        )
+        .into_any_element()
+}
+
+// ---------- Days ----------
+
+/// Rows of the Days table visible at once; older days scroll inside the table (owner,
+/// 2026-11-07: a full 90-day list made the window far too long).
+const DAY_ROWS_VISIBLE: usize = 7;
+const DAY_ROW_H: f32 = 32.0;
+
+/// Day table, newest first: the last 7 days visible, the rest scrolls inside the card.
+fn day_table(s: &Summary, t: &Tokens, scroll: &gpui::ScrollHandle) -> AnyElement {
+    let header = header_row(t)
+        .child(div().flex_1().min_w_0().child("Date"))
+        .child(cell(120.0).child("Work tokens"))
+        .child(cell(120.0).child("Incl. cache"))
+        .child(cell(110.0).child("Cost"))
+        .child(cell(90.0).child("Sessions"));
+    let mut rows = div().flex().flex_col();
+    if s.days.is_empty() {
+        rows = rows.child(
+            div()
+                .py(px(20.0))
+                .text_sm()
+                .text_color(t.muted)
+                .child("No usage in this range"),
+        );
+    }
+    for (i, d) in s.days.iter().enumerate() {
+        rows = rows.child(
+            body_row(t, i == 0)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(SharedString::from(d.day.format("%a, %b %-d").to_string())),
+                )
+                .child(cell(120.0).child(SharedString::from(tokens_text(d.work as f64))))
+                .child(
+                    cell(120.0)
+                        .text_color(t.muted)
+                        .child(SharedString::from(tokens_text(d.tokens as f64))),
+                )
+                .child(
+                    cell(110.0)
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(SharedString::from(money(d.cost))),
+                )
+                .child(
+                    cell(90.0)
+                        .text_color(t.muted)
+                        .child(SharedString::from(d.sessions.to_string())),
+                ),
+        );
+    }
+    let visible = s.days.len().clamp(1, DAY_ROWS_VISIBLE) as f32 * DAY_ROW_H;
+    let body = if s.days.len() > DAY_ROWS_VISIBLE {
+        div()
+            .relative()
+            .h(px(visible))
+            .child(
+                div()
+                    .id("days-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(scroll)
+                    // Room for the overlay scrollbar so it never covers the Sessions column.
+                    .pr(px(GUTTER))
+                    .child(rows),
+            )
+            .vertical_scrollbar(scroll)
+            .into_any_element()
+    } else {
+        rows.into_any_element()
+    };
+    card(t)
+        .px(px(16.0))
+        .py(px(12.0))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .child(header.pr(px(if s.days.len() > DAY_ROWS_VISIBLE {
+                    GUTTER
+                } else {
+                    0.0
+                })))
+                .child(body),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]
@@ -995,7 +1757,34 @@ mod tests {
         assert_eq!(money(4475.42), "$4,475.42");
         assert_eq!(money(48206.47), "$48,206.47");
         assert_eq!(money(0.5), "$0.50");
-        assert_eq!(percent(1.0, 4.0), "25.0%");
-        assert_eq!(percent(1.0, 0.0), "—");
+        assert_eq!(money_short(4473.88), "$4,473.88");
+        assert_eq!(money_short(48705.4), "$48,705");
+        assert_eq!(share_text(0.63), "63%");
+        assert_eq!(share_text(0.004), "<1%");
+        assert_eq!(share_text(0.0), "—");
+    }
+
+    #[test]
+    fn axis_steps_are_round_and_cover_the_maximum() {
+        for max in [0.7, 3.0, 12.0, 99.0, 1234.0, 4.2e6, 297e6, 1.6e9] {
+            let (top, step) = nice_axis(max);
+            assert!(top >= max, "{max}: top {top}");
+            assert!((top - step * 3.0).abs() < 1e-6 * top);
+            // The step is 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8 or 10 times a power of ten.
+            let mag = 10f64.powf(step.log10().floor());
+            let m = step / mag;
+            assert!(
+                [1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 6.0, 8.0, 10.0]
+                    .iter()
+                    .any(|c| (c - m).abs() < 1e-6),
+                "{max}: step {step}"
+            );
+        }
+        assert_eq!(nice_axis(300.0), (300.0, 100.0));
+        assert_eq!(axis_text(1.5e6, StatsMetric::Tokens), "1.5M");
+        assert_eq!(axis_text(250e3, StatsMetric::Tokens), "250K");
+        assert_eq!(axis_text(0.0, StatsMetric::Tokens), "0");
+        assert_eq!(axis_text(1500.0, StatsMetric::Cost), "$1,500");
+        assert_eq!(axis_text(0.5, StatsMetric::Cost), "$0.50");
     }
 }

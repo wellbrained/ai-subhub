@@ -59,6 +59,12 @@ _Avoid_: Project as a synonym for a provider chat project.
 
 **Unpriced**: A model without a price. Its tokens are counted, its cost is not.
 
+**Work tokens**: Input + output + cache writes: the tokens the models actually had to process. Cache reads are left out and shown separately (they are most of all tokens read). The headline number of the Usage view.
+
+**Cache hit rate**: Cache reads as a share of all input read (uncached input + cache reads + cache writes).
+
+**Run-rate**: This calendar month's API estimate so far, extrapolated linearly to the end of the month (shown once 24 hours of the month have passed). Independent of the selected range.
+
 **Update**: A newer SubHub version published as a GitHub Release. Offered only when newer than the running version, never as a downgrade.
 
 **Update mode**: Auto (check, download in the background, install when idle) or Manual (show "Update available", install on click). Both modes check.

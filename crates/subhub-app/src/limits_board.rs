@@ -10,7 +10,7 @@ use gpui::{
 use subhub_core::limits::{self, Slot};
 use subhub_core::model::{Account, ProviderKind, UsageState};
 
-use crate::icons::{Icon, icon, provider_color};
+use crate::icons::{Icon, icon, series_color};
 use crate::state::{AppState, provider_name};
 use crate::taskbar::account_tag;
 use crate::theme::Tokens;
@@ -124,7 +124,7 @@ fn section(
     }
     titles.sort_by_key(|title| limits::title_rank(title));
 
-    let color = provider_color(provider, t.text);
+    let color = series_color(provider, t.dark);
     let mut sec = div().flex().flex_col().gap(px(10.0)).child(
         div()
             .flex()

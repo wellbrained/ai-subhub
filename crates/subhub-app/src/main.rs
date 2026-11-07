@@ -14,6 +14,7 @@ mod state;
 mod stats_window;
 mod taskbar;
 mod theme;
+mod title_bar;
 mod tray;
 mod updater;
 mod whats_new;
@@ -515,11 +516,14 @@ fn open_stats(shell: &ShellRef, cx: &mut App) {
             size(px(stats_window::WIDTH), px(760.0)),
             cx,
         )),
+        // No system caption: the merged title bar (title_bar.rs) is drawn by the window itself.
+        // The title stays for the taskbar and alt-tab.
         titlebar: Some(gpui::TitlebarOptions {
             title: Some("AI SubHub · Statistics".into()),
+            appears_transparent: true,
             ..Default::default()
         }),
-        window_min_size: Some(size(px(720.0), px(480.0))),
+        window_min_size: Some(size(px(760.0), px(480.0))),
         icon: logo::window_icon(),
         ..Default::default()
     };
@@ -549,8 +553,10 @@ fn open_settings(shell: &ShellRef, cx: &mut App) {
     let border = border_color(&state, cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(size(px(900.0), px(640.0)), cx)),
+        // No system caption: the merged title bar (title_bar.rs) is drawn by the window itself.
         titlebar: Some(gpui::TitlebarOptions {
             title: Some("AI SubHub · Settings".into()),
+            appears_transparent: true,
             ..Default::default()
         }),
         window_min_size: Some(size(px(640.0), px(420.0))),

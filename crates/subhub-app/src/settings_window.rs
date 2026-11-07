@@ -501,10 +501,11 @@ struct NavAccount {
 }
 
 impl Render for SettingsWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let d = self.state.read(cx).display().clone();
         let dark = theme::is_dark(d.theme, cx);
         let t = Tokens::new(dark, &d.accent);
+        let bar = crate::title_bar::bar("settings-bar", "Settings", &t, window, None, vec![]);
 
         // Accounts per provider for the menu.
         let providers: Vec<(ProviderKind, Vec<NavAccount>)> = {
@@ -622,15 +623,6 @@ impl Render for SettingsWindow {
             .bg(t.surface)
             .border_r_1()
             .border_color(t.border)
-            .child(
-                div()
-                    .px_3()
-                    .pb_3()
-                    .pt_1()
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("AI SubHub"),
-            )
             .child(top)
             .child(divider(&t))
             .child(nav_label("Accounts", &t))
@@ -662,35 +654,38 @@ impl Render for SettingsWindow {
         div()
             .size_full()
             .flex()
+            .flex_col()
             .bg(t.bg)
             .text_color(t.text)
-            .child(nav)
+            .child(bar)
             .child(
-                // Content scrolls; a toast floats over its bottom edge (a floating toast).
-                div()
-                    .relative()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .child(
-                        div()
-                            .id("content")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_6()
-                                    .p_8()
-                                    .pb(px(72.0))
-                                    .max_w(px(640.0))
-                                    .child(content),
-                            ),
-                    )
-                    .when_some(toast, |d, toast| d.child(toast)),
+                div().flex_1().min_h_0().flex().child(nav).child(
+                    // Content scrolls; a toast floats over its bottom edge (a floating toast).
+                    div()
+                        .relative()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .id("content")
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scroll()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_6()
+                                        .p_8()
+                                        .pb(px(72.0))
+                                        .max_w(px(640.0))
+                                        .child(content),
+                                ),
+                        )
+                        .when_some(toast, |d, toast| d.child(toast)),
+                ),
             )
     }
 }

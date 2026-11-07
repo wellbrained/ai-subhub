@@ -1,7 +1,12 @@
-//! The app logo: a static "skeleton badge" (ADR 0001, 2026-11-06). A Claude-orange provider dot
-//! with the tag pill overlapping its lower edge (like the real taskbar badge), then a long blue
-//! bar over a short amber bar. Never shows live values. Defined on a 16-unit grid and rendered
-//! here with 4x4 supersampling, so tray, window and exe icons are the exact same mark.
+//! The app logo in two forms (ADR 0001):
+//! - **App icon** (window, title bar, exe, Start): `assets/logo.svg`, "Night glow" (owner pick,
+//!   2026-11-07): the skeleton badge on a violet squircle, rendered with resvg.
+//! - **Tray mark**: the same skeleton badge without tile or bar tracks, drawn on a 16-unit grid
+//!   with 4x4 supersampling so it stays crisp at 16 px: orange dot with the tag pill overlapping
+//!   its lower edge, a long blue bar over a short amber bar. Both are static, never live values.
+
+/// The app icon SVG (also served to GPUI as `icons/app-logo.svg`).
+pub const APP_SVG: &[u8] = include_bytes!("../assets/logo.svg");
 
 /// One shape in grid units: circle (cx, cy, r) or rounded rect (x, y, w, h, radius).
 enum Shape {
@@ -9,44 +14,17 @@ enum Shape {
     Rect(f32, f32, f32, f32, f32),
 }
 
-/// Painted back to front (the tag is drawn over the dot).
-const SHAPES: [(Shape, [u8; 3], f32); 7] = [
-    // Bar tracks.
-    (
-        Shape::Rect(8.0, 5.0, 7.0, 2.6, 1.3),
-        [0x8a, 0x8a, 0x92],
-        0.45,
-    ),
-    (
-        Shape::Rect(8.0, 9.9, 7.0, 2.6, 1.3),
-        [0x8a, 0x8a, 0x92],
-        0.45,
-    ),
+/// Tray mark, painted back to front (the tag is drawn over the dot).
+const SHAPES: [(Shape, [u8; 3], f32); 5] = [
     // 5-hour (long, blue) and weekly (short, amber).
-    (
-        Shape::Rect(8.0, 5.0, 6.4, 2.6, 1.3),
-        [0x5b, 0x93, 0xf8],
-        1.0,
-    ),
-    (
-        Shape::Rect(8.0, 9.9, 2.2, 2.6, 1.3),
-        [0xf5, 0x9e, 0x0b],
-        1.0,
-    ),
+    (Shape::Rect(9.2, 4.0, 6.0, 3.0, 1.5), [0x5b, 0x93, 0xf8], 1.0),
+    (Shape::Rect(9.2, 9.6, 3.2, 3.0, 1.5), [0xf5, 0xa5, 0x24], 1.0),
     // Provider dot, lowered so the tag overlaps it.
-    (Shape::Circle(4.0, 7.3, 2.9), [0xd9, 0x77, 0x57], 1.0),
-    // Thin ring in the background colour separates tag from dot, like the real badge.
-    (
-        Shape::Rect(1.0, 9.3, 6.0, 3.6, 1.8),
-        [0x1c, 0x1c, 0x1f],
-        0.0,
-    ),
+    (Shape::Circle(4.5, 6.9, 3.1), [0xe0, 0x7a, 0x55], 1.0),
+    // Cut-out ring separates tag from dot, like the real badge.
+    (Shape::Rect(0.6, 9.0, 7.8, 4.8, 2.4), [0, 0, 0], 0.0),
     // Tag pill.
-    (
-        Shape::Rect(1.4, 9.7, 5.2, 2.8, 1.4),
-        [0xe6, 0x51, 0x00],
-        1.0,
-    ),
+    (Shape::Rect(1.2, 9.6, 6.6, 3.6, 1.8), [0xe8, 0x59, 0x0c], 1.0),
 ];
 
 fn coverage(shape: &Shape, x: f32, y: f32) -> bool {
@@ -116,9 +94,36 @@ pub fn rgba(size: u32) -> Vec<u8> {
     out
 }
 
+/// The app icon, `size` px square, rendered from the SVG; straight (non-premultiplied) RGBA.
+pub fn app_rgba(size: u32) -> Vec<u8> {
+    use resvg::{tiny_skia, usvg};
+    let Ok(tree) = usvg::Tree::from_data(APP_SVG, &usvg::Options::default()) else {
+        return rgba(size);
+    };
+    let Some(mut pixmap) = tiny_skia::Pixmap::new(size, size) else {
+        return rgba(size);
+    };
+    let k = size as f32 / tree.size().width();
+    resvg::render(&tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut());
+    pixmap
+        .pixels()
+        .iter()
+        .flat_map(|p| {
+            let c = p.demultiply();
+            [c.red(), c.green(), c.blue(), c.alpha()]
+        })
+        .collect()
+}
+
+/// The app icon in a title bar, `size` px square.
+pub fn app_mark(size: f32) -> gpui::Img {
+    use gpui::{Styled, px};
+    gpui::img("icons/app-logo.svg").size(px(size)).flex_none()
+}
+
 /// Window icon for GPUI (`WindowOptions.icon`).
 pub fn window_icon() -> Option<std::sync::Arc<image::RgbaImage>> {
-    image::RgbaImage::from_raw(64, 64, rgba(64)).map(std::sync::Arc::new)
+    image::RgbaImage::from_raw(64, 64, app_rgba(64)).map(std::sync::Arc::new)
 }
 
 /// Multi-size .ico (16–256 px, PNG entries) for the exe resource; written by `--write-icon`.
@@ -128,7 +133,7 @@ pub fn ico_bytes() -> Vec<u8> {
         .iter()
         .map(|&s| {
             let mut buf = std::io::Cursor::new(Vec::new());
-            image::RgbaImage::from_raw(s, s, rgba(s))
+            image::RgbaImage::from_raw(s, s, app_rgba(s))
                 .expect("size matches")
                 .write_to(&mut buf, image::ImageFormat::Png)
                 .expect("png encode");

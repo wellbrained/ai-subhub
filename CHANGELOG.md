@@ -4,6 +4,11 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 
 ## Unreleased
 
+- Statistics redesigned: work tokens, cache hit rate, month run-rate, a Models / Providers / Days breakdown and a daily chart per provider.
+- Statistics and Settings have their own title bar in the app's colours instead of the Windows caption bar.
+- New app icon ("Night glow") and a simpler, sharper tray icon.
+- The Days table shows the last week and scrolls for older days; Codex is blue in the statistics.
+
 ## 0.1.0 – 2026-11-07
 
 - Tray popover with every Claude and Codex account: remaining allowance per window, reset countdowns, stale and cooldown states.
