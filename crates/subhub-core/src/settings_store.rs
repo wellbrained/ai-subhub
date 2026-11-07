@@ -29,7 +29,6 @@ pub(crate) fn load(path: &Path) -> anyhow::Result<Settings> {
 
 fn sanitize(mut s: Settings) -> Settings {
     s.refresh_minutes = s.refresh_minutes.clamp(1, 60);
-    s.display.running_out_threshold = s.display.running_out_threshold.min(100);
     // Older files stored "no taskbar display" as the style Off.
     if s.display.taskbar_mode == crate::settings::TaskbarMode::Off {
         s.display.taskbar_enabled = false;
@@ -74,7 +73,6 @@ pub(crate) fn save(path: &Path, settings: &Settings) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::model::{Account, ProviderKind, Reading};
-    use crate::settings::TrayMetric;
     use uuid::Uuid;
 
     fn account() -> Account {
@@ -105,10 +103,7 @@ mod tests {
         let path = dir.path().join("nested").join("settings.json");
         let mut s = Settings::default();
         let a = account();
-        s.display.tray_metric = TrayMetric::Window {
-            account: a.id,
-            key: "five_hour".into(),
-        };
+        s.display.taskbar_favorites = vec![a.id];
         s.readings.insert(
             a.id,
             Reading {
@@ -156,16 +151,32 @@ mod tests {
         fs::write(&path, r#"{"schema_version": 99}"#).unwrap();
         assert_eq!(load(&path).unwrap(), Settings::default());
         assert!(dir.path().join("settings.json.bad").exists());
+        fs::write(&path, r#"{"refresh_minutes": 0}"#).unwrap();
+        assert_eq!(load(&path).unwrap().refresh_minutes, 1);
+    }
+
+    /// Settings removed on 2026-11-07 never make an older file "corrupt": it loads (not moved
+    /// to `.bad`), the removed taskbar styles become Badge, and the next save drops the fields.
+    #[test]
+    fn files_with_removed_settings_load_and_are_not_quarantined() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
         fs::write(
             &path,
-            r#"{"refresh_minutes": 0, "display": {"running_out_threshold": 250}}"#,
+            r#"{"schema_version": 1, "refresh_minutes": 15, "display": {
+                "running_out_threshold": 250, "reset_format": "Exact", "density": "Compact",
+                "tray_metric": "LowestAll", "taskbar_mode": "Focus"}}"#,
         )
         .unwrap();
         let s = load(&path).unwrap();
-        assert_eq!(
-            (s.refresh_minutes, s.display.running_out_threshold),
-            (1, 100)
-        );
+        assert!(!dir.path().join("settings.json.bad").exists());
+        assert_eq!(s.refresh_minutes, 15);
+        assert_eq!(s.display.taskbar_mode, crate::settings::TaskbarMode::Badge);
+        assert!(s.display.taskbar_enabled);
+        save(&path, &s).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("density") && !text.contains("tray_metric"));
+        assert_eq!(load(&path).unwrap(), s);
     }
 
     #[test]

@@ -34,7 +34,9 @@ pub enum Icon {
     WinMaximize,
     WinRestore,
     WinClose,
-    ScanSearch,
+    ChevronRight,
+    ChevronDown,
+    ChevronLeft,
     Provider(ProviderKind),
 }
 
@@ -70,7 +72,9 @@ impl Icon {
             Icon::WinMaximize => "icons/win-maximize.svg",
             Icon::WinRestore => "icons/win-restore.svg",
             Icon::WinClose => "icons/win-close.svg",
-            Icon::ScanSearch => "icons/scan-search.svg",
+            Icon::ChevronRight => "icons/chevron-right.svg",
+            Icon::ChevronDown => "icons/chevron-down.svg",
+            Icon::ChevronLeft => "icons/chevron-left.svg",
             Icon::Provider(ProviderKind::Claude) => "icons/provider-claude.svg",
             Icon::Provider(ProviderKind::Codex) => "icons/provider-openai.svg",
         }

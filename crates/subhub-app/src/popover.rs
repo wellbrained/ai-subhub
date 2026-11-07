@@ -10,7 +10,6 @@ use subhub_core::launch;
 use subhub_core::model::{Account, AllowanceWindow, ProviderKind, UsageState};
 use subhub_core::projects;
 use subhub_core::schedule::Schedule;
-use subhub_core::settings::Density;
 
 use crate::format;
 use crate::icons::{Icon, icon, provider_color};
@@ -169,8 +168,7 @@ impl Popover {
         if let Some(h) = s.display().popover_height {
             return h.clamp(MIN_HEIGHT, 2000.0);
         }
-        let compact = s.display().density == Density::Compact;
-        let row = if compact { 22.0 } else { 26.0 };
+        let row = 26.0;
         let visible: Vec<&Account> = s.settings.accounts.iter().filter(|a| !a.hidden).collect();
         if visible.is_empty() {
             return 240.0;
@@ -196,7 +194,7 @@ impl Popover {
                         0.0
                     }
                     + card_extras(a, s);
-                (if compact { 54.0 } else { 62.0 }) + rows as f32 * row + note
+                62.0 + rows as f32 * row + note
             })
             .sum();
         // Header, provider headings, cards, plus room under the last card (it touched the edge).
@@ -211,7 +209,6 @@ impl Render for Popover {
         let s = self.state.read(cx);
         let d = s.display().clone();
         let t = Tokens::new(theme::is_dark(d.theme, cx), &d.accent);
-        let compact = d.density == Density::Compact;
         let esc_close = self.on_close.clone();
         let esc_state = self.state.clone();
         let notes_dialog = s
@@ -266,14 +263,7 @@ impl Render for Popover {
                     )),
             );
             for acc in accs {
-                body = body.child(account_card(
-                    acc,
-                    s,
-                    &t,
-                    compact,
-                    self.state.clone(),
-                    manage.clone(),
-                ));
+                body = body.child(account_card(acc, s, &t, self.state.clone(), manage.clone()));
             }
         }
 
@@ -670,7 +660,6 @@ fn account_card(
     acc: &Account,
     s: &AppState,
     t: &Tokens,
-    compact: bool,
     state: Entity<AppState>,
     on_manage: std::rc::Rc<dyn Fn(&mut App)>,
 ) -> impl IntoElement {
@@ -681,7 +670,7 @@ fn account_card(
     let reading = s.settings.readings.get(&acc.id);
     let state_for_actions = state.clone();
 
-    // Header row on one line: name, pills, star, freshness. The login email (Display → Show
+    // Header row on one line: name, pills, star, freshness. The login email (Appearance → Show
     // emails) gets its own full-width line under the whole row.
     let email = d.show_email.then(|| acc.email.clone()).flatten();
     let mut head = div().flex().items_center().gap_2().child(
@@ -763,10 +752,10 @@ fn account_card(
     let mut card = div()
         .flex()
         .flex_col()
-        .gap(px(if compact { 3.0 } else { 5.0 }))
+        .gap(px(5.0))
         .mb_2()
         .px(px(14.0))
-        .py(px(if compact { 9.0 } else { 12.0 }))
+        .py(px(12.0))
         .rounded(px(12.0))
         .bg(t.surface)
         .border_1()
@@ -798,7 +787,7 @@ fn account_card(
                 .iter()
                 .filter(|w| !acc.hidden_windows.contains(&w.key))
             {
-                card = card.child(window_row(w, stale, s, t));
+                card = card.child(window_row(acc.id, w, stale, s, t));
             }
             if stale {
                 let msg = status.map(|s| s.message.clone()).filter(|m| !m.is_empty());
@@ -1226,14 +1215,18 @@ fn billing_footer(acc: &Account, s: &AppState, t: &Tokens) -> Option<gpui::Div> 
 
 pub const BILLING_HINT: &str = "Opens your browser's signed-in account, which may differ from this CLI profile. Apple/Google purchases are managed in that store; team plans may need an admin.";
 
-fn window_row(w: &AllowanceWindow, stale: bool, s: &AppState, t: &Tokens) -> impl IntoElement {
+fn window_row(
+    account: uuid::Uuid,
+    w: &AllowanceWindow,
+    stale: bool,
+    s: &AppState,
+    t: &Tokens,
+) -> impl IntoElement {
     let d = s.display();
     let remaining = w.remaining_percent();
-    let color = if stale {
-        t.faint
-    } else {
-        t.level(remaining, d.running_out_threshold)
-    };
+    let color = if stale { t.faint } else { t.level(remaining) };
+    // The countdown ("2d 4h"); the exact local time is in its tooltip.
+    let exact = w.resets_at.map(format::reset_exact);
     let value_color = if stale || color == t.accent {
         t.text
     } else {
@@ -1272,12 +1265,18 @@ fn window_row(w: &AllowanceWindow, stale: bool, s: &AppState, t: &Tokens) -> imp
         )
         .child(
             div()
+                .id(SharedString::from(format!("reset-{account}-{}", w.key)))
                 .w(px(58.0))
                 .flex()
                 .justify_end()
                 .text_xs()
                 .text_color(t.faint)
-                .child(format::reset(w, d, Utc::now()).unwrap_or_else(|| "—".into())),
+                .child(format::reset(w, Utc::now()).unwrap_or_else(|| "—".into()))
+                .when_some(exact, |d, tip| {
+                    d.tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                    })
+                }),
         )
 }
 
@@ -1309,11 +1308,9 @@ fn waiting_message(acc: &Account, s: &AppState, now: chrono::DateTime<Utc>) -> S
 fn empty_state(s: &AppState, t: &Tokens) -> impl IntoElement {
     let hint = match s.hub {
         HubStatus::NoKey => {
-            "Add the hub key in Settings → Hub, or import accounts in Settings → General."
+            "Add the hub key in Settings → Hub, or add accounts in Settings → Accounts."
         }
-        HubStatus::Unreachable => {
-            "The hub is not reachable. Import accounts in Settings → General."
-        }
+        HubStatus::Unreachable => "The hub is not reachable. Add accounts in Settings → Accounts.",
         _ => "Accounts appear here once the hub lists them or you add them in Settings.",
     };
     div()

@@ -10,14 +10,14 @@ use gpui::{
     WindowHandle, WindowKind, WindowOptions, div, point, prelude::*, px, size,
 };
 use subhub_core::model::{Account, AllowanceWindow};
-use subhub_core::settings::{TaskbarAccounts, TaskbarMode, TaskbarPosition};
+use subhub_core::settings::{RUNNING_OUT_PERCENT, TaskbarAccounts, TaskbarMode, TaskbarPosition};
 use uuid::Uuid;
 
 use crate::format;
 use crate::state::AppState;
 use crate::theme::Tokens;
 
-/// Accounts the display shows, per Display → "Taskbar shows" (the popover always shows all).
+/// Accounts the display shows, per Appearance → Accounts (the popover always shows all).
 fn shown(s: &AppState) -> Vec<&Account> {
     let d = s.display();
     let usable = |a: &&Account| !a.hidden && s.settings.readings.contains_key(&a.id);
@@ -61,7 +61,7 @@ fn shown(s: &AppState) -> Vec<&Account> {
                     .windows
                     .iter()
                     .filter(|w| !a.hidden_windows.contains(&w.key))
-                    .any(|w| w.remaining_percent() <= d.running_out_threshold as f64);
+                    .any(|w| w.remaining_percent() <= RUNNING_OUT_PERCENT);
                 if low {
                     v.push(a);
                 }
@@ -76,21 +76,6 @@ fn shown(s: &AppState) -> Vec<&Account> {
     } else {
         list
     }
-}
-
-/// Other hub accounts with room in both windows (Focus style "+N ready").
-fn ready_others(s: &AppState, shown_ids: &[Uuid]) -> usize {
-    s.settings
-        .accounts
-        .iter()
-        .filter(|a| !a.hidden && !shown_ids.contains(&a.id) && !s.is_stale(a.id))
-        .filter(|a| a.hub.as_ref().is_some_and(|h| !h.benched))
-        .filter(|a| {
-            let (session, week) = session_and_week(s, a);
-            session.is_some_and(|w| w.remaining_percent() > 5.0)
-                && week.is_none_or(|w| w.remaining_percent() > 0.0)
-        })
-        .count()
 }
 
 /// Short label for the taskbar: the part after " · " if the label was auto-made from an email
@@ -190,8 +175,6 @@ pub fn width_for(s: &AppState) -> f32 {
     match s.display().taskbar_mode {
         TaskbarMode::Badge => 12.0 + n * 128.0 + (n - 1.0) * 2.0,
         TaskbarMode::Bars => 20.0 + n * 96.0 + (n - 1.0) * 16.0,
-        TaskbarMode::Numbers => 20.0 + n * 84.0 + (n - 1.0) * 16.0,
-        TaskbarMode::Focus => 20.0 + 150.0,
         TaskbarMode::Off => 0.0,
     }
 }
@@ -307,7 +290,6 @@ impl Render for TaskbarDisplay {
             .or(s.settings.steering.current);
         let on_click = self.on_click.clone();
         let accounts = shown(s);
-        let ids: Vec<Uuid> = accounts.iter().map(|a| a.id).collect();
 
         let value = |w: &Option<AllowanceWindow>, stale: bool| -> (String, Hsla, f32) {
             match w {
@@ -316,7 +298,7 @@ impl Render for TaskbarDisplay {
                     let c = if stale {
                         label_c
                     } else {
-                        t.level(w.remaining_percent(), d.running_out_threshold)
+                        t.level(w.remaining_percent())
                     };
                     (format::percent(w, &d), c, format::gauge_fraction(w, &d))
                 }
@@ -345,14 +327,6 @@ impl Render for TaskbarDisplay {
                 c
             }
         };
-        let line = || {
-            div()
-                .h(px(16.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .gap(px(4.0))
-        };
         // Thin outline, no fill: sits on the taskbar like a tray item.
         let outline: Hsla = if t.dark {
             gpui::white().opacity(0.22)
@@ -370,20 +344,6 @@ impl Render for TaskbarDisplay {
             let (sv, sc, sf) = value(&session, stale);
             let (wv, wc, _) = value(&week, stale);
             let dot = target == Some(a.id);
-            let name_line = |extra: Option<String>| {
-                line()
-                    .when(dot, |d| {
-                        d.child(div().size(px(5.0)).rounded_full().bg(t.accent))
-                    })
-                    .child(SharedString::from(short_name(a)))
-                    .when_some(extra, |d, e| d.child(div().text_color(label_c).child(e)))
-            };
-            let pair = || {
-                line()
-                    .child(div().text_color(pct_color(sc)).child(sv.clone()))
-                    .child(div().text_color(label_c).child("·"))
-                    .child(div().text_color(pct_color(wc)).child(wv.clone()))
-            };
             let col = match d.taskbar_mode {
                 // T3-Code-style badge: glyph, coloured account tag, 5h and W mini bars + %.
                 TaskbarMode::Badge => {
@@ -510,17 +470,6 @@ impl Render for TaskbarDisplay {
                             .items_center()
                             .child(bar(sf, sc, 96.0)),
                     ),
-                // Clock-like: "82% · 27%" over the name.
-                TaskbarMode::Numbers => {
-                    div().flex().flex_col().child(pair()).child(name_line(None))
-                }
-                // One account: the pair over "name · +N ready".
-                TaskbarMode::Focus => {
-                    let others = ready_others(s, &ids);
-                    div().flex().flex_col().child(pair()).child(name_line(
-                        (others > 0 && i == 0).then(|| format!("· +{others} ready")),
-                    ))
-                }
             };
             // Hover card per account: remember where the account sits (painted bounds), and
             // report hover with that area in physical screen px.
@@ -561,9 +510,6 @@ impl Render for TaskbarDisplay {
                     }
                 });
             row = row.child(area);
-            if d.taskbar_mode == TaskbarMode::Focus {
-                break;
-            }
         }
         if accounts.is_empty() {
             row = row.child(

@@ -470,9 +470,9 @@ impl Render for HoverCard {
                 let color = if dim {
                     t.faint
                 } else {
-                    t.level(w.remaining_percent, d.running_out_threshold)
+                    t.level(w.remaining_percent)
                 };
-                let reset = format::reset(&aw, &d, now).unwrap_or_default();
+                let reset = format::reset(&aw, now).unwrap_or_default();
                 block = block.child(
                     div()
                         .h(px(METRIC_H))

@@ -27,8 +27,9 @@ struct Cell {
     stale: bool,
 }
 
-/// One account's column: its name, colour and readings by card title.
+/// One account's column: its id, name, colour and readings by card title.
 struct Col {
+    id: uuid::Uuid,
     name: String,
     color: Hsla,
     cells: Vec<(String, Cell)>,
@@ -106,6 +107,7 @@ fn section(
                 })
                 .unwrap_or_default();
             Col {
+                id: a.id,
                 name: a.label.clone(),
                 color: account_tag(s, a).1,
                 cells,
@@ -218,7 +220,7 @@ fn card(title: &str, cols: &[Col], now: DateTime<Utc>, t: &Tokens) -> impl IntoE
                     (Some(at), Some(total)) => Some(limits::pace_fraction(at - now, total)),
                     _ => None,
                 };
-                slot.child(bar(col, cell, pace, now, t))
+                slot.child(bar(col, title, cell, pace, now, t))
             }
             None => slot,
         });
@@ -252,6 +254,7 @@ fn shades(color: Hsla, dark: bool) -> (Hsla, Hsla, Hsla) {
 
 fn bar(
     col: &Col,
+    title: &str,
     cell: &Cell,
     pace: Option<f32>,
     now: DateTime<Utc>,
@@ -359,8 +362,11 @@ fn bar(
         );
     }
     if let Some(text) = pill_text {
+        // The countdown pill; the exact local reset time is in its tooltip.
+        let exact = cell.resets_at.map(crate::format::reset_exact);
         el = el.child(
             div()
+                .id(SharedString::from(format!("reset-{}-{title}", col.id)))
                 .absolute()
                 .top(px((BAR_H - 20.0) / 2.0))
                 .right(px(6.0))
@@ -375,7 +381,12 @@ fn bar(
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(gpui::white())
                 .child(icon(Icon::Refresh, 10.0, gpui::white()))
-                .child(SharedString::from(text)),
+                .child(SharedString::from(text))
+                .when_some(exact, |d, tip| {
+                    d.tooltip(move |window, cx| {
+                        gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                    })
+                }),
         );
     }
     el

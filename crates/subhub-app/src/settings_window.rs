@@ -1,6 +1,7 @@
 //! Settings window: category menu on the left, one content column on the right (owner rule).
-//! Menu: settings pages, then a separated provider section (one page per account), with
-//! "+ Add account" and "About" pinned at the bottom.
+//! Six fixed menu items (owner, 2026-11-07, "Settings distilled"): General, Appearance,
+//! Accounts, Hub, Projects, About & updates. Accounts is a list; a row drills into that
+//! account's page and "+ Add accounts" opens detection / import with a manual folder form.
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -10,16 +11,17 @@ use gpui::{
     AnyElement, Context, Entity, FontWeight, Hsla, IntoElement, ParentElement, Render,
     SharedString, Styled, Subscription, Window, div, prelude::*, px,
 };
-use gpui_component::checkbox::Checkbox;
 use gpui_component::Disableable as _;
+use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::switch::Switch;
 use subhub_core::detect::{DetectStatus, DetectedProfile};
+use subhub_core::hover::{self, Health};
 use subhub_core::model::{Account, ProviderKind};
 use subhub_core::secrets;
 use subhub_core::settings::{
-    Density, DisplaySettings, ResetFormat, TaskbarAccounts, TaskbarMode, TaskbarMonitors,
-    TaskbarPosition, ThemeMode, TrayMetric, UsageStyle,
+    DisplaySettings, TaskbarAccounts, TaskbarMode, TaskbarMonitors, TaskbarPosition, ThemeMode,
+    UsageStyle,
 };
 use uuid::Uuid;
 
@@ -31,35 +33,43 @@ use crate::theme::{self, Tokens};
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     General,
-    Display,
-    Taskbar,
-    Hub,
-    Tools,
-    Projects,
-    Statistics,
-    Updates,
+    Appearance,
+    /// The account list.
+    Accounts,
+    /// One account's page, drilled into from the list (menu: Accounts).
     Account(Uuid),
-    Add,
-    Detect,
+    /// Detection / import plus the manual folder form (menu: Accounts).
+    AddAccounts,
+    Hub,
+    Projects,
     About,
 }
 
-/// Tabs on Detect / Import (owner, 2026-11-07).
+impl Page {
+    /// The menu item that is highlighted for this page.
+    fn menu(self) -> Page {
+        match self {
+            Page::Account(_) | Page::AddAccounts => Page::Accounts,
+            p => p,
+        }
+    }
+}
+
+/// Tabs on Add accounts (owner, 2026-11-07).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DetectTab {
     Cli,
     Hub,
 }
 
-const TOP_PAGES: [(Page, &str); 8] = [
+/// The whole menu: fixed, no scrolling (owner, 2026-11-07).
+const MENU: [(Page, &str); 6] = [
     (Page::General, "General"),
-    (Page::Display, "Display"),
-    (Page::Taskbar, "Taskbar"),
-    (Page::Hub, "Hub & steering"),
-    (Page::Tools, "Tools"),
+    (Page::Appearance, "Appearance"),
+    (Page::Accounts, "Accounts"),
+    (Page::Hub, "Hub"),
     (Page::Projects, "Projects"),
-    (Page::Statistics, "Statistics"),
-    (Page::Updates, "Updates"),
+    (Page::About, "About & updates"),
 ];
 
 const ACCENTS: [&str; 6] = [
@@ -84,7 +94,7 @@ pub struct SettingsWindow {
     add_dir: Entity<InputState>,
     tag: Entity<InputState>,
     add_provider: ProviderKind,
-    // Tools page: CLI path inputs and the text they were last saved with.
+    // General → Advanced: CLI path inputs and the text they were last saved with.
     claude_path: Entity<InputState>,
     codex_path: Entity<InputState>,
     pop_claude: String,
@@ -106,12 +116,18 @@ pub struct SettingsWindow {
     toast_message: Option<String>,
     message_until: Option<std::time::Instant>,
     dismissed: Option<String>,
-    /// Detect / Import page: the last detection and the ticked folders.
+    /// Add accounts page: the last detection and the ticked folders.
     detected: Vec<DetectedProfile>,
     picked: HashSet<PathBuf>,
     /// The account list the detection was computed against (`accounts_sig`).
     detect_sig: u64,
     detect_tab: DetectTab,
+    /// Add accounts: the manual folder form is shown ("Choose a folder manually…").
+    manual_add: bool,
+    /// General → Advanced (sign-in terminal, CLI paths); closed by default.
+    advanced_open: bool,
+    /// Appearance → More options (position, monitors, hover cards); closed by default.
+    more_open: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -144,8 +160,7 @@ impl SettingsWindow {
         let project_label = cx.new(|cx| InputState::new(window, cx).placeholder("Project name"));
         // "Manage projects…" from a Launch menu opens this window straight on Projects.
         let start_page = match state.update(cx, |s, _| s.pending_settings_page.take()) {
-            Some(SettingsTarget::Projects) => Page::Projects,
-            Some(SettingsTarget::Detect) => Page::Detect,
+            Some(target) => target_page(target),
             None => Page::General,
         };
         let rename = cx.new(|cx| InputState::new(window, cx).placeholder("Account name"));
@@ -171,10 +186,8 @@ impl SettingsWindow {
                     this.message = Some(m);
                 }
                 // A Launch menu asked for a page while this window was already open.
-                match state.update(cx, |s, _| s.pending_settings_page.take()) {
-                    Some(SettingsTarget::Projects) => this.go(Page::Projects, window, cx),
-                    Some(SettingsTarget::Detect) => this.go(Page::Detect, window, cx),
-                    None => {}
+                if let Some(target) = state.update(cx, |s, _| s.pending_settings_page.take()) {
+                    this.go(target_page(target), window, cx);
                 }
                 this.redetect_if_accounts_changed(cx);
                 // A change the user made was saved: show the "Saved" toast.
@@ -258,6 +271,9 @@ impl SettingsWindow {
             picked: HashSet::new(),
             detect_sig: 0,
             detect_tab: DetectTab::Cli,
+            manual_add: false,
+            advanced_open: false,
+            more_open: false,
             confirm_remove: None,
             project_label,
             editing_project: None,
@@ -287,10 +303,17 @@ impl SettingsWindow {
             dismissed: None,
             _subs: subs,
         };
-        if this.page == Page::Detect {
-            this.run_detect(cx);
+        if this.page == Page::AddAccounts {
+            this.open_add_accounts(cx);
         }
         this
+    }
+
+    /// Entering Add accounts: detect again; the manual form starts open only when detection
+    /// found nothing.
+    fn open_add_accounts(&mut self, cx: &mut Context<Self>) {
+        self.run_detect(cx);
+        self.manual_add = self.detected.is_empty();
     }
 
     /// Saves edited name/tag of the open account page (Enter, blur, page switch).
@@ -368,7 +391,7 @@ impl SettingsWindow {
             .update(cx, |i, cx| i.set_value(text, window, cx));
     }
 
-    /// Saves a CLI path typed on the Tools page (Enter, blur) when it changed.
+    /// Saves a CLI path typed in General → Advanced (Enter, blur) when it changed.
     fn commit_cli_path(&mut self, provider: ProviderKind, cx: &mut Context<Self>) {
         let (input, last) = match provider {
             ProviderKind::Claude => (&self.claude_path, &mut self.pop_claude),
@@ -449,8 +472,8 @@ impl SettingsWindow {
         self.confirm_remove = None;
         self.confirm_remove_project = None;
         self.message = None;
-        if page == Page::Detect {
-            self.run_detect(cx);
+        if page == Page::AddAccounts {
+            self.open_add_accounts(cx);
         }
         if let Page::Account(id) = page {
             let (label, own) = {
@@ -510,26 +533,12 @@ fn nav_item(id: impl Into<gpui::ElementId>, active: bool, t: &Tokens) -> gpui::S
         })
 }
 
-fn nav_label(text: &str, t: &Tokens) -> impl IntoElement {
-    div()
-        .px_3()
-        .pt_1()
-        .text_xs()
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(t.faint)
-        .child(SharedString::from(text.to_uppercase()))
-}
-
-fn divider(t: &Tokens) -> impl IntoElement {
-    div().h(px(1.0)).mx_2().my_2().bg(t.border)
-}
-
-struct NavAccount {
-    id: Uuid,
-    label: String,
-    hidden: bool,
-    tag: String,
-    tag_color: Hsla,
+/// The page a request from another window ("Manage projects…", first start) opens.
+fn target_page(target: SettingsTarget) -> Page {
+    match target {
+        SettingsTarget::Projects => Page::Projects,
+        SettingsTarget::AddAccounts => Page::AddAccounts,
+    }
 }
 
 impl Render for SettingsWindow {
@@ -539,121 +548,24 @@ impl Render for SettingsWindow {
         let t = Tokens::new(dark, &d.accent);
         let bar = crate::title_bar::bar("settings-bar", "Settings", &t, window, None, vec![]);
 
-        // Accounts per provider for the menu.
-        let providers: Vec<(ProviderKind, Vec<NavAccount>)> = {
-            let s = self.state.read(cx);
-            [ProviderKind::Claude, ProviderKind::Codex]
-                .into_iter()
-                .map(|p| {
-                    let accs = s
-                        .settings
-                        .accounts
-                        .iter()
-                        .filter(|a| a.provider == p)
-                        .map(|a| {
-                            let (tag, tag_color) = account_tag(s, a);
-                            NavAccount {
-                                id: a.id,
-                                label: a.label.clone(),
-                                hidden: a.hidden,
-                                tag,
-                                tag_color,
-                            }
-                        })
-                        .collect();
-                    (p, accs)
-                })
-                .collect()
-        };
-        // An open account page whose account vanished falls back to General.
+        // An open account page whose account vanished falls back to the account list.
         if let Page::Account(id) = self.page
-            && !providers.iter().any(|(_, v)| v.iter().any(|a| a.id == id))
+            && self.state.read(cx).account(id).is_none()
         {
-            self.page = Page::General;
+            self.page = Page::Accounts;
         }
 
-        let mut top = div().flex().flex_col().gap(px(2.0));
-        for (page, label) in TOP_PAGES {
-            top = top.child(
-                nav_item(label, self.page == page, &t)
+        // Six fixed items, no scrolling (owner, 2026-11-07).
+        let mut menu = div().flex().flex_col().gap(px(2.0));
+        for (page, label) in MENU {
+            menu = menu.child(
+                nav_item(label, self.page.menu() == page, &t)
                     .child(label)
                     .on_click(cx.listener(move |this, _, window, cx| this.go(page, window, cx))),
             );
         }
-
-        let mut accounts = div().flex().flex_col().gap(px(2.0));
-        let mut n = 0usize;
-        for (p, list) in &providers {
-            let p = *p;
-            accounts = accounts.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .pt_3()
-                    .pb_1()
-                    .child(icon(Icon::Provider(p), 12.0, provider_color(p, t.muted)))
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(t.faint)
-                            .child(SharedString::from(provider_name(p).to_uppercase())),
-                    ),
-            );
-            if list.is_empty() {
-                accounts = accounts.child(
-                    div()
-                        .px_3()
-                        .py_1()
-                        .text_xs()
-                        .text_color(t.faint)
-                        .child("No accounts"),
-                );
-            }
-            for a in list {
-                let id = a.id;
-                let active = self.page == Page::Account(id);
-                accounts = accounts.child(
-                    nav_item(("acc-nav", n), active, &t)
-                        .when(a.hidden, |d| d.opacity(0.55))
-                        .child(tag_chip(&a.tag, a.tag_color))
-                        .child(div().flex_1().min_w_0().truncate().child(a.label.clone()))
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.go(Page::Account(id), window, cx)
-                        })),
-                );
-                n += 1;
-            }
-        }
-
-        let bottom = div()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(divider(&t))
-            .child(
-                nav_item("nav-add", self.page == Page::Add, &t)
-                    .child(icon(Icon::Plus, 14.0, t.muted))
-                    .child("Add account")
-                    .on_click(cx.listener(|this, _, window, cx| this.go(Page::Add, window, cx))),
-            )
-            .child(
-                nav_item("nav-detect", self.page == Page::Detect, &t)
-                    .child(icon(Icon::ScanSearch, 14.0, t.muted))
-                    .child("Detect / Import")
-                    .on_click(cx.listener(|this, _, window, cx| this.go(Page::Detect, window, cx))),
-            )
-            .child(
-                nav_item("nav-about", self.page == Page::About, &t)
-                    .child(icon(Icon::Info, 14.0, t.muted))
-                    .child("About")
-                    .on_click(cx.listener(|this, _, window, cx| this.go(Page::About, window, cx))),
-            );
-
         let nav = div()
-            .w(px(232.0))
+            .w(px(200.0))
             .flex_none()
             .flex()
             .flex_col()
@@ -661,32 +573,17 @@ impl Render for SettingsWindow {
             .bg(t.surface)
             .border_r_1()
             .border_color(t.border)
-            .child(top)
-            .child(divider(&t))
-            .child(nav_label("Accounts", &t))
-            .child(
-                div()
-                    .id("nav-scroll")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .child(accounts),
-            )
-            .child(bottom);
+            .child(menu);
 
         let content: AnyElement = match self.page {
             Page::General => self.general(&t, cx).into_any_element(),
-            Page::Display => self.display_page(&t, cx).into_any_element(),
-            Page::Taskbar => self.taskbar_page(&t, cx).into_any_element(),
+            Page::Appearance => self.appearance_page(&t, cx).into_any_element(),
+            Page::Accounts => self.accounts_page(&t, cx).into_any_element(),
+            Page::Account(id) => self.account_page(id, &t, cx),
+            Page::AddAccounts => self.add_accounts_page(&t, cx).into_any_element(),
             Page::Hub => self.hub(&t, cx).into_any_element(),
-            Page::Account(id) => self.account_page(id, &t, cx).into_any_element(),
-            Page::Add => self.add_form(&t, cx).into_any_element(),
-            Page::Detect => self.detect_page(&t, cx).into_any_element(),
-            Page::Tools => self.tools_page(&t, cx).into_any_element(),
             Page::Projects => self.projects_page(&t, cx).into_any_element(),
-            Page::Statistics => self.statistics_page(&t, cx).into_any_element(),
-            Page::Updates => self.updates_page(&t, cx).into_any_element(),
-            Page::About => about(&t).into_any_element(),
+            Page::About => self.about_page(&t, cx).into_any_element(),
         };
         let toast = self.toast(&t, cx);
 
@@ -1046,12 +943,96 @@ fn tag_chip(text: &str, color: Hsla) -> impl IntoElement {
         .child(SharedString::from(text.to_string()))
 }
 
+/// A section heading inside a page ("Popover", "Next to the tray").
+fn section(text: &str, t: &Tokens) -> impl IntoElement {
+    div()
+        .pt_5()
+        .pb_1()
+        .text_xs()
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.faint)
+        .child(SharedString::from(text.to_uppercase()))
+}
+
+/// A collapsible group header ("Advanced", "More options"): a chevron that points right while
+/// closed and down while open, the label, and a muted summary of what is inside while closed.
+/// The caller adds the click.
+fn disclosure(
+    id: &'static str,
+    label: &str,
+    summary: &str,
+    open: bool,
+    t: &Tokens,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .gap_2()
+        .mt_2()
+        .py_2()
+        .px_2()
+        .mx(px(-8.0))
+        .rounded(px(8.0))
+        .cursor_pointer()
+        .hover(|s| s.bg(t.surface))
+        .active(|s| s.bg(t.surface_hover))
+        .child(icon(
+            if open {
+                Icon::ChevronDown
+            } else {
+                Icon::ChevronRight
+            },
+            14.0,
+            t.muted,
+        ))
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .child(SharedString::from(label.to_string())),
+        )
+        .when(!open, |d| {
+            d.child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_xs()
+                    .text_color(t.muted)
+                    .child(SharedString::from(summary.to_string())),
+            )
+        })
+}
+
+/// "‹ Accounts" at the top of a page drilled into from the account list. The caller adds the
+/// click.
+fn back_link(id: &'static str, label: &str, t: &Tokens) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_1()
+        .mb_3()
+        .ml(px(-6.0))
+        .pl(px(2.0))
+        .pr_2()
+        .py_1()
+        .rounded(px(6.0))
+        .text_sm()
+        .text_color(t.muted)
+        .cursor_pointer()
+        .hover(|s| s.bg(t.surface).text_color(t.text))
+        .active(|s| s.bg(t.surface_hover))
+        .child(icon(Icon::ChevronLeft, 14.0, t.muted))
+        .child(SharedString::from(label.to_string()))
+}
+
 // ---------- pages ----------
 
 impl SettingsWindow {
     fn general(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
-        let s = self.state.read(cx);
-        let minutes = s.settings.refresh_minutes;
+        let minutes = self.state.read(cx).settings.refresh_minutes;
         let state = self.state.clone();
         div()
             .flex()
@@ -1070,7 +1051,7 @@ impl SettingsWindow {
             ))
             .child(row(
                 "Close button",
-                Some("What ✕ on the popover and this window's close button do."),
+                Some("What ✕ on the popover and this window's close button do. Quit is always in the tray icon's menu."),
                 chips(
                     "closeq",
                     &[(false, "Keep running in tray"), (true, "Quit completely")],
@@ -1114,15 +1095,25 @@ impl SettingsWindow {
                     }),
                 t,
             ))
-            .child(row(
-                "Quit now",
-                Some("Stops SubHub, including the tray icon and taskbar display."),
-                button("quit", "Quit AI SubHub", t, false).on_click(|_, _, cx| cx.quit()),
-                t,
-            ))
+            .child(
+                disclosure(
+                    "advanced",
+                    "Advanced",
+                    "Sign-in terminal, Claude and Codex CLI paths",
+                    self.advanced_open,
+                    t,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.advanced_open = !this.advanced_open;
+                    cx.notify();
+                })),
+            )
+            .when(self.advanced_open, |d| d.child(self.advanced(t, cx)))
     }
 
-    fn display_page(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Appearance = the popover's look plus the display next to the tray (owner, 2026-11-07).
+    /// Rarely changed taskbar rows sit behind "More options".
+    fn appearance_page(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let d = self.state.read(cx).display().clone();
         let u = self.updater();
         let mut accent_row = div().flex().gap_2();
@@ -1142,20 +1133,19 @@ impl SettingsWindow {
                     .on_click(move |_, _, cx| u(Box::new(move |d| d.accent = hex.to_string()), cx)),
             );
         }
-        let (u1, u2, u3, u4, u5, u6, u7, u8) = (
-            u.clone(),
-            u.clone(),
-            u.clone(),
-            u.clone(),
-            u.clone(),
-            u.clone(),
-            u.clone(),
-            u.clone(),
-        );
-        div()
+        // One setter per control (each closure owns its handle).
+        let set = |f: fn(&mut DisplaySettings, bool)| {
+            let u = u.clone();
+            move |v: &bool, _: &mut Window, cx: &mut gpui::App| {
+                let v = *v;
+                u(Box::new(move |d| f(d, v)), cx)
+            }
+        };
+
+        let popover = div()
             .flex()
             .flex_col()
-            .child(heading("Display"))
+            .child(section("Popover", t))
             .child(row(
                 "Theme",
                 None,
@@ -1168,10 +1158,13 @@ impl SettingsWindow {
                     ],
                     &d.theme,
                     t,
-                    move |v, cx| {
-                        u1(Box::new(move |d| d.theme = v), cx);
-                        let dark = theme::is_dark(v, cx);
-                        theme::apply_component_theme(dark, None, cx);
+                    {
+                        let u = u.clone();
+                        move |v, cx| {
+                            u(Box::new(move |d| d.theme = v), cx);
+                            let dark = theme::is_dark(v, cx);
+                            theme::apply_component_theme(dark, None, cx);
+                        }
                     },
                 ),
                 t,
@@ -1179,7 +1172,7 @@ impl SettingsWindow {
             .child(row("Accent color", None, accent_row, t))
             .child(row(
                 "Show usage as",
-                None,
+                Some("Applies to the popover, the taskbar and the hover cards."),
                 chips(
                     "style",
                     &[
@@ -1188,56 +1181,10 @@ impl SettingsWindow {
                     ],
                     &d.usage_style,
                     t,
-                    move |v, cx| u2(Box::new(move |d| d.usage_style = v), cx),
-                ),
-                t,
-            ))
-            .child(row(
-                "Running out below",
-                Some("Windows at or below this % left move to Running out and turn orange."),
-                chips(
-                    "thr",
-                    &[
-                        (10u8, "10%"),
-                        (15, "15%"),
-                        (20, "20%"),
-                        (25, "25%"),
-                        (30, "30%"),
-                        (40, "40%"),
-                    ],
-                    &d.running_out_threshold,
-                    t,
-                    move |v, cx| u3(Box::new(move |d| d.running_out_threshold = v), cx),
-                ),
-                t,
-            ))
-            .child(row(
-                "Reset times",
-                None,
-                chips(
-                    "reset",
-                    &[
-                        (ResetFormat::Relative, "In 2d 4h"),
-                        (ResetFormat::Exact, "Exact time"),
-                    ],
-                    &d.reset_format,
-                    t,
-                    move |v, cx| u4(Box::new(move |d| d.reset_format = v), cx),
-                ),
-                t,
-            ))
-            .child(row(
-                "Density",
-                None,
-                chips(
-                    "density",
-                    &[
-                        (Density::Comfortable, "Comfortable"),
-                        (Density::Compact, "Compact"),
-                    ],
-                    &d.density,
-                    t,
-                    move |v, cx| u5(Box::new(move |d| d.density = v), cx),
+                    {
+                        let u = u.clone();
+                        move |v, cx| u(Box::new(move |d| d.usage_style = v), cx)
+                    },
                 ),
                 t,
             ))
@@ -1246,21 +1193,15 @@ impl SettingsWindow {
                 None,
                 Switch::new("plan")
                     .checked(d.show_plan)
-                    .on_click(move |v, _, cx| {
-                        let v = *v;
-                        u6(Box::new(move |d| d.show_plan = v), cx)
-                    }),
+                    .on_click(set(|d, v| d.show_plan = v)),
                 t,
             ))
             .child(row(
                 "Show emails",
-                Some("Next to account names in the popover."),
+                Some("Under the account names in the popover."),
                 Switch::new("email")
                     .checked(d.show_email)
-                    .on_click(move |v, _, cx| {
-                        let v = *v;
-                        u7(Box::new(move |d| d.show_email = v), cx)
-                    }),
+                    .on_click(set(|d, v| d.show_email = v)),
                 t,
             ))
             .child(row(
@@ -1268,150 +1209,151 @@ impl SettingsWindow {
                 Some("Off: it stays open until you click the tray icon, press Esc or use the close button."),
                 Switch::new("blur-close")
                     .checked(d.close_popover_on_blur)
-                    .on_click({
-                        let u = u.clone();
-                        move |v, _, cx| {
-                            let v = *v;
-                            u(Box::new(move |d| d.close_popover_on_blur = v), cx)
-                        }
-                    }),
+                    .on_click(set(|d, v| d.close_popover_on_blur = v)),
                 t,
-            ))
+            ));
+
+        let mut tray = div()
+            .flex()
+            .flex_col()
+            .child(section("Next to the tray", t))
             .child(row(
-                "Tray icon shows",
-                Some("The ring in the taskbar; pin windows to choose what counts."),
-                chips(
-                    "tray",
-                    &[
-                        (TrayMetric::LowestPinned, "Lowest pinned"),
-                        (TrayMetric::LowestAll, "Lowest overall"),
-                    ],
-                    &if matches!(d.tray_metric, TrayMetric::Window { .. }) {
-                        TrayMetric::LowestPinned
-                    } else {
-                        d.tray_metric.clone()
-                    },
-                    t,
-                    move |v, cx| u8(Box::new(move |d| d.tray_metric = v), cx),
-                ),
+                "Show usage on the taskbar",
+                Some("Always visible next to the tray (hidden during fullscreen); click to open the popover, drag to move. Off: just the tray icon."),
+                Switch::new("tb-on")
+                    .checked(d.taskbar_enabled)
+                    .on_click(set(|d, v| d.taskbar_enabled = v)),
                 t,
-            ))
+            ));
+        // Style, accounts and the rest only matter while the display is on.
+        if d.taskbar_enabled {
+            tray = tray
+                .child(row(
+                    "Style",
+                    Some("Badge: provider, account tag, 5-hour and weekly. Bars: name and the 5-hour bar."),
+                    chips(
+                        "tbm",
+                        &[(TaskbarMode::Badge, "Badge"), (TaskbarMode::Bars, "Bars")],
+                        &d.taskbar_mode,
+                        t,
+                        {
+                            let u = u.clone();
+                            move |v, cx| u(Box::new(move |d| d.taskbar_mode = v), cx)
+                        },
+                    ),
+                    t,
+                ))
+                .child(self.taskbar_accounts_block(&d, t))
+                .child(
+                    disclosure(
+                        "more-options",
+                        "More options",
+                        "Position, monitors, details on hover",
+                        self.more_open,
+                        t,
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.more_open = !this.more_open;
+                        cx.notify();
+                    })),
+                )
+                .when(self.more_open, |page| {
+                    page.child(row(
+                        "Position",
+                        Some("Left sits next to the weather/widgets button, right next to the tray icons. Dragging the display moves it too."),
+                        chips(
+                            "tbp",
+                            &[
+                                (TaskbarPosition::Left, "Left"),
+                                (TaskbarPosition::Right, "Right"),
+                            ],
+                            &d.taskbar_position,
+                            t,
+                            {
+                                let u = u.clone();
+                                move |v, cx| {
+                                    u(
+                                        Box::new(move |d| {
+                                            d.taskbar_position = v;
+                                            d.reset_taskbar_offsets();
+                                        }),
+                                        cx,
+                                    )
+                                }
+                            },
+                        ),
+                        t,
+                    ))
+                    .child(self.monitors_block(&d, t))
+                    .child(row(
+                        "Show details on hover",
+                        Some("A small card over each taskbar badge: both windows, reset times and status."),
+                        Switch::new("hover-on")
+                            .checked(d.hover_details)
+                            .on_click(set(|d, v| d.hover_details = v)),
+                        t,
+                    ))
+                });
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .child(heading("Appearance"))
+            .child(popover)
+            .child(tray)
             .child(
-                div().pt_4().child(
-                    button("reset-display", "Reset display settings", t, false)
+                div().pt_6().child(
+                    button("reset-display", "Reset appearance", t, false)
                         .on_click(move |_, _, cx| u(Box::new(|d| *d = Default::default()), cx)),
                 ),
             )
     }
 
-    fn taskbar_page(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
-        let d = self.state.read(cx).display().clone();
+    /// Which accounts the taskbar shows, compact: Favorites / Focus / Auto and, except for
+    /// Focus (one account), how many.
+    fn taskbar_accounts_block(&self, d: &DisplaySettings, t: &Tokens) -> impl IntoElement {
         let u = self.updater();
-        let (u1, u2, u3, u4) = (u.clone(), u.clone(), u.clone(), u.clone());
-        let u0 = u.clone();
-        div()
+        let u2 = u.clone();
+        let hint = match d.taskbar_accounts {
+            TaskbarAccounts::Favorites => {
+                "Favorites: the accounts starred in the popover (or switched on under Show on taskbar), in star order."
+            }
+            TaskbarAccounts::Focus => "Focus: only the account new hub threads go to.",
+            TaskbarAccounts::Auto => {
+                "Auto: the account new hub threads go to, plus any running low (25% left or less)."
+            }
+        };
+        let controls = div()
             .flex()
-            .flex_col()
-            .child(heading("Taskbar"))
-            .child(row(
-                "Show usage next to the tray",
-                Some("Always visible on the taskbar (hidden during fullscreen); click to open, drag to move. Off: just the tray icon."),
-                Switch::new("tb-on")
-                    .checked(d.taskbar_enabled)
-                    .on_click(move |v, _, cx| {
-                        let v = *v;
-                        u0(Box::new(move |d| d.taskbar_enabled = v), cx)
-                    }),
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .child(chips(
+                "tba",
+                &[
+                    (TaskbarAccounts::Favorites, "Favorites"),
+                    (TaskbarAccounts::Focus, "Focus"),
+                    (TaskbarAccounts::Auto, "Auto"),
+                ],
+                &d.taskbar_accounts,
                 t,
+                move |v, cx| u(Box::new(move |d| d.taskbar_accounts = v), cx),
             ))
-            .child(row(
-                "Show details on hover",
-                Some("A small card over each taskbar badge: both windows, % left, reset times and status. The tray icon keeps its plain text tooltip."),
-                Switch::new("hover-on")
-                    .checked(d.hover_details)
-                    .on_click({
-                        let u = u.clone();
-                        move |v, _, cx| {
-                            let v = *v;
-                            u(Box::new(move |d| d.hover_details = v), cx)
-                        }
-                    }),
-                t,
-            ))
-            // Style, count, accounts and position only matter while the display is on.
-            .when(d.taskbar_enabled, |page| page
-            .child(block(
-                "Style",
-                Some("Badge: provider, account tag, 5h and weekly. Bars: 5-hour bar + %. Numbers: 5-hour over weekly. Focus: one account big + how many others are ready."),
-                chips(
-                    "tbm",
-                    &[
-                        (TaskbarMode::Badge, "Badge"),
-                        (TaskbarMode::Bars, "Bars"),
-                        (TaskbarMode::Numbers, "Numbers"),
-                        (TaskbarMode::Focus, "Focus"),
-                    ],
-                    &d.taskbar_mode,
-                    t,
-                    move |v, cx| u1(Box::new(move |d| d.taskbar_mode = v), cx),
-                ),
-                t,
-            ))
-            .child(row(
-                "How many",
-                Some("Most accounts the taskbar display shows."),
-                chips(
-                    "tbc",
-                    &[(1u8, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")],
-                    &d.taskbar_count,
-                    t,
-                    move |v, cx| u2(Box::new(move |d| d.taskbar_count = v), cx),
-                ),
-                t,
-            ))
-            .child(block(
-                "Which accounts",
-                Some("Favorites: accounts with Show on taskbar switched on (up to 3). Focus: the account new hub threads go to. Auto: that account plus any running low. The popover always shows all."),
-                chips(
-                    "tba",
-                    &[
-                        (TaskbarAccounts::Favorites, "Favorites"),
-                        (TaskbarAccounts::Focus, "Focus"),
-                        (TaskbarAccounts::Auto, "Auto"),
-                    ],
-                    &d.taskbar_accounts,
-                    t,
-                    move |v, cx| u3(Box::new(move |d| d.taskbar_accounts = v), cx),
-                ),
-                t,
-            ))
-            .child(row(
-                "Position",
-                Some("Left sits next to the weather/widgets button, right next to the tray icons."),
-                chips(
-                    "tbp",
-                    &[
-                        (TaskbarPosition::Left, "Left"),
-                        (TaskbarPosition::Right, "Right"),
-                    ],
-                    &d.taskbar_position,
-                    t,
-                    move |v, cx| {
-                        u4(
-                            Box::new(move |d| {
-                                d.taskbar_position = v;
-                                d.reset_taskbar_offsets();
-                            }),
-                            cx,
-                        )
-                    },
-                ),
-                t,
-            ))
-            .child(self.monitors_block(&d, t)))
+            .when(d.taskbar_accounts != TaskbarAccounts::Focus, |c| {
+                c.child(div().pl_2().text_xs().text_color(t.muted).child("up to"))
+                    .child(chips(
+                        "tbc",
+                        &[(1u8, "1"), (2, "2"), (3, "3"), (4, "4"), (5, "5")],
+                        &d.taskbar_count,
+                        t,
+                        move |v, cx| u2(Box::new(move |d| d.taskbar_count = v), cx),
+                    ))
+            });
+        block("Accounts", Some(hint), controls, t)
     }
 
-    /// Settings → Taskbar → Monitors: main taskbar, all taskbars, or chosen monitors.
+    /// Appearance → More options → Monitors: main taskbar, all taskbars, or chosen monitors.
     fn monitors_block(&self, d: &DisplaySettings, t: &Tokens) -> impl IntoElement {
         #[derive(Clone, PartialEq)]
         enum Pick {
@@ -1503,6 +1445,150 @@ impl SettingsWindow {
             }
         }
         col
+    }
+
+    /// "‹ Accounts" over a page drilled into from the list (saves open edits, like any page
+    /// switch).
+    fn back_to_accounts(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+        div().flex().child(
+            back_link("back-accounts", "Accounts", t)
+                .on_click(cx.listener(|this, _, window, cx| this.go(Page::Accounts, window, cx))),
+        )
+    }
+
+    /// Accounts: one row per account grouped by provider; a row opens its page. "+ Add accounts"
+    /// opens detection / import (owner, 2026-11-07: accounts are no longer menu entries).
+    fn accounts_page(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+        struct RowData {
+            id: Uuid,
+            label: String,
+            hidden: bool,
+            tag: String,
+            tag_color: Hsla,
+            source: &'static str,
+            health: Health,
+        }
+        let groups: Vec<(ProviderKind, Vec<RowData>)> = {
+            let s = self.state.read(cx);
+            let views = crate::hover_card::account_views(s);
+            [ProviderKind::Claude, ProviderKind::Codex]
+                .into_iter()
+                .map(|p| {
+                    let rows = views
+                        .iter()
+                        .filter(|v| v.account.provider == p)
+                        .map(|v| {
+                            let a = v.account;
+                            let (tag, tag_color) = account_tag(s, a);
+                            RowData {
+                                id: a.id,
+                                label: a.label.clone(),
+                                hidden: a.hidden,
+                                tag,
+                                tag_color,
+                                source: source_hint(a),
+                                health: hover::health(v),
+                            }
+                        })
+                        .collect();
+                    (p, rows)
+                })
+                .collect()
+        };
+
+        let mut list = div().flex().flex_col();
+        let mut n = 0usize;
+        for (p, rows) in groups {
+            list = list.child(provider_heading(p, t));
+            if rows.is_empty() {
+                list = list.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_xs()
+                        .text_color(t.faint)
+                        .child("No accounts"),
+                );
+            }
+            for r in rows {
+                let id = r.id;
+                let (status, status_color) = match r.health {
+                    Health::Fresh => ("Fresh", t.ok),
+                    Health::NoReading | Health::Benched => {
+                        (r.health.label().unwrap_or_default(), t.muted)
+                    }
+                    h => (h.label().unwrap_or_default(), t.warn),
+                };
+                list = list.child(
+                    div()
+                        .id(("acc-row", n))
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .mx(px(-12.0))
+                        .px_3()
+                        .py(px(10.0))
+                        .rounded(px(8.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.surface))
+                        .active(|s| s.bg(t.surface_hover))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_1()
+                                .min_w_0()
+                                .items_center()
+                                .gap_3()
+                                .when(r.hidden, |d| d.opacity(0.55))
+                                .child(tag_chip(&r.tag, r.tag_color))
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .child(SharedString::from(r.label)),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(t.muted)
+                                        .child(r.source),
+                                )
+                                .when(r.hidden, |d| d.child(tag("Hidden", t.muted, t))),
+                        )
+                        .child(tag(status, status_color, t))
+                        .child(icon(Icon::ChevronRight, 14.0, t.faint))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.go(Page::Account(id), window, cx)
+                        })),
+                );
+                n += 1;
+            }
+        }
+
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(div().flex_1().child(heading("Accounts")))
+                    .child(
+                        button("add-accounts", "Add accounts", t, true)
+                            .child(icon(Icon::Plus, 12.0, gpui::white()))
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.go(Page::AddAccounts, window, cx)
+                            })),
+                    ),
+            )
+            .child(div().text_xs().text_color(t.muted).child(
+                "Hub logins appear by themselves; CLI profiles on this PC are added with Add accounts. Click an account for its name, tag, group, billing date, sign-in and removal.",
+            ))
+            .child(list)
     }
 
     fn account_page(&self, id: Uuid, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {
@@ -1605,10 +1691,9 @@ impl SettingsWindow {
             );
         }
         for (i, w) in windows.iter().enumerate() {
-            let pinned = acc.pinned_windows.contains(&w.key);
             let hidden = acc.hidden_windows.contains(&w.key);
-            let (sp, sh) = (self.state.clone(), self.state.clone());
-            let (k1, k2) = (w.key.clone(), w.key.clone());
+            let sh = self.state.clone();
+            let k2 = w.key.clone();
             win_list = win_list.child(
                 div()
                     .flex()
@@ -1620,16 +1705,6 @@ impl SettingsWindow {
                             .text_sm()
                             .when(hidden, |d| d.text_color(t.faint))
                             .child(w.label.clone()),
-                    )
-                    .child(
-                        button(("pin", i), if pinned { "Pinned" } else { "Pin" }, t, pinned)
-                            .when(pinned, |d| d.child(icon(Icon::Check, 12.0, gpui::white())))
-                            .on_click(move |_, _, cx| {
-                                sp.update(cx, |s, cx| {
-                                    s.toggle_pin(id, &k1);
-                                    cx.notify();
-                                })
-                            }),
                     )
                     .child(
                         button(
@@ -1719,7 +1794,7 @@ impl SettingsWindow {
                     cx.notify();
                 });
                 this.confirm_remove = None;
-                this.page = Page::General;
+                this.page = Page::Accounts;
             } else {
                 this.confirm_remove = Some(id);
             }
@@ -1731,6 +1806,7 @@ impl SettingsWindow {
         div()
             .flex()
             .flex_col()
+            .child(self.back_to_accounts(t, cx))
             .child(header)
             .child(row(
                 "Name",
@@ -1782,7 +1858,7 @@ impl SettingsWindow {
             .child(block("Group", None, group_block, t))
             .child(block(
                 "Windows",
-                Some("Pin a window to count it for the tray ring; hide it to drop it from the views."),
+                Some("Hide a window to drop it from the popover, the taskbar and the hover cards."),
                 win_list,
                 t,
             ))
@@ -1808,7 +1884,7 @@ impl SettingsWindow {
         };
         let hint = if acc.profile_dir.is_some() {
             format!(
-                "Sign in opens the {} login for this profile in {terminal} (change it in Tools). Usage refreshes when it ends. Retry skips failure backoff, never a provider cooldown.",
+                "Sign in opens the {} login for this profile in {terminal} (change it in General → Advanced). Usage refreshes when it ends. Retry skips failure backoff, never a provider cooldown.",
                 provider_name(acc.provider)
             )
         } else {
@@ -1954,7 +2030,8 @@ impl SettingsWindow {
         .into_any_element()
     }
 
-    fn tools_page(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+    /// General → Advanced (the former Tools page): what SubHub starts for sign-in and launching.
+    fn advanced(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let s = self.state.read(cx);
         let terminal = s.settings.tools.terminal;
         let wt = subhub_core::launch::find_windows_terminal();
@@ -1969,10 +2046,9 @@ impl SettingsWindow {
         let mut page = div()
             .flex()
             .flex_col()
-            .child(heading("Tools"))
             .child(
-                div().pb_2().text_xs().text_color(t.muted).child(
-                    "What SubHub starts for sign-in. Leave a path empty to detect the CLI automatically.",
+                div().pb_1().text_xs().text_color(t.muted).child(
+                    "What SubHub starts for sign-in and the Launch menus. Both CLIs are detected automatically; set a path only when that fails.",
                 ),
             )
             .child(row(
@@ -2208,242 +2284,10 @@ impl SettingsWindow {
             .child(rows)
     }
 
-    fn statistics_page(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
-        let (book, updating, seen) = {
-            let s = self.state.read(cx);
-            let seen: std::collections::BTreeSet<String> = s
-                .stats
-                .as_ref()
-                .map(|sc| sc.buckets.iter().map(|b| b.model.clone()).collect())
-                .unwrap_or_default();
-            (s.prices.clone(), s.prices_updating, seen)
-        };
-        let now = chrono::Utc::now();
-        let status = if updating {
-            "Updating prices…".to_string()
-        } else {
-            match (book.fetched_at, &book.error) {
-                (Some(at), None) => {
-                    format!(
-                        "Prices from LiteLLM · updated {}",
-                        crate::format::ago(at, now)
-                    )
-                }
-                (Some(at), Some(e)) => format!(
-                    "Prices from LiteLLM · updated {} · last update failed: {e}",
-                    crate::format::ago(at, now)
-                ),
-                (None, Some(e)) => format!("Built-in prices · LiteLLM not reachable: {e}"),
-                (None, None) => "Built-in prices · not updated yet".to_string(),
-            }
-        };
-
-        // Groups: publisher, then family; only models seen in the logs, plus a family's current
-        // model when none of its models was seen.
-        const CURRENT: [&str; 5] = [
-            "claude-opus-5-5",
-            "claude-sonnet-5-5",
-            "claude-haiku-5-5",
-            "claude-fable-5-1",
-            "gpt-6.1-sol",
-        ];
-        let publisher = |m: &str| -> usize {
-            if m.starts_with("claude") {
-                0
-            } else if m.starts_with("gpt")
-                || m.contains("codex")
-                || m.starts_with("o1")
-                || m.starts_with("o3")
-                || m.starts_with("o4")
-            {
-                1
-            } else {
-                2
-            }
-        };
-        let family = |m: &str| -> usize {
-            match publisher(m) {
-                0 => ["opus", "sonnet", "haiku", "fable"]
-                    .iter()
-                    .position(|f| m.contains(f))
-                    .unwrap_or(4),
-                1 if m.contains("codex") => 1,
-                1 if m.starts_with("gpt") => 0,
-                1 => 2,
-                _ => 0,
-            }
-        };
-        const FAMILIES: [&[&str]; 3] = [
-            &["Opus", "Sonnet", "Haiku", "Fable", "Other"],
-            &["GPT", "Codex", "Other"],
-            &["Models"],
-        ];
-        const PUBLISHERS: [&str; 3] = ["Anthropic", "OpenAI", "Other"];
-        let mut groups: [Vec<std::collections::BTreeSet<String>>; 3] = [
-            vec![Default::default(); 5],
-            vec![Default::default(); 3],
-            vec![Default::default(); 1],
-        ];
-        for m in &seen {
-            groups[publisher(m)][family(m)].insert(m.clone());
-        }
-        for m in CURRENT {
-            let (p, f) = (publisher(m), family(m));
-            if groups[p][f].is_empty() {
-                groups[p][f].insert(m.to_string());
-            }
-        }
-
-        let price_text = |v: f64| {
-            let s = format!("{v:.3}");
-            let s = s.trim_end_matches('0');
-            let s = if s.split('.').nth(1).is_some_and(|d| d.len() >= 2) {
-                s.to_string()
-            } else {
-                format!("{v:.2}")
-            };
-            format!("${s}")
-        };
-        let cell = |w: f32| div().w(px(w)).flex_none().text_right().text_sm();
-        let head = |text: &'static str, w: f32| {
-            div()
-                .w(px(w))
-                .flex_none()
-                .text_right()
-                .text_xs()
-                .text_color(t.muted)
-                .child(text)
-        };
-        let mut table = div().flex().flex_col();
-        for (p, name) in PUBLISHERS.iter().enumerate() {
-            if groups[p].iter().all(|g| g.is_empty()) {
-                continue;
-            }
-            table = table.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pt_4()
-                    .pb_1()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(t.faint)
-                            .child(SharedString::from(name.to_uppercase())),
-                    )
-                    .child(head("Input", 60.0))
-                    .child(head("Output", 60.0))
-                    .child(head("Cache write", 70.0))
-                    .child(head("Cache read", 70.0))
-                    .child(div().w(px(96.0)).flex_none()),
-            );
-            for (fi, models) in groups[p].iter().enumerate() {
-                if models.is_empty() {
-                    continue;
-                }
-                table = table.child(
-                    div()
-                        .pt_2()
-                        .pb_1()
-                        .text_xs()
-                        .text_color(t.muted)
-                        .child(FAMILIES[p][fi]),
-                );
-                for m in models {
-                    let found = book.lookup(m);
-                    let mut line = div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .py(px(6.0))
-                        .border_b_1()
-                        .border_color(t.border)
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_sm()
-                                .child(SharedString::from(m.clone())),
-                        );
-                    let (badge, color) = match found {
-                        Some((price, src)) => {
-                            line = line
-                                .child(
-                                    cell(60.0).child(SharedString::from(price_text(price.input))),
-                                )
-                                .child(
-                                    cell(60.0).child(SharedString::from(price_text(price.output))),
-                                )
-                                .child(
-                                    cell(70.0)
-                                        .child(SharedString::from(price_text(price.cache_write))),
-                                )
-                                .child(
-                                    cell(70.0)
-                                        .child(SharedString::from(price_text(price.cache_read))),
-                                );
-                            match src {
-                                subhub_core::stats::PriceSource::LiteLlm => ("LiteLLM", t.accent),
-                                subhub_core::stats::PriceSource::BuiltIn => ("built-in", t.muted),
-                            }
-                        }
-                        None => {
-                            line = line.child(cell(260.0).text_color(t.muted).child("—"));
-                            ("No public price", t.warn)
-                        }
-                    };
-                    table = table.child(
-                        line.child(
-                            div()
-                                .w(px(96.0))
-                                .flex_none()
-                                .flex()
-                                .justify_end()
-                                .child(tag(badge, color, t)),
-                        ),
-                    );
-                }
-            }
-        }
-        div()
-            .flex()
-            .flex_col()
-            .child(heading("Statistics"))
-            .child(div().pb_2().text_xs().text_color(t.muted).child(
-                "Usage statistics are an API estimate: the tokens in your session logs priced per million tokens. A model without a public price shows as Unpriced (counted in tokens, not in cost).",
-            ))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .pt_3()
-                    .child(div().flex_1().text_sm().child(SharedString::from(status)))
-                    .child(
-                        button(
-                            "prices-update",
-                            if updating { "Updating…" } else { "Update now" },
-                            t,
-                            true,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.state.update(cx, |s, cx| s.update_prices(true, cx));
-                        })),
-                    ),
-            )
-            .child(div().pt_1().text_xs().text_color(t.muted).child(
-                "Prices are read-only and update automatically from LiteLLM's public price list (daily); the built-in table fills any gap. Shown: models found in your logs.",
-            ))
-            .child(table)
-    }
-
-    /// Settings -> Updates: mode, version, last check, Check now, and the status with Install.
-    /// Messages come from `updater` and are already safe (no URLs, paths or tokens).
-    fn updates_page(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+    /// About & updates: what SubHub is, then update mode, version, last check, Check now, the
+    /// status with Install, and the settings file location. Messages come from `updater` and are
+    /// already safe (no URLs, paths or tokens).
+    fn about_page(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::updater::{Phase, running_version};
         use subhub_core::settings::UpdateMode;
         let (mode, last_check, phase, available, downloaded, error, dev) = {
@@ -2618,25 +2462,54 @@ impl SettingsWindow {
         div()
             .flex()
             .flex_col()
-            .child(heading("Updates"))
-            .child(mode_row)
+            .child(heading("About & updates"))
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .pb_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(t.muted)
+                            .child("Built with Rust + GPUI. Free, open source (MIT), local: no account, backend or telemetry."),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(t.muted)
+                            .child("Claude usage uses an undocumented endpoint and can break when the provider changes it."),
+                    ),
+            )
             .child(version_row)
+            .child(mode_row)
             .child(check_row)
             .when_some(status_row, |d, r| d.child(r))
+            .child(block(
+                "Settings file",
+                Some("Preferences, accounts and the last readings; never keys or tokens."),
+                div()
+                    .text_xs()
+                    .text_color(t.muted)
+                    .child(subhub_core::settings::default_path().display().to_string()),
+                t,
+            ))
     }
 
-    fn add_form(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Add accounts → "Choose a folder manually…": provider, name and profile folder (the old
+    /// Add account page), for a profile detection does not find.
+    fn manual_form(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let provider = self.add_provider;
         div()
             .flex()
             .flex_col()
-            .child(heading("Add account"))
             .child(
                 div()
                     .pb_2()
                     .text_xs()
                     .text_color(t.muted)
-                    .child("Adds a CLI profile. Only needed for logins the hub does not hold."),
+                    .child("Adds a CLI profile folder that detection did not find. A login that is already added is linked, never added twice."),
             )
             .child(row(
                 "Provider",
@@ -2719,7 +2592,7 @@ impl SettingsWindow {
     /// that were not importable before get their default tick.
     fn redetect_if_accounts_changed(&mut self, cx: &mut Context<Self>) {
         let sig = accounts_sig(self.state.read(cx));
-        if self.page != Page::Detect || sig == self.detect_sig {
+        if self.page != Page::AddAccounts || sig == self.detect_sig {
             return;
         }
         let before: HashSet<PathBuf> = self
@@ -2770,9 +2643,10 @@ impl SettingsWindow {
         cx.notify();
     }
 
-    /// Detect / Import: CLI profiles found on this PC (with what importing would do) and the
-    /// hub's logins, which the hub adds by itself on each refresh.
-    fn detect_page(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Add accounts (from Accounts): CLI profiles found on this PC (with what importing would do)
+    /// and the hub's logins, which the hub adds by itself on each refresh; at the bottom of the
+    /// CLI tab the manual folder form.
+    fn add_accounts_page(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let importable: Vec<&DetectedProfile> =
             self.detected.iter().filter(|d| d.importable()).collect();
         let n_picked = importable
@@ -2829,22 +2703,7 @@ impl SettingsWindow {
 
         let mut list = div().flex().flex_col();
         for p in [ProviderKind::Claude, ProviderKind::Codex] {
-            list = list.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .pt_4()
-                    .pb_1()
-                    .child(icon(Icon::Provider(p), 12.0, provider_color(p, t.muted)))
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(t.faint)
-                            .child(SharedString::from(provider_name(p).to_uppercase())),
-                    ),
-            );
+            list = list.child(provider_heading(p, t));
             let rows: Vec<(usize, &DetectedProfile)> = self
                 .detected
                 .iter()
@@ -2884,7 +2743,8 @@ impl SettingsWindow {
         let page = div()
             .flex()
             .flex_col()
-            .child(heading("Detect / Import"))
+            .child(self.back_to_accounts(t, cx))
+            .child(heading("Add accounts"))
             .child(tabs);
         if tab == DetectTab::Hub {
             return page
@@ -2902,26 +2762,22 @@ impl SettingsWindow {
         ))
         .child(toolbar)
         .child(list)
-        .when(self.detected.is_empty(), |d| {
-            d.child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap_2()
-                    .pt_3()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_xs()
-                            .text_color(t.muted)
-                            .child("No CLI profiles found. Pick a profile folder yourself:"),
-                    )
-                    .child(button("det-add", "Add account", t, false).on_click(
-                        cx.listener(|this, _, window, cx| this.go(Page::Add, window, cx)),
-                    )),
-            )
-        })
+        .child(
+            div().pt_4().child(
+                disclosure(
+                    "manual-add",
+                    "Choose a folder manually…",
+                    "Provider, name and profile folder",
+                    self.manual_add,
+                    t,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.manual_add = !this.manual_add;
+                    cx.notify();
+                })),
+            ),
+        )
+        .when(self.manual_add, |d| d.child(self.manual_form(t, cx)))
     }
 
     fn detect_row(
@@ -3129,7 +2985,7 @@ impl SettingsWindow {
                             .child(SharedString::from(line)),
                     )
                     .when(set_up, |d| {
-                        d.child(button("det-hub", "Hub & steering", t, false).on_click(
+                        d.child(button("det-hub", "Hub settings", t, false).on_click(
                             cx.listener(|this, _, window, cx| this.go(Page::Hub, window, cx)),
                         ))
                     }),
@@ -3171,7 +3027,7 @@ impl SettingsWindow {
         div()
             .flex()
             .flex_col()
-            .child(heading("Hub & steering"))
+            .child(heading("Hub"))
             .child(div().pb_2().text_xs().text_color(t.muted).child(
                 "Reads accounts and usage from your CLIProxyAPI hub so you don't add them by hand. The hub keeps renewing its own logins. The only thing SubHub changes there is account priority, for steering.",
             ))
@@ -3244,27 +3100,30 @@ fn source_label(a: &Account) -> &'static str {
     }
 }
 
-fn about(t: &Tokens) -> impl IntoElement {
+/// The short source hint on an account row, in the popover's words (Hub, Local only).
+fn source_hint(a: &Account) -> &'static str {
+    match (&a.profile_dir, &a.hub) {
+        (Some(_), Some(_)) => "Hub + profile",
+        (None, Some(_)) => "Hub",
+        (Some(_), None) => "Local only",
+        (None, None) => "Not connected",
+    }
+}
+
+/// Provider icon and uppercase name over a group of rows.
+fn provider_heading(p: ProviderKind, t: &Tokens) -> impl IntoElement {
     div()
         .flex()
-        .flex_col()
+        .items_center()
         .gap_2()
-        .child(heading("About"))
-        .child(div().text_sm().child(format!("AI SubHub {}", env!("CARGO_PKG_VERSION"))))
-        .child(div().text_xs().text_color(t.muted).child("Built with Rust + GPUI. Free, open source (MIT), local: no account, backend or telemetry."))
-        .child(div().text_xs().text_color(t.muted).child("Claude usage uses an undocumented endpoint and can break when the provider changes it."))
+        .pt_4()
+        .pb_1()
+        .child(icon(Icon::Provider(p), 12.0, provider_color(p, t.muted)))
         .child(
             div()
-                .flex()
-                .flex_col()
-                .gap(px(2.0))
-                .pt_2()
-                .child(div().text_sm().child("Settings file"))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(t.muted)
-                        .child(subhub_core::settings::default_path().display().to_string()),
-                ),
+                .text_xs()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(t.faint)
+                .child(SharedString::from(provider_name(p).to_uppercase())),
         )
 }

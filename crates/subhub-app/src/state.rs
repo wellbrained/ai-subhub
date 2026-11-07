@@ -43,8 +43,8 @@ pub struct AccountStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTarget {
     Projects,
-    /// Detect / Import (first start without accounts).
-    Detect,
+    /// Accounts → Add accounts (first start without accounts).
+    AddAccounts,
 }
 
 fn plural(n: usize) -> &'static str {
@@ -816,13 +816,6 @@ impl AppState {
         self.save_user();
     }
 
-    pub fn toggle_pin(&mut self, id: Uuid, key: &str) {
-        if let Some(a) = self.settings.accounts.iter_mut().find(|a| a.id == id) {
-            toggle(&mut a.pinned_windows, key);
-            self.save_user();
-        }
-    }
-
     /// Disconnects the record only; profile and hub login stay untouched.
     pub fn remove(&mut self, id: Uuid) {
         self.settings.accounts.retain(|a| a.id != id);
@@ -1018,7 +1011,7 @@ impl AppState {
                 match (acc.profile_dir.as_ref(), self.cli_path(acc.provider)) {
                     (None, _) => Err(launch::HINT_NO_PROFILE.to_string()),
                     (_, None) => Err(format!(
-                        "{name} CLI not found. Set its path in Settings → Tools."
+                        "{name} CLI not found. Set its path in Settings → General → Advanced."
                     )),
                     (Some(profile), Some(exe)) => {
                         // An explicit terminal choice overrides the saved sign-in terminal.
@@ -1127,7 +1120,7 @@ impl AppState {
         let Some(exe) = self.cli_path(acc.provider) else {
             self.account_notes.insert(
                 id,
-                format!("{name} CLI not found. Set its path in Settings → Tools."),
+                format!("{name} CLI not found. Set its path in Settings → General → Advanced."),
             );
             cx.notify();
             return;

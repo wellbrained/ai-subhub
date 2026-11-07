@@ -51,6 +51,8 @@ pub struct StatsWindow {
     days_scroll: gpui::ScrollHandle,
     /// Result of the last "Copy as image" and when (true = copied).
     copied: Option<(Instant, bool)>,
+    /// The price table under the tiles is shown (ⓘ on "API estimate").
+    prices_open: bool,
     /// The summary for (range, state.stats_rev); recomputed only when either changes.
     summary: Option<((Range, u64), Summary)>,
     _sub: Subscription,
@@ -86,6 +88,7 @@ impl StatsWindow {
             scroll: gpui::ScrollHandle::new(),
             days_scroll: gpui::ScrollHandle::new(),
             copied: None,
+            prices_open: false,
             summary: None,
             _sub: sub,
         }
@@ -603,7 +606,26 @@ impl Render for StatsWindow {
             crate::limits_board::board(self.state.read(cx), Utc::now(), &t)
         } else if let Some((_, summary)) = self.summary.as_ref().filter(|_| has_scan) {
             let state = self.state.clone();
-            usage(summary, &prefs, view, &t, state, price_note, &self.days_scroll)
+            // The price table opens under the tiles from the ⓘ on "API estimate"; never while
+            // the window height is still being fitted (that height is the Usage content alone).
+            let toggle: std::rc::Rc<dyn Fn(&mut gpui::App)> = {
+                let me = me.clone();
+                std::rc::Rc::new(move |cx: &mut gpui::App| {
+                    me.update(cx, |this, cx| {
+                        this.prices_open = !this.prices_open;
+                        cx.notify();
+                    })
+                })
+            };
+            let open = self.prices_open && matches!(self.fit, Fit::Done);
+            let prices = PriceInfo {
+                note: price_note,
+                open,
+                card: open
+                    .then(|| prices_card(self.state.read(cx), &t, state.clone(), toggle.clone())),
+                toggle,
+            };
+            usage(summary, &prefs, view, &t, state, prices, &self.days_scroll)
         } else {
             let text = match (&error, scanning) {
                 (Some(e), false) => e.clone(),
@@ -707,7 +729,7 @@ fn usage(
     view: StatsBreakdown,
     t: &Tokens,
     state: Entity<AppState>,
-    price_note: String,
+    prices: PriceInfo,
     days_scroll: &gpui::ScrollHandle,
 ) -> AnyElement {
     let metric = prefs.metric;
@@ -790,7 +812,8 @@ fn usage(
         .flex()
         .flex_col()
         .gap(px(14.0))
-        .child(tiles(s, t, price_note))
+        .child(tiles(s, t, &prices))
+        .children(prices.card)
         .child(by_type(s, t))
         .child(header)
         .child(breakdown)
@@ -835,7 +858,7 @@ fn small_tile(t: &Tokens) -> gpui::Div {
 
 /// The tiles row: work tokens with the provider split, cache, API estimate, cache saved and the
 /// month run-rate.
-fn tiles(s: &Summary, t: &Tokens, price_note: String) -> AnyElement {
+fn tiles(s: &Summary, t: &Tokens, prices: &PriceInfo) -> AnyElement {
     let work = s.work();
     let provider_work = |p: ProviderKind| {
         s.providers
@@ -915,7 +938,7 @@ fn tiles(s: &Summary, t: &Tokens, price_note: String) -> AnyElement {
     let api = small_tile(t)
         .child(tile_label(
             "API estimate".into(),
-            Some(info("price-info", price_note, t)),
+            Some(price_info(prices, t)),
             t,
         ))
         .child(tile_value(money_short(s.cost.total())))
@@ -955,6 +978,298 @@ fn tiles(s: &Summary, t: &Tokens, price_note: String) -> AnyElement {
         .child(api)
         .child(saved)
         .child(run_rate)
+        .into_any_element()
+}
+
+/// The ⓘ on "API estimate": the price source in its tooltip; a click shows or hides the price
+/// table under the tiles.
+fn price_info(p: &PriceInfo, t: &Tokens) -> AnyElement {
+    let tip = format!(
+        "{} Click to {} the price table.",
+        p.note,
+        if p.open { "hide" } else { "show" }
+    );
+    let toggle = p.toggle.clone();
+    div()
+        .id("price-info")
+        .flex_none()
+        .rounded_full()
+        .cursor_pointer()
+        .hover(|s| s.bg(t.accent.opacity(0.18)))
+        .active(|s| s.bg(t.accent.opacity(0.3)))
+        .when(p.open, |d| d.bg(t.accent.opacity(0.18)))
+        .child(icon(
+            Icon::Info,
+            12.0,
+            if p.open { t.accent_text() } else { t.faint },
+        ))
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .on_click(move |_, _, cx| toggle(cx))
+        .into_any_element()
+}
+
+/// What the "API estimate" tile needs for its ⓘ and the price table under the tiles.
+struct PriceInfo {
+    /// The price source, for the tooltip.
+    note: String,
+    open: bool,
+    toggle: std::rc::Rc<dyn Fn(&mut gpui::App)>,
+    /// The table, when open.
+    card: Option<AnyElement>,
+}
+
+/// "$15", "$0.30", "$3.75": per million tokens, at least two decimals below $10.
+fn price_text(v: f64) -> String {
+    let s = format!("{v:.3}");
+    let s = s.trim_end_matches('0');
+    let s = if s.split('.').nth(1).is_some_and(|d| d.len() >= 2) {
+        s.to_string()
+    } else {
+        format!("{v:.2}")
+    };
+    format!("${s}")
+}
+
+/// Read-only price table (moved here from Settings → Statistics, owner 2026-11-07): source and
+/// age, Update now, and per publisher and family the models seen in the logs (plus a family's
+/// current model when none was seen) with input / output / cache write / cache read per 1M
+/// tokens. The prices themselves stay in `AppState` (`prices`, `update_prices`).
+fn prices_card(
+    s: &AppState,
+    t: &Tokens,
+    state: Entity<AppState>,
+    close: std::rc::Rc<dyn Fn(&mut gpui::App)>,
+) -> AnyElement {
+    use std::collections::BTreeSet;
+    let book = &s.prices;
+    let updating = s.prices_updating;
+    let seen: BTreeSet<String> = s
+        .stats
+        .as_ref()
+        .map(|sc| sc.buckets.iter().map(|b| b.model.clone()).collect())
+        .unwrap_or_default();
+    let now = Utc::now();
+    let status = if updating {
+        "Updating prices…".to_string()
+    } else {
+        match (book.fetched_at, &book.error) {
+            (Some(at), None) => format!("From LiteLLM · updated {}", crate::format::ago(at, now)),
+            (Some(at), Some(e)) => format!(
+                "From LiteLLM · updated {} · last update failed: {e}",
+                crate::format::ago(at, now)
+            ),
+            (None, Some(e)) => format!("Built-in prices · LiteLLM not reachable: {e}"),
+            (None, None) => "Built-in prices · not updated yet".to_string(),
+        }
+    };
+
+    // Groups: publisher, then family.
+    const CURRENT: [&str; 5] = [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "claude-fable-5-1",
+        "gpt-6.1-sol",
+    ];
+    let publisher = |m: &str| -> usize {
+        if m.starts_with("claude") {
+            0
+        } else if m.starts_with("gpt")
+            || m.contains("codex")
+            || m.starts_with("o1")
+            || m.starts_with("o3")
+            || m.starts_with("o4")
+        {
+            1
+        } else {
+            2
+        }
+    };
+    let family = |m: &str| -> usize {
+        match publisher(m) {
+            0 => ["opus", "sonnet", "haiku", "fable"]
+                .iter()
+                .position(|f| m.contains(f))
+                .unwrap_or(4),
+            1 if m.contains("codex") => 1,
+            1 if m.starts_with("gpt") => 0,
+            1 => 2,
+            _ => 0,
+        }
+    };
+    const FAMILIES: [&[&str]; 3] = [
+        &["Opus", "Sonnet", "Haiku", "Fable", "Other"],
+        &["GPT", "Codex", "Other"],
+        &["Models"],
+    ];
+    const PUBLISHERS: [&str; 3] = ["Anthropic", "OpenAI", "Other"];
+    let mut groups: [Vec<BTreeSet<String>>; 3] = [
+        vec![Default::default(); 5],
+        vec![Default::default(); 3],
+        vec![Default::default(); 1],
+    ];
+    for m in &seen {
+        groups[publisher(m)][family(m)].insert(m.clone());
+    }
+    for m in CURRENT {
+        let (p, f) = (publisher(m), family(m));
+        if groups[p][f].is_empty() {
+            groups[p][f].insert(m.to_string());
+        }
+    }
+
+    const W: f32 = 84.0;
+    const SRC: f32 = 108.0;
+    let badge = |text: &'static str, color: Hsla| {
+        div()
+            .px(px(6.0))
+            .py(px(1.0))
+            .rounded(px(5.0))
+            .bg(t.bg)
+            .text_xs()
+            .text_color(color)
+            .child(text)
+    };
+    let mut table = div().flex().flex_col();
+    for (p, name) in PUBLISHERS.iter().enumerate() {
+        if groups[p].iter().all(|g| g.is_empty()) {
+            continue;
+        }
+        table = table.child(
+            header_row(t)
+                .mt(px(if p == 0 { 0.0 } else { 10.0 }))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .child(SharedString::from(name.to_string())),
+                )
+                .child(cell(W).child("Input"))
+                .child(cell(W).child("Output"))
+                .child(cell(W).child("Cache write"))
+                .child(cell(W).child("Cache read"))
+                .child(cell(SRC).child("Source")),
+        );
+        for (fi, models) in groups[p].iter().enumerate() {
+            if models.is_empty() {
+                continue;
+            }
+            table = table.child(
+                div()
+                    .pt(px(8.0))
+                    .pb(px(2.0))
+                    .px(px(4.0))
+                    .text_xs()
+                    .text_color(t.muted)
+                    .child(FAMILIES[p][fi]),
+            );
+            for (i, m) in models.iter().enumerate() {
+                let mut line = body_row(t, i == 0).child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(m.clone())),
+                );
+                let (src, color) = match book.lookup(m) {
+                    Some((price, src)) => {
+                        for v in [
+                            price.input,
+                            price.output,
+                            price.cache_write,
+                            price.cache_read,
+                        ] {
+                            line = line.child(cell(W).child(SharedString::from(price_text(v))));
+                        }
+                        match src {
+                            subhub_core::stats::PriceSource::LiteLlm => {
+                                ("LiteLLM", t.accent_text())
+                            }
+                            subhub_core::stats::PriceSource::BuiltIn => ("built-in", t.muted),
+                        }
+                    }
+                    None => {
+                        line = line.child(cell(W * 4.0 + 36.0).text_color(t.muted).child("—"));
+                        ("No public price", t.warn)
+                    }
+                };
+                table = table.child(
+                    line.child(
+                        div()
+                            .w(px(SRC))
+                            .flex_none()
+                            .flex()
+                            .justify_end()
+                            .child(badge(src, color)),
+                    ),
+                );
+            }
+        }
+    }
+
+    let update = div()
+        .id("prices-update")
+        .flex_none()
+        .px(px(10.0))
+        .py(px(4.0))
+        .rounded(px(7.0))
+        .text_xs()
+        .bg(t.bg)
+        .border_1()
+        .border_color(t.border)
+        .when(!updating, |d| {
+            d.cursor_pointer()
+                .hover(|s| s.bg(t.surface_hover))
+                .on_click(move |_, _, cx| state.update(cx, |s, cx| s.update_prices(true, cx)))
+        })
+        .when(updating, |d| d.opacity(0.5))
+        .child(if updating {
+            "Updating…"
+        } else {
+            "Update now"
+        });
+    let close_button = div()
+        .id("prices-close")
+        .size(px(24.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .hover(|s| s.bg(t.surface_hover))
+        .child(icon(Icon::Close, 13.0, t.muted))
+        .tooltip(|window, cx| Tooltip::new("Hide prices").build(window, cx))
+        .on_click(move |_, _, cx| close(cx));
+
+    card(t)
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(14.0))
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .child(heading("Prices"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_xs()
+                        .text_color(t.muted)
+                        .child(SharedString::from(status)),
+                )
+                .child(update)
+                .child(close_button),
+        )
+        .child(div().text_xs().text_color(t.muted).child(
+            "USD per million tokens. Read-only: updated daily from LiteLLM's public price list, the built-in table fills any gap. Shown: the models in your logs.",
+        ))
+        .child(table)
         .into_any_element()
 }
 

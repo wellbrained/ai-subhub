@@ -1,4 +1,4 @@
-//! Priority view classification and the tray metric. Pure functions, unit tested.
+//! Priority view classification. Pure functions, unit tested.
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::model::{Account, AllowanceWindow, Reading};
-use crate::settings::{DisplaySettings, TrayMetric};
+use crate::settings::RUNNING_OUT_PERCENT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Section {
@@ -33,12 +33,11 @@ pub fn classify(
     accounts: &[Account],
     readings: &HashMap<Uuid, Reading>,
     stale: &dyn Fn(Uuid) -> bool,
-    display: &DisplaySettings,
     now: DateTime<Utc>,
 ) -> Vec<PriorityItem> {
     // `now` is deliberately not compared with reset times (reset countdowns never refill locally).
     let _ = now;
-    let threshold = f64::from(display.running_out_threshold);
+    let threshold = RUNNING_OUT_PERCENT;
     // (account position, pin position) keeps pin order across accounts.
     let mut pinned: Vec<((usize, usize), PriorityItem)> = vec![];
     let mut running: Vec<PriorityItem> = vec![];
@@ -90,54 +89,6 @@ pub fn classify(
         .chain(running)
         .chain(used)
         .collect()
-}
-
-/// Fraction 0..=1 remaining for the tray ring, or None when nothing is known.
-/// `LowestPinned`: lowest across pinned windows; with nothing pinned, across all visible windows.
-/// A pinned window without a reading is unknown, not replaced by another one.
-pub fn tray_fraction(
-    accounts: &[Account],
-    readings: &HashMap<Uuid, Reading>,
-    metric: &TrayMetric,
-) -> Option<f64> {
-    let visible_windows = |only_pinned: bool| {
-        accounts
-            .iter()
-            .filter(|a| !a.hidden)
-            .filter_map(|a| readings.get(&a.id).map(|r| (a, r)))
-            .flat_map(move |(a, r)| {
-                r.windows
-                    .iter()
-                    .filter(move |w| !a.hidden_windows.contains(&w.key))
-                    .filter(move |w| !only_pinned || a.pinned_windows.contains(&w.key))
-            })
-            .map(AllowanceWindow::remaining_percent)
-    };
-    let lowest = |values: &mut dyn Iterator<Item = f64>| values.reduce(f64::min).map(|p| p / 100.0);
-
-    match metric {
-        TrayMetric::LowestAll => lowest(&mut visible_windows(false)),
-        TrayMetric::LowestPinned => {
-            let any_pinned = accounts.iter().filter(|a| !a.hidden).any(|a| {
-                a.pinned_windows
-                    .iter()
-                    .any(|k| !a.hidden_windows.contains(k))
-            });
-            lowest(&mut visible_windows(any_pinned))
-        }
-        TrayMetric::Window { account, key } => {
-            let a = accounts.iter().find(|a| a.id == *account && !a.hidden)?;
-            if a.hidden_windows.contains(key) {
-                return None;
-            }
-            let w = readings
-                .get(&a.id)?
-                .windows
-                .iter()
-                .find(|w| w.key == *key)?;
-            Some(w.remaining_percent() / 100.0)
-        }
-    }
 }
 
 #[cfg(test)]
@@ -218,7 +169,7 @@ mod tests {
                 ],
             ),
         ]);
-        let items = classify(&[a, b], &r, &|_| false, &DisplaySettings::default(), now());
+        let items = classify(&[a, b], &r, &|_| false, now());
         assert_eq!(
             keys(&items),
             [
@@ -233,25 +184,16 @@ mod tests {
     }
 
     #[test]
-    fn running_out_threshold_is_inclusive_and_configurable() {
+    fn running_out_is_fixed_at_25_percent_and_inclusive() {
         let a = account(&[]);
         let r = readings(vec![(
             &a,
             vec![window("at", 75.0, None), window("above", 74.0, None)],
         )]);
-        let mut display = DisplaySettings::default();
         assert_eq!(
-            keys(&classify(
-                std::slice::from_ref(&a),
-                &r,
-                &|_| false,
-                &display,
-                now()
-            )),
+            keys(&classify(std::slice::from_ref(&a), &r, &|_| false, now())),
             [("at", Section::RunningOut)]
         );
-        display.running_out_threshold = 10;
-        assert!(classify(std::slice::from_ref(&a), &r, &|_| false, &display, now()).is_empty());
     }
 
     #[test]
@@ -260,13 +202,7 @@ mod tests {
         let mut w = window("s", 100.0, Some(-5));
         w.resets_at = Some(now() - chrono::Duration::hours(5));
         let r = readings(vec![(&a, vec![w])]);
-        let items = classify(
-            &[a],
-            &r,
-            &|_| false,
-            &DisplaySettings::default(),
-            now() + chrono::Duration::days(3),
-        );
+        let items = classify(&[a], &r, &|_| false, now() + chrono::Duration::days(3));
         assert_eq!(keys(&items), [("s", Section::UsedUp)]);
     }
 
@@ -284,13 +220,7 @@ mod tests {
                 vec![window("gone", 99.0, None), window("shown", 99.0, None)],
             ),
         ]);
-        let items = classify(
-            &[hidden, partly, no_reading],
-            &r,
-            &|_| false,
-            &DisplaySettings::default(),
-            now(),
-        );
+        let items = classify(&[hidden, partly, no_reading], &r, &|_| false, now());
         assert_eq!(keys(&items), [("shown", Section::RunningOut)]);
     }
 
@@ -299,82 +229,7 @@ mod tests {
         let a = account(&["s"]);
         let id = a.id;
         let r = readings(vec![(&a, vec![window("s", 10.0, None)])]);
-        let items = classify(&[a], &r, &|u| u == id, &DisplaySettings::default(), now());
+        let items = classify(&[a], &r, &|u| u == id, now());
         assert!(items[0].stale);
-    }
-
-    #[test]
-    fn tray_lowest_pinned_falls_back_to_all_only_when_nothing_is_pinned() {
-        let pinned = account(&["p"]);
-        let other = account(&[]);
-        let r = readings(vec![
-            (
-                &pinned,
-                vec![window("p", 40.0, None), window("q", 90.0, None)],
-            ),
-            (&other, vec![window("o", 70.0, None)]),
-        ]);
-        let accounts = [pinned.clone(), other.clone()];
-        assert_eq!(
-            tray_fraction(&accounts, &r, &TrayMetric::LowestPinned),
-            Some(0.6)
-        );
-        assert_eq!(
-            tray_fraction(&accounts, &r, &TrayMetric::LowestAll),
-            Some(0.1)
-        );
-        let none_pinned = [account(&[]), other];
-        let r2 = readings(vec![
-            (&none_pinned[0], vec![window("a", 20.0, None)]),
-            (&none_pinned[1], vec![window("o", 70.0, None)]),
-        ]);
-        assert_eq!(
-            tray_fraction(&none_pinned, &r2, &TrayMetric::LowestPinned),
-            Some(0.3)
-        );
-    }
-
-    #[test]
-    fn tray_unknown_is_none_never_zero_or_full() {
-        let a = account(&["p"]);
-        assert_eq!(
-            tray_fraction(
-                std::slice::from_ref(&a),
-                &HashMap::new(),
-                &TrayMetric::LowestPinned
-            ),
-            None
-        );
-        assert_eq!(
-            tray_fraction(&[], &HashMap::new(), &TrayMetric::LowestAll),
-            None
-        );
-        // Pinned window has no reading yet: unknown, not another window's value.
-        let r = readings(vec![(&a, vec![window("other", 50.0, None)])]);
-        assert_eq!(
-            tray_fraction(std::slice::from_ref(&a), &r, &TrayMetric::LowestPinned),
-            None
-        );
-    }
-
-    #[test]
-    fn tray_specific_window() {
-        let mut a = account(&[]);
-        let r = readings(vec![(&a, vec![window("s", 25.0, None)])]);
-        let metric = TrayMetric::Window {
-            account: a.id,
-            key: "s".into(),
-        };
-        assert_eq!(
-            tray_fraction(std::slice::from_ref(&a), &r, &metric),
-            Some(0.75)
-        );
-        let missing = TrayMetric::Window {
-            account: a.id,
-            key: "nope".into(),
-        };
-        assert_eq!(tray_fraction(std::slice::from_ref(&a), &r, &missing), None);
-        a.hidden_windows = vec!["s".into()];
-        assert_eq!(tray_fraction(&[a], &r, &metric), None);
     }
 }

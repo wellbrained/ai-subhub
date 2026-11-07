@@ -42,17 +42,17 @@ _Avoid_: Import as a name for the old one-time import from the C# app, which no 
 
 **Group**: A user-chosen label such as Work or Personal that groups accounts in the views.
 
-**Pinned window**: An allowance window the user pinned to the top of the Priority view.
+**Pinned window**: An allowance window the user pinned to the top of the Priority view. Neither the Priority view nor the Pin button exists any more (2026-11-07); saved pins are kept but have no effect.
 
-**Running out**: An allowance window below the running-out threshold (default 25% left).
+**Running out**: An allowance window at or below 25% left (fixed; it was a setting until 2026-11-07).
 
 **Used up**: An allowance window with nothing left until its reset.
 
 **Popover**: The borderless panel that opens above the tray icon; the main surface of the app.
 
-**Tray ring**: The live-drawn tray icon showing the chosen metric as a ring.
+**Tray icon**: The static logo in the notification area; its tooltip is just "AI SubHub". It once was a live ring of a chosen metric (removed).
 
-**Taskbar display**: The always-visible usage next to the tray (badges, bars, numbers or focus), switched on or off on its own; off leaves just the tray icon.
+**Taskbar display**: The always-visible usage next to the tray (badges or bars), switched on or off on its own; off leaves just the tray icon.
 
 **Main taskbar**: The taskbar with the tray icons. Other monitors can have their own taskbar, which can also carry the taskbar display.
 

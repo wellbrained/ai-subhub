@@ -140,7 +140,7 @@ fn main() {
                 .detach();
             }
 
-            // Keep the tray ring and tooltip in step with the state.
+            // Keep the tray tooltip and the hover cards in step with the state.
             {
                 let shell = shell.clone();
                 cx.observe(&state, move |state, cx| {
@@ -199,11 +199,11 @@ fn main() {
                 s.prepare_whats_new(updated_from.as_deref(), show_notes)
             });
 
-            // First start without accounts: open Settings on Detect / Import, which lists the
-            // CLI profiles found on this PC (and points to the hub setup).
+            // First start without accounts: open Settings on Accounts → Add accounts, which lists
+            // the CLI profiles found on this PC (and points to the hub setup).
             if state.read(cx).settings.accounts.is_empty() {
                 state.update(cx, |s, _| {
-                    s.pending_settings_page = Some(state::SettingsTarget::Detect)
+                    s.pending_settings_page = Some(state::SettingsTarget::AddAccounts)
                 });
                 open_settings(&shell, cx);
             }

@@ -461,7 +461,7 @@ pub struct MenuTarget {
 
 pub const HINT_NO_PROFILE: &str = "No CLI profile: sign in through the hub";
 pub const HINT_NO_FOLDER: &str = "The folder no longer exists";
-pub const HINT_NO_CLI: &str = "CLI not found (set it in Settings → Tools)";
+pub const HINT_NO_CLI: &str = "CLI not found (set it in Settings → General → Advanced)";
 pub const HINT_NO_WT: &str = "Windows Terminal not found";
 pub const HINT_NO_CODE: &str = "VS Code not found on PATH";
 pub const HINT_NO_DESKTOP: &str = "Not installed";

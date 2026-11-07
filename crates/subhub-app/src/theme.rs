@@ -103,11 +103,12 @@ impl Tokens {
         c
     }
 
-    /// Color for a "% left" value: accent, then warn at/below the threshold, danger at/below 10%.
-    pub fn level(&self, remaining: f64, threshold: u8) -> Hsla {
+    /// Color for a "% left" value: accent, then warn at/below Running out (25%), danger at/below
+    /// 10%.
+    pub fn level(&self, remaining: f64) -> Hsla {
         if remaining <= 10.0 {
             self.danger
-        } else if remaining <= threshold as f64 {
+        } else if remaining <= subhub_core::settings::RUNNING_OUT_PERCENT {
             self.warn
         } else {
             self.accent

@@ -1,7 +1,7 @@
 //! Text formatting for usage values and reset times.
 use chrono::{DateTime, Local, Utc};
 use subhub_core::model::AllowanceWindow;
-use subhub_core::settings::{DisplaySettings, ResetFormat, UsageStyle};
+use subhub_core::settings::{DisplaySettings, UsageStyle};
 
 /// "58% left" / "42% used".
 pub fn usage(w: &AllowanceWindow, d: &DisplaySettings) -> String {
@@ -37,19 +37,18 @@ pub fn duration_until(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     subhub_core::limits::compact_duration(at - now)
 }
 
-pub fn reset(w: &AllowanceWindow, d: &DisplaySettings, now: DateTime<Utc>) -> Option<String> {
-    let at = w.resets_at?;
-    Some(match d.reset_format {
-        ResetFormat::Relative => duration_until(at, now),
-        ResetFormat::Exact => {
-            let local = at.with_timezone(&Local);
-            if (at - now).num_hours() < 20 {
-                local.format("%H:%M").to_string()
-            } else {
-                local.format("%a %H:%M").to_string()
-            }
-        }
-    })
+/// The reset as a countdown ("2d 4h"). Always relative since 2026-11-07 (owner); the exact time
+/// is in `reset_exact`, shown as a tooltip where one exists.
+pub fn reset(w: &AllowanceWindow, now: DateTime<Utc>) -> Option<String> {
+    Some(duration_until(w.resets_at?, now))
+}
+
+/// "Resets Sat, Nov 8, 14:30" in local time, for the tooltip on a reset countdown.
+pub fn reset_exact(at: DateTime<Utc>) -> String {
+    format!(
+        "Resets {}",
+        at.with_timezone(&Local).format("%a, %b %-d, %H:%M")
+    )
 }
 
 pub fn ago(at: DateTime<Utc>, now: DateTime<Utc>) -> String {

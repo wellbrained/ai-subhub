@@ -28,20 +28,6 @@ pub enum Gauge {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum ResetFormat {
-    #[default]
-    Relative,
-    Exact,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum Density {
-    #[default]
-    Comfortable,
-    Compact,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ThemeMode {
     #[default]
     System,
@@ -56,19 +42,15 @@ pub enum TaskbarMode {
     /// (`settings_store::sanitize`). The UI offers an on/off switch instead.
     Off,
     /// Per account a bordered badge like T3 Code's provider tags: provider glyph, coloured
-    /// two-letter account tag, 5h and W mini bars with %.
+    /// two-letter account tag, 5h and W mini bars with %. The removed styles "Numbers" and
+    /// "Focus" (and "Table", which had become Numbers) load as this (owner, 2026-11-07).
     #[default]
+    #[serde(alias = "Numbers", alias = "Focus", alias = "Table")]
     Badge,
     /// Per account: name, 5-hour bar with the % printed (preview R1). Old "Mix"/"Blocks"
     /// values load as this.
     #[serde(alias = "Mix", alias = "Blocks")]
     Bars,
-    /// Numbers only, two lines (5-hour over weekly), labels once (preview R2). Old "Table"
-    /// values load as this.
-    #[serde(alias = "Table")]
-    Numbers,
-    /// One account big (5-hour and weekly) plus "+N ready" (preview R4).
-    Focus,
 }
 
 /// Which accounts the taskbar display shows. The popover always shows all.
@@ -105,18 +87,9 @@ pub enum TaskbarMonitors {
     Chosen(Vec<String>),
 }
 
-/// What the tray ring shows.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub enum TrayMetric {
-    /// Lowest % left across pinned windows (falls back to all visible windows if none pinned).
-    #[default]
-    LowestPinned,
-    LowestAll,
-    Window {
-        account: Uuid,
-        key: String,
-    },
-}
+/// % left at or below which a window is "Running out" (warning colour, taskbar Auto). Fixed
+/// since 2026-11-07 (owner); older files with a `running_out_threshold` still load, ignored.
+pub const RUNNING_OUT_PERCENT: f64 = 25.0;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -125,16 +98,15 @@ pub struct DisplaySettings {
     /// Gauge per view section.
     pub priority_gauge: Gauge,
     pub all_usage_gauge: Gauge,
-    /// % left at or below which a window is "Running out".
-    pub running_out_threshold: u8,
-    pub reset_format: ResetFormat,
+    // Removed 2026-11-07 (owner, "Settings distilled"): `running_out_threshold` (now
+    // `RUNNING_OUT_PERCENT`), `reset_format` (always relative, the exact time in a tooltip),
+    // `density` (always Comfortable) and `tray_metric` (the tray icon is a static logo). Older
+    // files that still have them load; unknown fields are ignored.
     pub show_plan: bool,
     pub show_email: bool,
-    pub density: Density,
     pub theme: ThemeMode,
     /// "#rrggbb"
     pub accent: String,
-    pub tray_metric: TrayMetric,
     /// Close the popover when another window takes focus. Off: it stays open until the tray
     /// icon, Esc or its close button (the owner's preference, 2026-11-06).
     pub close_popover_on_blur: bool,
@@ -210,14 +182,10 @@ impl Default for DisplaySettings {
             usage_style: UsageStyle::Remaining,
             priority_gauge: Gauge::Ring,
             all_usage_gauge: Gauge::Bar,
-            running_out_threshold: 25,
-            reset_format: ResetFormat::Relative,
             show_plan: true,
             show_email: false,
-            density: Density::Comfortable,
             theme: ThemeMode::System,
             accent: "#3b82f6".into(),
-            tray_metric: TrayMetric::LowestPinned,
             close_popover_on_blur: false,
             popover_height: None,
             close_quits: false,
@@ -305,8 +273,8 @@ impl ToolsSettings {
     }
 }
 
-/// Self-update behavior (Settings -> Updates). Checks run in both modes; Auto also downloads
-/// and installs when SubHub is idle, Manual waits for the Install button.
+/// Self-update behavior (Settings -> About & updates). Checks run in both modes; Auto also
+/// downloads and installs when SubHub is idle, Manual waits for the Install button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum UpdateMode {
     Auto,
@@ -551,7 +519,9 @@ mod taskbar_tests {
         for (old, new) in [
             ("Mix", TaskbarMode::Bars),
             ("Blocks", TaskbarMode::Bars),
-            ("Table", TaskbarMode::Numbers),
+            ("Table", TaskbarMode::Badge),
+            ("Numbers", TaskbarMode::Badge),
+            ("Focus", TaskbarMode::Badge),
             ("Off", TaskbarMode::Off),
         ] {
             let s: Settings =
@@ -561,6 +531,50 @@ mod taskbar_tests {
         }
         let s: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.display.taskbar_accounts, TaskbarAccounts::Favorites);
+    }
+
+    /// A file written before the settings were distilled (2026-11-07): density, reset-time
+    /// format, running-out threshold, tray metric and the removed taskbar styles all load, the
+    /// removed fields are dropped and the style becomes Badge.
+    #[test]
+    fn files_with_removed_display_settings_still_load() {
+        for mode in ["Numbers", "Focus"] {
+            let json = format!(
+                r#"{{"refresh_minutes": 10, "display": {{
+                    "usage_style": "Used",
+                    "running_out_threshold": 40,
+                    "reset_format": "Exact",
+                    "density": "Compact",
+                    "tray_metric": {{"Window": {{"account": "{}", "key": "five_hour"}}}},
+                    "taskbar_mode": "{mode}",
+                    "taskbar_count": 2
+                }}}}"#,
+                Uuid::new_v4()
+            );
+            let s: Settings = serde_json::from_str(&json).unwrap();
+            assert_eq!(s.refresh_minutes, 10);
+            assert_eq!(s.display.usage_style, UsageStyle::Used);
+            assert_eq!(s.display.taskbar_mode, TaskbarMode::Badge, "{mode}");
+            assert_eq!(s.display.taskbar_count, 2);
+            let out = serde_json::to_string(&s).unwrap();
+            for gone in [
+                "running_out_threshold",
+                "reset_format",
+                "density",
+                "tray_metric",
+            ] {
+                assert!(!out.contains(gone), "{gone} is written again");
+            }
+        }
+        // The other tray metric shapes and the old defaults load as well.
+        for extra in [
+            r#""tray_metric": "LowestPinned", "density": "Comfortable""#,
+            r#""tray_metric": "LowestAll", "reset_format": "Relative""#,
+        ] {
+            let s: Settings =
+                serde_json::from_str(&format!(r#"{{"display": {{{extra}}}}}"#)).unwrap();
+            assert_eq!(s.display, DisplaySettings::default());
+        }
     }
 
     #[test]
