@@ -2790,18 +2790,18 @@ impl SettingsWindow {
         let title = d.email.clone().unwrap_or(folder);
         let path = d.dir.display().to_string();
         let path = path.strip_prefix(r"\\?\").unwrap_or(&path).to_string();
-        let (status, color) = match &d.status {
-            DetectStatus::New => ("New".to_string(), t.accent),
-            DetectStatus::Joins { label, .. } => {
-                (format!("Joins \u{201c}{label}\u{201d}"), t.accent)
-            }
-            DetectStatus::Added { label, .. } => (format!("Already added as {label}"), t.muted),
+        // Importable rows carry no tag: whether the import makes a new account or links the
+        // profile to the account that already has this login (e.g. from the hub) is internal
+        // (owner, 2026-11-07). Only rows that cannot be imported say why.
+        let status = match &d.status {
+            DetectStatus::New | DetectStatus::Joins { .. } => None,
+            DetectStatus::Added { label, .. } => Some(format!("Already added as {label}")),
             DetectStatus::SameLogin { dir } => {
                 let name = dir
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                (format!("Same login as {name}"), t.muted)
+                Some(format!("Same login as {name}"))
             }
         };
         let dir = d.dir.clone();
@@ -2861,7 +2861,7 @@ impl SettingsWindow {
                     .when(d.email.is_none(), |r| {
                         r.child(tag("No login found", t.warn, t))
                     })
-                    .child(tag(&status, color, t)),
+                    .when_some(status, |r, s| r.child(tag(&s, t.muted, t))),
             )
     }
 

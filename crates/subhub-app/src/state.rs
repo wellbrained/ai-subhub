@@ -842,14 +842,13 @@ impl AppState {
         cx: &mut Context<Self>,
     ) -> (ImportReport, String) {
         let report = detect::import(&mut self.settings.accounts, picks);
-        let (added, linked) = (report.added.len(), report.linked.len());
-        let msg = match (added, linked) {
-            (0, 0) => "Nothing to import: these profiles are already added.".to_string(),
-            (a, 0) => format!("Imported {a} profile{}.", plural(a)),
-            (0, l) => format!("Linked {l} profile{} to existing accounts.", plural(l)),
-            (a, l) => format!("Imported {a}, linked {l} to existing accounts."),
+        // New account or linked to the one with this login: the same to the user (owner).
+        let n = report.added.len() + report.linked.len();
+        let msg = match n {
+            0 => "Nothing to import: these profiles are already added.".to_string(),
+            n => format!("Imported {n} profile{}.", plural(n)),
         };
-        if added + linked > 0 {
+        if n > 0 {
             self.save_user();
             self.refresh(false, cx);
         }
