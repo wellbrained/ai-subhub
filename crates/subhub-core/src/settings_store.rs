@@ -30,6 +30,11 @@ pub(crate) fn load(path: &Path) -> anyhow::Result<Settings> {
 fn sanitize(mut s: Settings) -> Settings {
     s.refresh_minutes = s.refresh_minutes.clamp(1, 60);
     s.display.running_out_threshold = s.display.running_out_threshold.min(100);
+    // Older files stored "no taskbar display" as the style Off.
+    if s.display.taskbar_mode == crate::settings::TaskbarMode::Off {
+        s.display.taskbar_enabled = false;
+        s.display.taskbar_mode = crate::settings::TaskbarMode::Badge;
+    }
     s
 }
 
@@ -161,6 +166,21 @@ mod tests {
             (s.refresh_minutes, s.display.running_out_threshold),
             (1, 100)
         );
+    }
+
+    #[test]
+    fn taskbar_off_style_loads_as_switched_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        fs::write(&path, r#"{"display": {"taskbar_mode": "Off"}}"#).unwrap();
+        let d = load(&path).unwrap().display;
+        assert!(!d.taskbar_enabled);
+        assert_eq!(d.taskbar_mode, crate::settings::TaskbarMode::Badge);
+        // Files without the field show the display, in the Badge style.
+        fs::write(&path, r#"{"display": {}}"#).unwrap();
+        let d = load(&path).unwrap().display;
+        assert!(d.taskbar_enabled);
+        assert_eq!(d.taskbar_mode, crate::settings::TaskbarMode::Badge);
     }
 
     #[test]

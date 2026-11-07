@@ -11,8 +11,8 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_INFO, NIM_ADD, NIM_DELETE,
-    NIM_MODIFY, NIM_SETVERSION, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, NOTIFYICONIDENTIFIER,
-    Shell_NotifyIconGetRect, Shell_NotifyIconW,
+    NIM_MODIFY, NIM_SETVERSION, NOTIFY_ICON_DATA_FLAGS, NOTIFYICON_VERSION_4, NOTIFYICONDATAW,
+    NOTIFYICONIDENTIFIER, Shell_NotifyIconGetRect, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::w;
@@ -20,6 +20,9 @@ use windows::core::w;
 const WM_TRAY: u32 = WM_APP + 1;
 const NIN_SELECT: u32 = WM_USER;
 const NIN_KEYSELECT: u32 = WM_USER + 1;
+/// NOTIFYICON_VERSION_4 without NIF_SHOWTIP: the pointer rests on the icon / left it.
+const NIN_POPUPOPEN: u32 = WM_USER + 6;
+const NIN_POPUPCLOSE: u32 = WM_USER + 7;
 const ID_OPEN: usize = 1;
 const ID_REFRESH: usize = 2;
 const ID_SETTINGS: usize = 3;
@@ -34,6 +37,11 @@ pub enum TrayEvent {
     Settings,
     Statistics,
     Quit,
+    /// Hover card: show (Windows waited its hover time) / hide.
+    HoverOpen,
+    HoverClose,
+    /// The pointer moved over the icon (fallback when no NIN_POPUPOPEN comes).
+    HoverMove,
 }
 
 static SENDER: OnceLock<UnboundedSender<TrayEvent>> = OnceLock::new();
@@ -52,7 +60,9 @@ pub struct TrayRect {
 }
 
 impl Tray {
-    pub fn new(sender: UnboundedSender<TrayEvent>, tip: &str) -> anyhow::Result<Self> {
+    /// `rich`: our own hover card instead of Windows' text tooltip (the text is still set, for
+    /// screen readers).
+    pub fn new(sender: UnboundedSender<TrayEvent>, tip: &str, rich: bool) -> anyhow::Result<Self> {
         SENDER.set(sender).ok();
         unsafe {
             let hinstance = GetModuleHandleW(None)?;
@@ -80,7 +90,7 @@ impl Tray {
             )?;
             let icon = logo_icon()?;
             let mut nid = base_nid(hwnd);
-            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP;
+            nid.uFlags = NIF_ICON | NIF_MESSAGE | tip_flags(rich);
             nid.uCallbackMessage = WM_TRAY;
             nid.hIcon = icon;
             set_tip(&mut nid, tip);
@@ -91,11 +101,12 @@ impl Tray {
         }
     }
 
-    /// Updates the hover tooltip. The icon itself is the static logo (never live, ADR 0001).
-    pub fn set_tip(&mut self, tip: &str) -> anyhow::Result<()> {
+    /// Updates the tooltip text and whether Windows draws it (`rich` = our hover card instead).
+    /// The icon itself is the static logo (never live, ADR 0001).
+    pub fn set_tip(&mut self, tip: &str, rich: bool) -> anyhow::Result<()> {
         unsafe {
             let mut nid = base_nid(self.hwnd);
-            nid.uFlags = NIF_TIP | NIF_SHOWTIP;
+            nid.uFlags = tip_flags(rich);
             set_tip(&mut nid, tip);
             Shell_NotifyIconW(NIM_MODIFY, &nid).ok()?;
         }
@@ -114,19 +125,26 @@ impl Tray {
         }
     }
 
-    pub fn rect(&self) -> Option<TrayRect> {
+    /// Where the icon really is, also inside the overflow flyout (hover cards anchor here: the
+    /// pointer is on it).
+    pub fn icon_rect(&self) -> Option<TrayRect> {
         let id = NOTIFYICONIDENTIFIER {
             cbSize: size_of::<NOTIFYICONIDENTIFIER>() as u32,
             hWnd: self.hwnd,
             uID: 1,
             ..Default::default()
         };
-        let icon = unsafe { Shell_NotifyIconGetRect(&id).ok() }.map(|r: RECT| TrayRect {
+        unsafe { Shell_NotifyIconGetRect(&id).ok() }.map(|r: RECT| TrayRect {
             left: r.left,
             top: r.top,
             right: r.right,
             bottom: r.bottom,
-        });
+        })
+    }
+
+    /// Popover anchor: the icon, or the notification area when the icon is in the overflow.
+    pub fn rect(&self) -> Option<TrayRect> {
+        let icon = self.icon_rect();
         // Windows 11 hides new icons in the overflow flyout; its rect is then above the taskbar.
         // Anchor to the visible notification area in that case.
         let taskbar = taskbar_notify_rect();
@@ -218,6 +236,12 @@ fn base_nid(hwnd: HWND) -> NOTIFYICONDATAW {
     }
 }
 
+/// The tip text is always set (screen readers read it). With NIF_SHOWTIP Windows draws it; without
+/// it (NOTIFYICON_VERSION_4) Windows sends NIN_POPUPOPEN / NIN_POPUPCLOSE for our own card.
+fn tip_flags(rich: bool) -> NOTIFY_ICON_DATA_FLAGS {
+    if rich { NIF_TIP } else { NIF_TIP | NIF_SHOWTIP }
+}
+
 fn set_tip(nid: &mut NOTIFYICONDATAW, tip: &str) {
     put_wide(&mut nid.szTip, tip);
 }
@@ -241,6 +265,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // NIN_SELECT, and a right click WM_RBUTTONUP *and* WM_CONTEXTMENU: handle one of each only.
         match (lparam.0 as u32) & 0xffff {
             NIN_SELECT | NIN_KEYSELECT => send(TrayEvent::Toggle),
+            NIN_POPUPOPEN => send(TrayEvent::HoverOpen),
+            NIN_POPUPCLOSE => send(TrayEvent::HoverClose),
+            WM_MOUSEMOVE => send(TrayEvent::HoverMove),
             WM_CONTEXTMENU => unsafe { show_menu(hwnd) },
             _ => {}
         }

@@ -18,7 +18,7 @@ AI SubHub, a Windows tray app in Rust + GPUI. It started as a rewrite of the ear
 
 ## Feature map
 
-- Workspace: `crates/subhub-core` (no UI: model, settings, providers, hub, merge, schedule, priority, projects, launch, stats) and `crates/subhub-app` (GPUI). `spike/` is the throwaway spike.
+- Workspace: `crates/subhub-core` (no UI: model, settings, providers, hub, merge, schedule, priority, projects, launch, stats, hover, placement) and `crates/subhub-app` (GPUI). `spike/` is the throwaway spike.
 - `docs/features/app.md`: tray, popover, settings window, refresh flow.
 - `docs/features/spike.md`: spike goals, results and open points for the real build.
 

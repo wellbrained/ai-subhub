@@ -196,14 +196,25 @@ pub fn width_for(s: &AppState) -> f32 {
     }
 }
 
-/// Called when the display is clicked, with its screen bounds (logical px).
-pub type OnClick = std::rc::Rc<dyn Fn(&mut App, Bounds<gpui::Pixels>)>;
+/// Called when the display is clicked, with its client area (physical screen px).
+pub type OnClick = std::rc::Rc<dyn Fn(&mut App, subhub_core::placement::Rect)>;
+
+/// The taskbar this display sits on: its rect (physical px), scale, and whether it is the main
+/// one (with the tray icons).
+type Bar = (windows::Win32::Foundation::RECT, f32, bool);
 
 pub struct TaskbarDisplay {
     state: Entity<AppState>,
+    /// Monitor id (`monitors::Monitor::id`) whose taskbar this display sits on.
+    monitor: String,
     on_click: OnClick,
     /// Horizontal drag in progress: (cursor x at press, display left at press, moved yet).
     drag: Option<(i32, f32, bool)>,
+    /// The taskbar, looked up when a press starts (a drag moves many times a second).
+    drag_bar: Option<Bar>,
+    /// Each account's area in the window (logical px), from the last paint; hover cards
+    /// anchor to it.
+    areas: std::rc::Rc<std::cell::RefCell<Vec<Bounds<gpui::Pixels>>>>,
     _subs: Vec<Subscription>,
 }
 
@@ -220,19 +231,23 @@ fn cursor_x() -> i32 {
 impl TaskbarDisplay {
     fn new(
         state: Entity<AppState>,
+        monitor: String,
         on_click: OnClick,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let subs = vec![cx.observe_in(&state, window, |_, state, window, cx| {
+        let subs = vec![cx.observe_in(&state, window, |this, state, window, cx| {
             // Re-fit width and position when accounts or the mode change.
-            place(window, state.read(cx));
+            place(window, state.read(cx), &this.monitor);
             cx.notify();
         })];
         Self {
             state,
+            monitor,
             on_click,
             drag: None,
+            drag_bar: None,
+            areas: Default::default(),
             _subs: subs,
         }
     }
@@ -507,7 +522,45 @@ impl Render for TaskbarDisplay {
                     ))
                 }
             };
-            row = row.child(col);
+            // Hover card per account: remember where the account sits (painted bounds), and
+            // report hover with that area in physical screen px.
+            let areas = self.areas.clone();
+            let account = a.id;
+            let area = div()
+                .id(("tb-acc", i))
+                .relative()
+                .child(col)
+                .child(
+                    gpui::canvas(
+                        move |b, _, _| {
+                            let mut v = areas.borrow_mut();
+                            if v.len() <= i {
+                                v.resize(i + 1, b);
+                            }
+                            v[i] = b;
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
+                .on_hover({
+                    let areas = self.areas.clone();
+                    move |hovered, window, cx| {
+                        let anchor = areas
+                            .borrow()
+                            .get(i)
+                            .copied()
+                            .and_then(|b| physical_rect(window, b));
+                        match (hovered, anchor) {
+                            (true, Some(r)) => crate::hover_card::badge_enter(account, r, cx),
+                            _ => crate::hover_card::badge_leave(cx),
+                        }
+                    }
+                });
+            row = row.child(area);
             if d.taskbar_mode == TaskbarMode::Focus {
                 break;
             }
@@ -557,8 +610,10 @@ impl Render for TaskbarDisplay {
             // Press + move = drag along the taskbar (remembered); press + release = click.
             .on_mouse_down(
                 gpui::MouseButton::Left,
-                cx.listener(|this, _, window, _| {
+                cx.listener(|this, _, window, cx| {
+                    crate::hover_card::hide(cx);
                     this.drag = Some((cursor_x(), window.bounds().origin.x.as_f32(), false));
+                    this.drag_bar = taskbar_for(&this.monitor);
                 }),
             )
             .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
@@ -574,7 +629,7 @@ impl Render for TaskbarDisplay {
                 }
                 this.drag = Some((start, left, true));
                 let b = window.bounds();
-                let Some((r, scale)) = taskbar_rect() else {
+                let Some((r, scale, _)) = this.drag_bar else {
                     return;
                 };
                 let w = b.size.width.as_f32();
@@ -591,37 +646,53 @@ impl Render for TaskbarDisplay {
             .on_mouse_up(
                 gpui::MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
+                    let bar = this.drag_bar.take();
                     match this.drag.take() {
                         Some((_, _, true)) => {
-                            // Save as distance from the taskbar's right edge.
-                            if let Some((r, scale)) = taskbar_rect() {
+                            // Save as distance from this taskbar's right edge (per monitor).
+                            if let Some((r, scale, is_main)) = bar {
                                 let b = window.bounds();
                                 let offset = r.right as f32 / scale
                                     - (b.origin.x.as_f32() + b.size.width.as_f32());
+                                let monitor = this.monitor.clone();
                                 this.state.update(cx, |s, _| {
-                                    s.update_display(|d| d.taskbar_offset = Some(offset.max(0.0)))
+                                    s.update_display(|d| {
+                                        d.set_taskbar_offset(&monitor, is_main, offset)
+                                    })
                                 });
                             }
                         }
-                        _ => on_click(cx, window.bounds()),
+                        _ => {
+                            let whole = Bounds {
+                                origin: point(px(0.0), px(0.0)),
+                                size: window.bounds().size,
+                            };
+                            if let Some(r) = physical_rect(window, whole) {
+                                on_click(cx, r)
+                            }
+                        }
                     }
                 }),
             )
     }
 }
 
-/// Taskbar rect and scale (physical px).
-fn taskbar_rect() -> Option<(windows::Win32::Foundation::RECT, f32)> {
-    use windows::Win32::Foundation::RECT;
-    use windows::Win32::UI::HiDpi::GetDpiForWindow;
-    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
-    unsafe {
-        let bar = FindWindowW(windows::core::w!("Shell_TrayWnd"), None).ok()?;
-        let mut r = RECT::default();
-        GetWindowRect(bar, &mut r).ok()?;
-        let dpi = GetDpiForWindow(bar);
-        Some((r, if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 }))
-    }
+/// An area of `window` (logical, window-relative) in physical screen px.
+fn physical_rect(window: &Window, b: Bounds<gpui::Pixels>) -> Option<subhub_core::placement::Rect> {
+    let (ox, oy) = crate::window_style::client_origin(window)?;
+    let s = window.scale_factor();
+    Some(subhub_core::placement::Rect {
+        left: ox as f32 + b.origin.x.as_f32() * s,
+        top: oy as f32 + b.origin.y.as_f32() * s,
+        right: ox as f32 + (b.origin.x + b.size.width).as_f32() * s,
+        bottom: oy as f32 + (b.origin.y + b.size.height).as_f32() * s,
+    })
+}
+
+/// The taskbar on this monitor: rect (physical px), scale, main or not.
+fn taskbar_for(monitor: &str) -> Option<Bar> {
+    let m = crate::monitors::find(monitor)?;
+    Some((m.taskbar_rect()?, m.scale, m.is_main))
 }
 
 fn tray_area_left() -> Option<i32> {
@@ -637,9 +708,9 @@ fn tray_area_left() -> Option<i32> {
     }
 }
 
-/// Logical bounds over the taskbar for the current settings.
-fn bounds_for(s: &AppState) -> Option<Bounds<gpui::Pixels>> {
-    let (r, scale) = taskbar_rect()?;
+/// Logical bounds over this monitor's taskbar for the current settings.
+fn bounds_for(s: &AppState, monitor: &str) -> Option<Bounds<gpui::Pixels>> {
+    let (r, scale, is_main) = taskbar_for(monitor)?;
     let height_phys = r.bottom - r.top;
     if height_phys <= 0 || (r.right - r.left) < (r.bottom - r.top) * 3 {
         return None; // vertical or hidden taskbar: not supported
@@ -651,12 +722,15 @@ fn bounds_for(s: &AppState) -> Option<Bounds<gpui::Pixels>> {
     let h = (height_phys as f32 / scale - TOP_GAP).clamp(28.0, 64.0);
     let top = r.top as f32 / scale + TOP_GAP;
     let right = r.right as f32 / scale;
-    let x = match (s.display().taskbar_offset, s.display().taskbar_position) {
+    let x = match (
+        s.display().taskbar_offset_for(monitor, is_main),
+        s.display().taskbar_position,
+    ) {
         // Dragged by the user: keep the same distance from the taskbar's right edge.
         (Some(offset), _) => right - offset - w,
         // Right of the widgets button (weather), which is ~170 px wide on Windows 11.
         (None, TaskbarPosition::Left) => r.left as f32 / scale + 176.0,
-        (None, TaskbarPosition::Right) => {
+        (None, TaskbarPosition::Right) if is_main => {
             // Windows 11's XAML taskbar has no TrayNotifyWnd to measure on many builds; then
             // assume ~380 px for tray icons + clock. The user can drag it into place.
             let tray = tray_area_left()
@@ -664,6 +738,8 @@ fn bounds_for(s: &AppState) -> Option<Bounds<gpui::Pixels>> {
                 .unwrap_or(right - 380.0);
             tray - w - 8.0
         }
+        // Other taskbars have no tray icons, only the clock (~160 px with show-desktop).
+        (None, TaskbarPosition::Right) => right - 160.0 - w,
     };
     let x = x.clamp(r.left as f32 / scale, right - w);
     Some(Bounds {
@@ -672,24 +748,30 @@ fn bounds_for(s: &AppState) -> Option<Bounds<gpui::Pixels>> {
     })
 }
 
-fn place(window: &mut Window, s: &AppState) {
-    if let Some(b) = bounds_for(s) {
+fn place(window: &mut Window, s: &AppState, monitor: &str) {
+    if let Some(b) = bounds_for(s, monitor)
+        && window.bounds() != b
+    {
         crate::window_style::set_bounds(window, b);
     }
 }
 
+/// Opens the display on the taskbar of `monitor` (a `monitors::Monitor::id`).
 pub fn open(
     state: Entity<AppState>,
+    monitor: String,
     on_click: OnClick,
     cx: &mut App,
 ) -> Option<WindowHandle<TaskbarDisplay>> {
     let s = state.read(cx);
-    if s.display().taskbar_mode == TaskbarMode::Off {
+    if !s.display().taskbar_enabled || s.display().taskbar_mode == TaskbarMode::Off {
         return None;
     }
-    let bounds = bounds_for(s)?;
+    let bounds = bounds_for(s, &monitor)?;
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
+        // Opened on its own monitor: moving it there later re-enters GPUI (see monitors.rs).
+        display_id: crate::monitors::find(&monitor).map(|m| crate::monitors::display_id(m.handle)),
         titlebar: None,
         kind: WindowKind::PopUp,
         focus: false,
@@ -704,7 +786,7 @@ pub fn open(
         .open_window(options, |window, cx| {
             // No gpui-component Root here: it paints the theme background, and this window
             // must stay transparent (only text, bars and outlines on the taskbar).
-            cx.new(|cx| TaskbarDisplay::new(state, on_click, window, cx))
+            cx.new(|cx| TaskbarDisplay::new(state, monitor, on_click, window, cx))
         })
         .ok()?;
     let _ = handle.update(cx, |_, window, _| crate::window_style::no_frame(window));
@@ -713,12 +795,17 @@ pub fn open(
         let mut was_dark = taskbar_is_dark();
         loop {
             cx.background_executor().timer(Duration::from_secs(1)).await;
-            let alive = handle.update(cx, |_, window, cx| {
+            let alive = handle.update(cx, |this, window, cx| {
                 // Windows mode switched (light/dark taskbar): redraw with matching colours.
                 let dark = taskbar_is_dark();
                 if dark != was_dark {
                     was_dark = dark;
                     cx.notify();
+                }
+                // Follow the taskbar when it moves or the monitor's scale changes (also
+                // corrects a first placement made with another monitor's scale).
+                if this.drag.is_none() {
+                    place(window, this.state.read(cx), &this.monitor);
                 }
                 // Step aside for fullscreen videos, games and presentations; the taskbar is
                 // hidden there too. Otherwise stay above the taskbar.

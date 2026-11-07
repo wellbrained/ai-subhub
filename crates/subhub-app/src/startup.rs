@@ -80,10 +80,8 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
 /// Development builds (cargo's `target\debug|release`) never take it over: the installed app
 /// stays on startup while a dev build runs for testing (owner, 2026-11-07).
 pub fn refresh_if_enabled() {
-    let dev = std::env::current_exe()
-        .map(|p| subhub_core::update::is_dev_build(&p))
-        .unwrap_or(true);
-    if dev {
+    // A development build must not take over the installed app's entry.
+    if std::env::current_exe().map_or(true, |p| subhub_core::update::is_dev_build(&p)) {
         return;
     }
     if let (Some(current), Ok(want)) = (registered(), current_command())

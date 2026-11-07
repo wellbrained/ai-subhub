@@ -11,14 +11,15 @@ use gpui::{
     SharedString, Styled, Subscription, Window, div, prelude::*, px,
 };
 use gpui_component::checkbox::Checkbox;
+use gpui_component::Disableable as _;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::switch::Switch;
 use subhub_core::detect::{DetectStatus, DetectedProfile};
 use subhub_core::model::{Account, ProviderKind};
 use subhub_core::secrets;
 use subhub_core::settings::{
-    Density, DisplaySettings, ResetFormat, TaskbarAccounts, TaskbarMode, TaskbarPosition,
-    ThemeMode, TrayMetric, UsageStyle,
+    Density, DisplaySettings, ResetFormat, TaskbarAccounts, TaskbarMode, TaskbarMonitors,
+    TaskbarPosition, ThemeMode, TrayMetric, UsageStyle,
 };
 use uuid::Uuid;
 
@@ -1307,17 +1308,44 @@ impl SettingsWindow {
         let d = self.state.read(cx).display().clone();
         let u = self.updater();
         let (u1, u2, u3, u4) = (u.clone(), u.clone(), u.clone(), u.clone());
+        let u0 = u.clone();
         div()
             .flex()
             .flex_col()
             .child(heading("Taskbar"))
+            .child(row(
+                "Show usage next to the tray",
+                Some("Always visible on the taskbar (hidden during fullscreen); click to open, drag to move. Off: just the tray icon."),
+                Switch::new("tb-on")
+                    .checked(d.taskbar_enabled)
+                    .on_click(move |v, _, cx| {
+                        let v = *v;
+                        u0(Box::new(move |d| d.taskbar_enabled = v), cx)
+                    }),
+                t,
+            ))
+            .child(row(
+                "Show details on hover",
+                Some("A small card over the tray icon and each taskbar badge: both windows, % left, reset times and status. Off: the plain Windows tooltip on the tray icon."),
+                Switch::new("hover-on")
+                    .checked(d.hover_details)
+                    .on_click({
+                        let u = u.clone();
+                        move |v, _, cx| {
+                            let v = *v;
+                            u(Box::new(move |d| d.hover_details = v), cx)
+                        }
+                    }),
+                t,
+            ))
+            // Style, count, accounts and position only matter while the display is on.
+            .when(d.taskbar_enabled, |page| page
             .child(block(
-                "Display",
-                Some("Always visible on the taskbar (hidden during fullscreen); click to open, drag to move. Badge: provider, account tag, 5h and weekly. Bars: 5-hour bar + %. Numbers: 5-hour over weekly. Focus: one account big + how many others are ready."),
+                "Style",
+                Some("Badge: provider, account tag, 5h and weekly. Bars: 5-hour bar + %. Numbers: 5-hour over weekly. Focus: one account big + how many others are ready."),
                 chips(
                     "tbm",
                     &[
-                        (TaskbarMode::Off, "Off"),
                         (TaskbarMode::Badge, "Badge"),
                         (TaskbarMode::Bars, "Bars"),
                         (TaskbarMode::Numbers, "Numbers"),
@@ -1372,7 +1400,7 @@ impl SettingsWindow {
                         u4(
                             Box::new(move |d| {
                                 d.taskbar_position = v;
-                                d.taskbar_offset = None;
+                                d.reset_taskbar_offsets();
                             }),
                             cx,
                         )
@@ -1380,6 +1408,101 @@ impl SettingsWindow {
                 ),
                 t,
             ))
+            .child(self.monitors_block(&d, t)))
+    }
+
+    /// Settings → Taskbar → Monitors: main taskbar, all taskbars, or chosen monitors.
+    fn monitors_block(&self, d: &DisplaySettings, t: &Tokens) -> impl IntoElement {
+        #[derive(Clone, PartialEq)]
+        enum Pick {
+            Main,
+            All,
+            Choose,
+        }
+        let monitors = crate::monitors::list();
+        let current = match &d.taskbar_monitors {
+            TaskbarMonitors::Main => Pick::Main,
+            TaskbarMonitors::All => Pick::All,
+            TaskbarMonitors::Chosen(_) => Pick::Choose,
+        };
+        let u = self.updater();
+        let main_id: Vec<String> = monitors
+            .iter()
+            .filter(|m| m.is_main)
+            .map(|m| m.id.clone())
+            .collect();
+        let pick = {
+            let u = u.clone();
+            move |v: Pick, cx: &mut gpui::App| {
+                let main_id = main_id.clone();
+                u(
+                    Box::new(move |d| {
+                        d.taskbar_monitors = match v {
+                            Pick::Main => TaskbarMonitors::Main,
+                            Pick::All => TaskbarMonitors::All,
+                            // Start from the main taskbar; keep an earlier choice.
+                            Pick::Choose => match &d.taskbar_monitors {
+                                TaskbarMonitors::Chosen(ids) => {
+                                    TaskbarMonitors::Chosen(ids.clone())
+                                }
+                                _ => TaskbarMonitors::Chosen(main_id),
+                            },
+                        }
+                    }),
+                    cx,
+                )
+            }
+        };
+        let mut col = div().flex().flex_col().child(block(
+            "Monitors",
+            Some("Where the display shows. The tray icon itself is only on the main taskbar. Other monitors need Windows' \"Show my taskbar on all displays\". A chosen monitor that is unplugged falls back to the main taskbar until it is back."),
+            chips(
+                "tbmon",
+                &[
+                    (Pick::Main, "Main taskbar"),
+                    (Pick::All, "All taskbars"),
+                    (Pick::Choose, "Choose"),
+                ],
+                &current,
+                t,
+                pick,
+            ),
+            t,
+        ));
+        if let TaskbarMonitors::Chosen(chosen) = &d.taskbar_monitors {
+            for m in &monitors {
+                let id = m.id.clone();
+                let on = chosen.contains(&id);
+                let u = u.clone();
+                let hint = m
+                    .taskbar
+                    .is_none()
+                    .then_some("No taskbar on this monitor right now.");
+                col = col.child(row(
+                    &m.label(),
+                    hint,
+                    Switch::new(SharedString::from(format!("tbmon-{}", m.number)))
+                        .checked(on)
+                        .disabled(m.taskbar.is_none() && !on)
+                        .on_click(move |v, _, cx| {
+                            let (v, id) = (*v, id.clone());
+                            u(
+                                Box::new(move |d| {
+                                    if let TaskbarMonitors::Chosen(ids) = &mut d.taskbar_monitors {
+                                        ids.retain(|x| *x != id);
+                                        if v {
+                                            ids.push(id);
+                                        }
+                                    }
+                                }),
+                                cx,
+                            )
+                        }),
+                    t,
+                ));
+            }
+        }
+        col
     }
 
     fn account_page(&self, id: Uuid, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {

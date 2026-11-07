@@ -1,6 +1,6 @@
 //! Settings file `%LOCALAPPDATA%\AI SubHub\settings.json`. Holds metadata, preferences and
 //! cached readings only, never secrets. The C# app's settings are only ever read (`import`).
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
@@ -52,6 +52,8 @@ pub enum ThemeMode {
 /// Always-visible display on the taskbar (ADR 0001 refinements). Values are % left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TaskbarMode {
+    /// Legacy "no display": older files load it as `taskbar_enabled = false` + Badge
+    /// (`settings_store::sanitize`). The UI offers an on/off switch instead.
     Off,
     /// Per account a bordered badge like T3 Code's provider tags: provider glyph, coloured
     /// two-letter account tag, 5h and W mini bars with %.
@@ -88,6 +90,19 @@ pub enum TaskbarPosition {
     /// Next to the tray icons (default; works with left-aligned taskbars too).
     #[default]
     Right,
+}
+
+/// Which monitors' taskbars get the taskbar display (owner 2026-11-07). Monitors are saved by
+/// their stable display id (`placement::MonitorInfo::id`), not "Display 2".
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TaskbarMonitors {
+    /// The main taskbar only (where the tray icon is).
+    #[default]
+    Main,
+    /// Every taskbar Windows shows.
+    All,
+    /// These monitors; a missing one falls back to the main taskbar until it is back.
+    Chosen(Vec<String>),
 }
 
 /// What the tray ring shows.
@@ -129,12 +144,25 @@ pub struct DisplaySettings {
     /// tray (default), true = quit SubHub completely.
     #[serde(default)]
     pub close_quits: bool,
+    /// Show the taskbar display next to the tray. Off leaves just the tray icon; the style is
+    /// kept for when it is switched back on.
+    pub taskbar_enabled: bool,
     pub taskbar_mode: TaskbarMode,
     pub taskbar_position: TaskbarPosition,
     /// Where the user dragged the taskbar display: logical px from the taskbar's right edge to
     /// the display's right edge. None = automatic placement for `taskbar_position`.
+    /// Legacy single offset (before per-monitor offsets): still used for the main taskbar
+    /// until the display is dragged there again.
     #[serde(default)]
     pub taskbar_offset: Option<f32>,
+    /// Dragged spot per monitor id, same meaning as `taskbar_offset`.
+    #[serde(default)]
+    pub taskbar_offsets: BTreeMap<String, f32>,
+    #[serde(default)]
+    pub taskbar_monitors: TaskbarMonitors,
+    /// Hover cards over the tray icon and the taskbar badges. Off: the plain Windows tooltip on
+    /// the tray icon, nothing on the badges.
+    pub hover_details: bool,
     #[serde(default)]
     pub taskbar_accounts: TaskbarAccounts,
     /// Accounts starred for the taskbar, in star order (Favorites mode shows the first 3).
@@ -147,6 +175,33 @@ pub struct DisplaySettings {
 
 fn default_taskbar_count() -> u8 {
     3
+}
+
+impl DisplaySettings {
+    /// Dragged spot of the taskbar display on this monitor (None = automatic placement). The
+    /// main taskbar falls back to the legacy single offset.
+    pub fn taskbar_offset_for(&self, monitor: &str, is_main: bool) -> Option<f32> {
+        self.taskbar_offsets.get(monitor).copied().or(if is_main {
+            self.taskbar_offset
+        } else {
+            None
+        })
+    }
+
+    /// Remembers a drag on one monitor; the main taskbar's legacy value is dropped then.
+    pub fn set_taskbar_offset(&mut self, monitor: &str, is_main: bool, offset: f32) {
+        self.taskbar_offsets
+            .insert(monitor.to_string(), offset.max(0.0));
+        if is_main {
+            self.taskbar_offset = None;
+        }
+    }
+
+    /// Back to automatic placement everywhere (Position Left/Right chosen).
+    pub fn reset_taskbar_offsets(&mut self) {
+        self.taskbar_offset = None;
+        self.taskbar_offsets.clear();
+    }
 }
 
 impl Default for DisplaySettings {
@@ -166,9 +221,13 @@ impl Default for DisplaySettings {
             close_popover_on_blur: false,
             popover_height: None,
             close_quits: false,
-            taskbar_mode: TaskbarMode::Bars,
+            taskbar_enabled: true,
+            taskbar_mode: TaskbarMode::Badge,
             taskbar_position: TaskbarPosition::Right,
             taskbar_offset: None,
+            taskbar_offsets: BTreeMap::new(),
+            taskbar_monitors: TaskbarMonitors::Main,
+            hover_details: true,
             taskbar_accounts: TaskbarAccounts::Favorites,
             taskbar_favorites: vec![],
             taskbar_count: default_taskbar_count(),
@@ -502,5 +561,37 @@ mod taskbar_tests {
         }
         let s: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.display.taskbar_accounts, TaskbarAccounts::Favorites);
+    }
+
+    #[test]
+    fn monitors_offsets_and_hover_defaults() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.display.taskbar_monitors, TaskbarMonitors::Main);
+        assert!(s.display.hover_details);
+        let s: Settings =
+            serde_json::from_str(r#"{"display": {"taskbar_monitors": {"Chosen": ["a", "b"]}}}"#)
+                .unwrap();
+        assert_eq!(
+            s.display.taskbar_monitors,
+            TaskbarMonitors::Chosen(vec!["a".into(), "b".into()])
+        );
+    }
+
+    #[test]
+    fn per_monitor_offsets_fall_back_to_the_legacy_main_offset() {
+        let mut d = DisplaySettings {
+            taskbar_offset: Some(40.0),
+            ..Default::default()
+        };
+        assert_eq!(d.taskbar_offset_for("main", true), Some(40.0));
+        assert_eq!(d.taskbar_offset_for("other", false), None);
+        d.set_taskbar_offset("other", false, 12.0);
+        assert_eq!(d.taskbar_offset_for("other", false), Some(12.0));
+        assert_eq!(d.taskbar_offset, Some(40.0));
+        d.set_taskbar_offset("main", true, -5.0);
+        assert_eq!(d.taskbar_offset_for("main", true), Some(0.0));
+        assert_eq!(d.taskbar_offset, None);
+        d.reset_taskbar_offsets();
+        assert_eq!(d.taskbar_offset_for("other", false), None);
     }
 }
