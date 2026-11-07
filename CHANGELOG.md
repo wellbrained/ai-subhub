@@ -4,6 +4,9 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 
 ## Unreleased
 
+- Demo mode: start with `--demo` to try SubHub (or take screenshots) on made-up accounts and usage; it runs next to your real SubHub and never touches your accounts, hub, settings or startup.
+- Choose where new hub threads go from the ⋯ menu on each account card (Use for new hub threads / Back to Auto); the Hub badge now only shows the state. The menu also opens the account's settings.
+
 ## 0.1.2 – 2026-11-07
 
 - After an update, the patch notes no longer pop up at startup; they appear as a small dialog the next time you open the popover.

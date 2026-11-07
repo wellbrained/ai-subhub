@@ -13,7 +13,7 @@ use subhub_core::schedule::Schedule;
 
 use crate::format;
 use crate::icons::{Icon, icon, provider_color};
-use crate::state::{AppState, HubStatus, PendingNotes, SettingsTarget, provider_name};
+use crate::state::{AppState, CardMenu, HubStatus, PendingNotes, SettingsTarget, provider_name};
 use gpui_component::scroll::ScrollableElement;
 use crate::theme::{self, Tokens};
 
@@ -51,7 +51,7 @@ impl Popover {
         state.update(cx, |s, _| {
             s.popover_dragging = false;
             if s.pending_notes.is_some() {
-                s.launch_open = None;
+                s.card_menu = None;
             }
         });
         let blur_close = on_close.clone();
@@ -215,13 +215,13 @@ impl Render for Popover {
             .pending_notes
             .as_ref()
             .map(|p| self.notes_dialog(p, &t, f32::from(window.viewport_size().height), cx));
-        // "Manage projects…" in a Launch menu: open Settings on the Projects page.
-        let manage: std::rc::Rc<dyn Fn(&mut App)> = {
+        // Card menus ("Manage projects…", "Account settings…"): open Settings on that page.
+        let manage: OpenSettings = {
             let state = self.state.clone();
             let on_settings = self.on_settings.clone();
-            std::rc::Rc::new(move |cx: &mut App| {
+            std::rc::Rc::new(move |target: SettingsTarget, cx: &mut App| {
                 state.update(cx, |s, cx| {
-                    s.pending_settings_page = Some(SettingsTarget::Projects);
+                    s.pending_settings_page = Some(target);
                     cx.notify();
                 });
                 on_settings(cx);
@@ -523,6 +523,7 @@ impl Popover {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("AI SubHub"),
             )
+            .when(crate::demo::on(), |d| d.child(crate::demo::pill(t)))
             .child(div().flex_1())
             .child(
                 // When the data is from, next to the refresh button (quiet).
@@ -588,9 +589,9 @@ fn pill(text: impl Into<SharedString>, bg: Hsla, fg: Hsla) -> gpui::Div {
         .child(text.into())
 }
 
-/// Source tags: Hub (clickable: prefer this account for new hub threads / back to Auto),
-/// benched Hub, and "Local only" for a CLI profile outside the hub.
-fn source_tags(acc: &Account, s: &AppState, t: &Tokens, state: Entity<AppState>) -> gpui::Div {
+/// Source tags: Hub (with the steering state: preferred / next), benched Hub, and "Local only"
+/// for a CLI profile outside the hub.
+fn source_tags(acc: &Account, s: &AppState, t: &Tokens) -> gpui::Div {
     let mut row = div().flex().flex_none().items_center().gap_1();
     let hub_bg = if t.dark {
         gpui::rgb(0x2d2546).into()
@@ -610,12 +611,21 @@ fn source_tags(acc: &Account, s: &AppState, t: &Tokens, state: Entity<AppState>)
             let steering = &s.settings.steering;
             let preferred = steering.preferred == Some(acc.id);
             let current = steering.enabled && steering.current == Some(acc.id);
+            // Shows the state only; it is changed in the card's ⋯ menu (owner, 2026-11-07:
+            // clicking the badge "isn't it").
             let label = if preferred {
-                "★ Hub · preferred"
+                "Hub · preferred"
             } else if current {
                 "Hub · next"
             } else {
                 "Hub"
+            };
+            let tip = if preferred {
+                "New hub threads go to this account (chosen in ⋯)."
+            } else if current {
+                "Auto sends new hub threads here next: its weekly limit expires soonest."
+            } else {
+                "A login in the hub. To send new hub threads here, use ⋯."
             };
             let id = acc.id;
             row = row.child(
@@ -633,17 +643,9 @@ fn source_tags(acc: &Account, s: &AppState, t: &Tokens, state: Entity<AppState>)
                     },
                 )
                 .id(SharedString::from(format!("hubtag-{id}")))
-                .cursor_pointer()
-                .hover(|st| st.opacity(0.85))
                 .tooltip(move |window, cx| {
-                    gpui_component::tooltip::Tooltip::new(if preferred {
-                        "New hub threads go to this account. Click to return to Auto."
-                    } else {
-                        "In the hub. Click to send new hub threads here first."
-                    })
-                    .build(window, cx)
-                })
-                .on_click(move |_, _, cx| state.update(cx, |s, cx| s.toggle_preferred(id, cx))),
+                    gpui_component::tooltip::Tooltip::new(tip).build(window, cx)
+                }),
             );
         }
         None => {}
@@ -661,7 +663,7 @@ fn account_card(
     s: &AppState,
     t: &Tokens,
     state: Entity<AppState>,
-    on_manage: std::rc::Rc<dyn Fn(&mut App)>,
+    open_settings: OpenSettings,
 ) -> impl IntoElement {
     let d = s.display();
     let now = Utc::now();
@@ -695,7 +697,7 @@ fn account_card(
         head = head.child(pill(g.clone(), t.surface_hover, t.muted));
     }
     let state_for_star = state.clone();
-    head = head.child(source_tags(acc, s, t, state));
+    head = head.child(source_tags(acc, s, t));
     if stale && !acc.hub.as_ref().is_some_and(|h| h.benched) {
         let label = match status.map(|s| s.state) {
             Some(UsageState::RateLimited) => "Cooling down",
@@ -711,12 +713,15 @@ fn account_card(
         head = head.child(pill(label, bg, fg));
     }
     head = head.child(div().flex_1());
-    head = head.child(launch_button(
-        acc,
+    head = head.child(card_menu_button(
+        acc.id,
+        CardMenu::Launch,
+        Icon::Rocket,
+        "Launch in a project",
         s,
         t,
         state_for_star.clone(),
-        on_manage.clone(),
+        || launch_panel(acc, s, t, state_for_star.clone(), open_settings.clone()),
     ));
     {
         // ☆/★: show this account on the taskbar (Favorites mode).
@@ -748,6 +753,16 @@ fn account_card(
                 }),
         );
     }
+    head = head.child(card_menu_button(
+        acc.id,
+        CardMenu::More,
+        Icon::Ellipsis,
+        "More",
+        s,
+        t,
+        state_for_star.clone(),
+        || more_panel(acc, s, t, state_for_star.clone(), open_settings.clone()),
+    ));
 
     let mut card = div()
         .flex()
@@ -808,23 +823,28 @@ fn account_card(
     card
 }
 
-/// The rocket button in a card header: opens this account's Launch dropdown, a card floating
-/// over the popover content (one at a time). Drawn by us, not gpui-component's menu: it keeps the
-/// popover's colours and type, has no submenus (one click per target) and is snapped inside the
-/// small popover window, so it never opens off-side and never resizes the window (owner,
-/// 2026-11-07).
-fn launch_button(
-    acc: &Account,
+/// Opens Settings on a page (Launch → "Manage projects…", ⋯ → "Account settings…").
+type OpenSettings = std::rc::Rc<dyn Fn(SettingsTarget, &mut App)>;
+
+/// A card header button that opens one of the card's menus (`CardMenu`: the rocket's Launch
+/// menu, the ⋯ menu), a card floating over the popover content, one at a time. Drawn by us, not
+/// gpui-component's menu: it keeps the popover's colours and type, has no submenus and is snapped
+/// inside the small popover window, so it never opens off-side and never resizes the window
+/// (owner, 2026-11-07). `panel` is only built while the menu is open.
+#[allow(clippy::too_many_arguments)]
+fn card_menu_button(
+    id: uuid::Uuid,
+    kind: CardMenu,
+    glyph: Icon,
+    tip: &'static str,
     s: &AppState,
     t: &Tokens,
     state: Entity<AppState>,
-    on_manage: std::rc::Rc<dyn Fn(&mut App)>,
+    panel: impl FnOnce() -> gpui::Stateful<gpui::Div>,
 ) -> impl IntoElement {
-    let id = acc.id;
-    let open = s.launch_open == Some(id);
-    let toggle_state = state.clone();
+    let open = s.card_menu == Some((id, kind));
     let button = div()
-        .id(SharedString::from(format!("launch-{id}")))
+        .id(SharedString::from(format!("menu-{kind:?}-{id}")))
         .flex()
         .items_center()
         .justify_center()
@@ -833,27 +853,23 @@ fn launch_button(
         .cursor_pointer()
         .when(open, |d| d.bg(t.accent.opacity(0.18)))
         .hover(|d| d.bg(t.surface_hover))
-        .child(icon(
-            Icon::Rocket,
-            14.0,
-            if open { t.accent } else { t.muted },
-        ))
+        .child(icon(glyph, 14.0, if open { t.accent } else { t.muted }))
         .when(!open, |d| {
-            d.tooltip(|window, cx| {
-                gpui_component::tooltip::Tooltip::new("Launch in a project").build(window, cx)
+            d.tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(tip).build(window, cx)
             })
         })
         .on_click(move |_, _, cx| {
-            toggle_state.update(cx, |s, cx| {
-                // A press outside the open dropdown (this button included) already closed it;
-                // that same click must not open it again.
-                let just_closed = s
-                    .launch_closed
-                    .is_some_and(|(cid, at)| cid == id && at.elapsed().as_millis() < 400);
-                s.launch_open = if s.launch_open == Some(id) || just_closed {
+            state.update(cx, |s, cx| {
+                // A press outside the open menu (this button included) already closed it; that
+                // same click must not open it again.
+                let just_closed = s.card_menu_closed.is_some_and(|(cid, k, at)| {
+                    cid == id && k == kind && at.elapsed().as_millis() < 400
+                });
+                s.card_menu = if s.card_menu == Some((id, kind)) || just_closed {
                     None
                 } else {
-                    Some(id)
+                    Some((id, kind))
                 };
                 cx.notify();
             })
@@ -866,7 +882,7 @@ fn launch_button(
                     gpui::anchored()
                         .anchor(gpui::Anchor::TopRight)
                         .snap_to_window_with_margin(px(8.0))
-                        .child(launch_panel(acc, s, t, state, on_manage)),
+                        .child(panel()),
                 )
                 .with_priority(1),
             ),
@@ -875,22 +891,18 @@ fn launch_button(
     wrap
 }
 
-fn launch_panel(
-    acc: &Account,
-    s: &AppState,
+/// The floating card of a card menu; a press outside closes it.
+fn menu_shell(
+    id: uuid::Uuid,
+    kind: CardMenu,
+    width: f32,
     t: &Tokens,
     state: Entity<AppState>,
-    on_manage: std::rc::Rc<dyn Fn(&mut App)>,
 ) -> gpui::Stateful<gpui::Div> {
-    let id = acc.id;
-    let env = s.launch_env(acc.provider);
-    let has_profile = acc.profile_dir.is_some();
-    let list = projects::visible(&s.settings.projects);
-    let close_state = state.clone();
-    let mut panel = div()
-        .id(SharedString::from(format!("launch-menu-{id}")))
+    div()
+        .id(SharedString::from(format!("menu-panel-{kind:?}-{id}")))
         .occlude()
-        .w(px(272.0))
+        .w(px(width))
         .flex()
         .flex_col()
         .p(px(6.0))
@@ -906,14 +918,120 @@ fn launch_panel(
             inset: false,
         }])
         .on_mouse_down_out(move |_, _, cx| {
-            close_state.update(cx, |s, cx| {
-                if s.launch_open == Some(id) {
-                    s.launch_open = None;
-                    s.launch_closed = Some((id, std::time::Instant::now()));
+            state.update(cx, |s, cx| {
+                if s.card_menu == Some((id, kind)) {
+                    s.card_menu = None;
+                    s.card_menu_closed = Some((id, kind, std::time::Instant::now()));
                     cx.notify();
                 }
             })
-        });
+        })
+}
+
+/// One row of the ⋯ menu: icon, title and a muted line under it.
+fn menu_item(
+    key: String,
+    glyph: Icon,
+    title: &'static str,
+    hint: String,
+    t: &Tokens,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(SharedString::from(key))
+        .flex()
+        .items_start()
+        .gap_2()
+        .px(px(8.0))
+        .py(px(7.0))
+        .rounded(px(7.0))
+        .cursor_pointer()
+        .hover(|d| d.bg(t.surface_hover))
+        .child(div().pt(px(2.0)).child(icon(glyph, 14.0, t.muted)))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .child(div().text_sm().text_color(t.text).child(title))
+                .child(div().text_xs().text_color(t.faint).child(hint)),
+        )
+}
+
+/// The ⋯ menu: where new hub threads go (hub logins only) and the account's settings page.
+/// Steering moved here from the clickable Hub badge (owner, 2026-11-07: "clicking on a Hub
+/// badge isn't it"; option B of three previews).
+fn more_panel(
+    acc: &Account,
+    s: &AppState,
+    t: &Tokens,
+    state: Entity<AppState>,
+    open_settings: OpenSettings,
+) -> gpui::Stateful<gpui::Div> {
+    let id = acc.id;
+    let mut panel = menu_shell(id, CardMenu::More, 264.0, t, state.clone());
+    if acc.hub.as_ref().is_some_and(|h| !h.benched) {
+        let steering = &s.settings.steering;
+        let preferred = steering.preferred == Some(id);
+        let (glyph, title, hint) = if preferred {
+            (
+                Icon::Route,
+                "Back to Auto",
+                "Auto sends new hub threads to the weekly limit that expires soonest".to_string(),
+            )
+        } else {
+            (
+                Icon::Route,
+                "Use for new hub threads",
+                if steering.enabled {
+                    "Until you switch back to Auto".to_string()
+                } else {
+                    "Turns steering on; until you switch back to Auto".to_string()
+                },
+            )
+        };
+        let st = state.clone();
+        panel = panel.child(
+            menu_item(format!("more-steer-{id}"), glyph, title, hint, t).on_click(
+                move |_, _, cx| {
+                    st.update(cx, |s, cx| {
+                        s.card_menu = None;
+                        s.toggle_preferred(id, cx);
+                    })
+                },
+            ),
+        );
+    }
+    let st = state.clone();
+    panel.child(
+        menu_item(
+            format!("more-settings-{id}"),
+            Icon::Settings,
+            "Account settings…",
+            "Name, tag, group, billing, sign-in".to_string(),
+            t,
+        )
+        .on_click(move |_, _, cx| {
+            st.update(cx, |s, cx| {
+                s.card_menu = None;
+                cx.notify();
+            });
+            open_settings(SettingsTarget::Account(id), cx);
+        }),
+    )
+}
+
+fn launch_panel(
+    acc: &Account,
+    s: &AppState,
+    t: &Tokens,
+    state: Entity<AppState>,
+    open_settings: OpenSettings,
+) -> gpui::Stateful<gpui::Div> {
+    let id = acc.id;
+    let env = s.launch_env(acc.provider);
+    let has_profile = acc.profile_dir.is_some();
+    let list = projects::visible(&s.settings.projects);
+    let mut panel = menu_shell(id, CardMenu::Launch, 272.0, t, state.clone());
     if list.is_empty() {
         panel = panel.child(
             div()
@@ -929,7 +1047,7 @@ fn launch_panel(
     for project in list {
         let targets =
             launch::menu_targets(acc.provider, has_profile, project.directory.is_dir(), &env);
-        let dir_text: SharedString = project.directory.to_string_lossy().into_owned().into();
+        let dir_text: SharedString = crate::demo::show_path(&project.directory).into();
         let mut buttons = div().flex().flex_none().items_center().gap(px(2.0));
         for target in targets {
             let ic = match target.target {
@@ -967,7 +1085,7 @@ fn launch_panel(
                     .on_click(move |_, _, cx| {
                         if enabled {
                             st.update(cx, |s, cx| {
-                                s.launch_open = None;
+                                s.card_menu = None;
                                 s.launch_target(id, project_id, which, cx);
                             });
                         }
@@ -1026,10 +1144,10 @@ fn launch_panel(
             .child("Manage projects…")
             .on_click(move |_, _, cx| {
                 st.update(cx, |s, cx| {
-                    s.launch_open = None;
+                    s.card_menu = None;
                     cx.notify();
                 });
-                on_manage(cx);
+                open_settings(SettingsTarget::Projects, cx);
             }),
     )
 }
@@ -1208,7 +1326,12 @@ fn billing_footer(acc: &Account, s: &AppState, t: &Tokens) -> Option<gpui::Div> 
                 .tooltip(|window, cx| {
                     gpui_component::tooltip::Tooltip::new(BILLING_HINT).build(window, cx)
                 })
-                .on_click(move |_, _, cx| cx.open_url(url)),
+                .on_click(move |_, _, cx| {
+                    // Demo mode opens no real billing page.
+                    if !crate::demo::on() {
+                        cx.open_url(url)
+                    }
+                }),
             ),
     )
 }

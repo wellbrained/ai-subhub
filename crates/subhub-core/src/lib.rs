@@ -4,6 +4,7 @@ pub mod billing;
 pub mod changelog;
 pub mod claude;
 pub mod codex;
+pub mod demo;
 pub mod detect;
 pub mod history;
 pub mod hover;

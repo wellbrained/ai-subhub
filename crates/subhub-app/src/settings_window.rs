@@ -303,8 +303,14 @@ impl SettingsWindow {
             dismissed: None,
             _subs: subs,
         };
-        if this.page == Page::AddAccounts {
-            this.open_add_accounts(cx);
+        match this.page {
+            Page::AddAccounts => this.open_add_accounts(cx),
+            // Opened from a card's ⋯ menu: fill the account page's fields as `go` does.
+            Page::Account(id) => {
+                this.page = Page::General;
+                this.go(Page::Account(id), window, cx);
+            }
+            _ => {}
         }
         this
     }
@@ -538,6 +544,7 @@ fn target_page(target: SettingsTarget) -> Page {
     match target {
         SettingsTarget::Projects => Page::Projects,
         SettingsTarget::AddAccounts => Page::AddAccounts,
+        SettingsTarget::Account(id) => Page::Account(id),
     }
 }
 
@@ -1071,9 +1078,14 @@ impl SettingsWindow {
             ))
             .child(row(
                 "Start with Windows",
-                Some("Opens SubHub in the tray when you sign in to Windows. Per user, no administrator rights; the switch shows what Windows has registered."),
+                Some(if crate::demo::on() {
+                    crate::demo::NOT_AVAILABLE
+                } else {
+                    "Opens SubHub in the tray when you sign in to Windows. Per user, no administrator rights; the switch shows what Windows has registered."
+                }),
                 Switch::new("startup")
                     .checked(crate::startup::is_enabled())
+                    .disabled(crate::demo::on())
                     .on_click({
                         let me = cx.entity();
                         move |v, _, cx| {
@@ -2005,7 +2017,12 @@ impl SettingsWindow {
                     gpui_component::tooltip::Tooltip::new(crate::popover::BILLING_HINT)
                         .build(window, cx)
                 })
-                .on_click(move |_, _, cx| cx.open_url(url)),
+                .on_click(move |_, _, cx| {
+                    // Demo mode opens no real billing page.
+                    if !crate::demo::on() {
+                        cx.open_url(url)
+                    }
+                }),
         );
         if b.is_some() {
             buttons = buttons.child(
@@ -2080,7 +2097,7 @@ impl SettingsWindow {
         ] {
             let found = s.cli_path(provider);
             let (status, color) = match &found {
-                Some(p) => (format!("Found: {}", p.display()), t.ok),
+                Some(p) => (format!("Found: {}", crate::demo::show_path(p)), t.ok),
                 None => (
                     "Not found. Install the CLI or enter its path.".to_string(),
                     t.warn,
@@ -2172,7 +2189,9 @@ impl SettingsWindow {
                                     .truncate()
                                     .text_xs()
                                     .text_color(t.muted)
-                                    .child(SharedString::from(p.directory.display().to_string())),
+                                    .child(SharedString::from(crate::demo::show_path(
+                                        &p.directory,
+                                    ))),
                             ),
                     )
                     .child(
@@ -2483,16 +2502,26 @@ impl SettingsWindow {
                     ),
             )
             .child(version_row)
-            .child(mode_row)
-            .child(check_row)
-            .when_some(status_row, |d, r| d.child(r))
+            .when(crate::demo::on(), |d| {
+                d.child(row(
+                    "Updates",
+                    Some("No checks, downloads or installs in the demo."),
+                    div().text_sm().text_color(t.muted).child("Demo mode"),
+                    t,
+                ))
+            })
+            .when(!crate::demo::on(), |d| {
+                d.child(mode_row)
+                    .child(check_row)
+                    .when_some(status_row, |d, r| d.child(r))
+            })
             .child(block(
                 "Settings file",
                 Some("Preferences, accounts and the last readings; never keys or tokens."),
                 div()
                     .text_xs()
                     .text_color(t.muted)
-                    .child(subhub_core::settings::default_path().display().to_string()),
+                    .child(crate::demo::show_path(&subhub_core::settings::default_path())),
                 t,
             ))
     }
@@ -2795,7 +2824,7 @@ impl SettingsWindow {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let title = d.email.clone().unwrap_or(folder);
-        let path = d.dir.display().to_string();
+        let path = crate::demo::show_path(&d.dir);
         let path = path.strip_prefix(r"\\?\").unwrap_or(&path).to_string();
         // Importable rows carry no tag: whether the import makes a new account or links the
         // profile to the account that already has this login (e.g. from the hub) is internal
@@ -2902,7 +2931,7 @@ impl SettingsWindow {
         let folder_name = |p: &std::path::Path| {
             p.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| p.display().to_string())
+                .unwrap_or_else(|| crate::demo::show_path(p))
         };
         // One account per login (owner, 2026-11-07): a hub login that also has a CLI profile is
         // the same account with both sources; the row says which folder, or that one was found
@@ -3050,7 +3079,21 @@ impl SettingsWindow {
             ))
             .child(row("Steering now", None, div().text_sm().text_color(steer_color).child(steer_status), t))
             .child(row("Address", Some("Local by default; the Tailscale address works too."), div().w(px(260.0)).child(Input::new(&self.hub_url)), t))
-            .child(row(
+            .when(crate::demo::on(), |d| {
+                // Saving or removing would change the real Windows Credential Manager.
+                d.child(row(
+                    "Management key",
+                    Some(crate::demo::NOT_AVAILABLE),
+                    div()
+                        .flex()
+                        .gap_2()
+                        .opacity(0.5)
+                        .child(button("save-key", "Save", t, true))
+                        .child(button("clear-key", "Remove", t, false)),
+                    t,
+                ))
+            })
+            .when(!crate::demo::on(), |d| d.child(row(
                 "Management key",
                 Some("Stored in Windows Credential Manager, never in the settings file."),
                 div()
@@ -3076,7 +3119,7 @@ impl SettingsWindow {
                         cx.notify();
                     }))),
                 t,
-            ))
+            )))
     }
 }
 

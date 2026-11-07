@@ -74,6 +74,10 @@ impl AppState {
 
     /// Looks for a newer release on a background thread (also what "Check now" does).
     pub fn check_update(&mut self, cx: &mut Context<Self>) {
+        // Demo mode: no checks, downloads or installs.
+        if crate::demo::on() {
+            return;
+        }
         if self.update.phase != Phase::Idle {
             return;
         }
@@ -145,6 +149,9 @@ impl AppState {
 
     /// Auto mode: downloads and verifies the update in the background, installs nothing.
     pub fn download_update(&mut self, cx: &mut Context<Self>) {
+        if crate::demo::on() {
+            return;
+        }
         let Some(rel) = self.update.available.clone() else {
             return;
         };
@@ -177,6 +184,9 @@ impl AppState {
     /// Downloads (when not done yet), verifies, swaps the exe and restarts into the new
     /// version. Manual installs call this straight from the button.
     pub fn install_update(&mut self, cx: &mut Context<Self>) {
+        if crate::demo::on() {
+            return;
+        }
         if self.update.phase != Phase::Idle {
             return;
         }
@@ -242,6 +252,9 @@ impl AppState {
     /// Once a minute (from `main`): a due check in either mode; in Auto mode also the
     /// background download and, when nothing is in use, the install.
     pub fn update_tick(&mut self, busy: Busy, cx: &mut Context<Self>) {
+        if crate::demo::on() {
+            return;
+        }
         if self.update.phase != Phase::Idle {
             return;
         }

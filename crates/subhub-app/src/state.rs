@@ -45,6 +45,17 @@ pub enum SettingsTarget {
     Projects,
     /// Accounts → Add accounts (first start without accounts).
     AddAccounts,
+    /// One account's page (a card's ⋯ menu → Account settings…).
+    Account(Uuid),
+}
+
+/// The floating menus on a popover account card (one open at a time).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CardMenu {
+    /// The rocket: Launch in a project.
+    Launch,
+    /// The ⋯ menu: hub routing ("Use for new hub threads" / "Back to Auto"), account settings.
+    More,
 }
 
 fn plural(n: usize) -> &'static str {
@@ -75,11 +86,11 @@ pub struct AppState {
     /// Short per-account feedback for sign-in / retry (shown on the popover card and the
     /// account page); cleared by the next successful reading.
     pub account_notes: HashMap<Uuid, String>,
-    /// The account whose Launch panel is open in the popover (UI only, not saved).
-    pub launch_open: Option<Uuid>,
-    /// When a press outside closed the Launch dropdown (so that press's click on the rocket does
-    /// not reopen it).
-    pub launch_closed: Option<(Uuid, std::time::Instant)>,
+    /// The card menu open in the popover, and whose card (UI only, not saved).
+    pub card_menu: Option<(Uuid, CardMenu)>,
+    /// When a press outside closed a card menu (so that press's click on its button does not
+    /// reopen it).
+    pub card_menu_closed: Option<(Uuid, CardMenu, std::time::Instant)>,
     /// Accounts whose sign-in terminal was started and is being watched.
     pub signing_in: HashSet<Uuid>,
     /// Retries asked for while a refresh was running; run right after it.
@@ -151,8 +162,8 @@ impl AppState {
             user_saves: 0,
             message_for_user: None,
             account_notes: HashMap::new(),
-            launch_open: None,
-            launch_closed: None,
+            card_menu: None,
+            card_menu_closed: None,
             signing_in: HashSet::new(),
             queued_retry: HashSet::new(),
             pending_notices: vec![],
@@ -214,6 +225,10 @@ impl AppState {
 
     /// Detects the installed desktop apps once, on a background thread with a timeout.
     pub fn detect_desktop_apps(&mut self, cx: &mut Context<Self>) {
+        if crate::demo::on() {
+            self.desktop = crate::demo::desktop_apps();
+            return;
+        }
         cx.spawn(async move |this: WeakEntity<Self>, cx| {
             let found = cx
                 .background_executor()
@@ -386,6 +401,10 @@ impl AppState {
         if self.refreshing {
             return;
         }
+        if crate::demo::on() {
+            self.demo_refresh(force, only, cx);
+            return;
+        }
         self.refreshing = true;
         cx.notify();
         let hub_cfg = self.settings.hub.clone();
@@ -498,6 +517,38 @@ impl AppState {
         .detach();
     }
 
+    /// Demo mode's refresh: no provider, hub or Credential Manager. Due accounts get the
+    /// fixture result (`subhub_core::demo::refresh_result`), the hub counts as connected, then
+    /// the normal apply and steering (which writes nothing in the demo) run.
+    fn demo_refresh(&mut self, force: bool, only: Option<HashSet<Uuid>>, cx: &mut Context<Self>) {
+        let now = Utc::now();
+        self.hub = if self.settings.hub.enabled {
+            HubStatus::Ok(
+                self.settings
+                    .accounts
+                    .iter()
+                    .filter(|a| a.hub.is_some())
+                    .count(),
+            )
+        } else {
+            HubStatus::Off
+        };
+        let results = self
+            .due_accounts(force, only.as_ref())
+            .iter()
+            .map(|a| {
+                let r =
+                    subhub_core::demo::refresh_result(a, self.settings.readings.get(&a.id), now);
+                (a.id, r)
+            })
+            .collect();
+        self.apply_results(results);
+        self.queued_retry.clear();
+        self.last_refresh = Some(now);
+        self.steer(cx);
+        cx.notify();
+    }
+
     // ---- hub steering (ADR 0001 refinements: the only hub write is credential priority) ----
 
     /// Puts the steering target on top in the hub and restores every other login SubHub changed.
@@ -521,6 +572,13 @@ impl AppState {
                 self.settings.steering.current = target;
                 self.save();
             }
+            return;
+        }
+        if crate::demo::on() {
+            // No PATCH: the plan is applied to the local copy as if the hub had taken it.
+            self.steering_applied(&changes, originals, target);
+            self.save();
+            cx.notify();
             return;
         }
         self.steering_busy = true;
@@ -550,21 +608,7 @@ impl AppState {
             let _ = this.update(cx, |s, cx| {
                 s.steering_busy = false;
                 match result {
-                    Ok(()) => {
-                        // Mirror the new priorities locally so the next plan sees them.
-                        for c in &changes {
-                            for a in s.settings.accounts.iter_mut() {
-                                if let Some(h) =
-                                    a.hub.as_mut().filter(|h| h.file_name == c.file_name)
-                                {
-                                    h.priority = c.priority;
-                                }
-                            }
-                        }
-                        s.settings.steering.original_priorities = originals;
-                        s.settings.steering.current = target;
-                        s.steering_error = None;
-                    }
+                    Ok(()) => s.steering_applied(&changes, originals, target),
                     Err(e) => s.steering_error = Some(e.to_string()),
                 }
                 s.save();
@@ -572,6 +616,25 @@ impl AppState {
             });
         })
         .detach();
+    }
+
+    /// The hub took the priority writes: mirror them locally so the next plan sees them.
+    fn steering_applied(
+        &mut self,
+        changes: &[subhub_core::steer::PriorityChange],
+        originals: HashMap<String, Option<i64>>,
+        target: Option<Uuid>,
+    ) {
+        for c in changes {
+            for a in self.settings.accounts.iter_mut() {
+                if let Some(h) = a.hub.as_mut().filter(|h| h.file_name == c.file_name) {
+                    h.priority = c.priority;
+                }
+            }
+        }
+        self.settings.steering.original_priorities = originals;
+        self.settings.steering.current = target;
+        self.steering_error = None;
     }
 
     /// Clicked Hub tag: prefer this account for new hub threads; clicking it again returns to Auto.
@@ -948,6 +1011,9 @@ impl AppState {
 
     /// What is installed, looked up when a Launch menu opens (cheap file checks).
     pub fn launch_env(&self, provider: ProviderKind) -> LaunchEnv {
+        if crate::demo::on() {
+            return crate::demo::launch_env(provider);
+        }
         LaunchEnv {
             cli: self.cli_path(provider),
             windows_terminal: launch::find_windows_terminal(),
@@ -1003,6 +1069,10 @@ impl AppState {
                 10,
                 cx,
             );
+            return;
+        }
+        if crate::demo::on() {
+            self.note_for(account_id, crate::demo::NOTHING_STARTED.into(), 10, cx);
             return;
         }
         let name = provider_name(acc.provider);
@@ -1095,6 +1165,9 @@ impl AppState {
 
     /// The CLI that would be used, configured or detected.
     pub fn cli_path(&self, provider: ProviderKind) -> Option<PathBuf> {
+        if crate::demo::on() {
+            return crate::demo::fake_cli(provider);
+        }
         launch::find_cli(provider, self.settings.tools.exe_for(provider))
     }
 
@@ -1114,6 +1187,10 @@ impl AppState {
             return;
         };
         if self.signing_in.contains(&id) {
+            return;
+        }
+        if crate::demo::on() {
+            self.note_for(id, crate::demo::NOTHING_STARTED.into(), 10, cx);
             return;
         }
         let name = provider_name(acc.provider);

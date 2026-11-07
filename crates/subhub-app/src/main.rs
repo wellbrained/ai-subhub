@@ -3,6 +3,7 @@
 #![windows_subsystem = "windows"]
 
 mod assets;
+mod demo;
 mod format;
 mod hover_card;
 mod icons;
@@ -69,6 +70,11 @@ fn main() {
         }
         return;
     }
+    // Demo mode: a wiped and reseeded sandbox stands in for the user folder and LOCALAPPDATA
+    // before anything reads a path. No sandbox, no start (never fall back to the real data).
+    if args.iter().any(|a| a == "--demo") && demo::enter().is_err() {
+        return;
+    }
     // Dev helper: --stats-dump [path] scans the logs once and writes aggregate numbers only.
     if let Some(i) = args.iter().position(|a| a == "--stats-dump") {
         stats_dump(args.get(i + 1));
@@ -84,7 +90,9 @@ fn main() {
     if !single_instance() {
         return;
     }
-    updater::clean_leftovers();
+    if !demo::on() {
+        updater::clean_leftovers();
+    }
     let updated_from = start.updated_from;
     // Test helper: pretend the previous version was 0.1.0, so the patch-notes dialog shows the
     // next time the popover opens (nothing is saved).
@@ -102,7 +110,7 @@ fn main() {
             let (tx, mut rx) = futures::channel::mpsc::unbounded();
             // The tray icon keeps Windows' plain text tooltip (owner, 2026-11-07: no hover card
             // on the tray icon); hover cards are for the taskbar badges only.
-            let tray = match Tray::new(tx, "AI SubHub", false) {
+            let tray = match Tray::new(tx, demo::app_name(), false) {
                 Ok(t) => t,
                 Err(_) => {
                     // Never run without a way back.
@@ -149,6 +157,7 @@ fn main() {
                     // Billing reminders go out as tray balloons.
                     let notices = state.update(cx, |s, _| std::mem::take(&mut s.pending_notices));
                     for (title, text) in notices {
+                        let title = demo::balloon_title(&title);
                         shell.borrow_mut().tray.balloon(&title, &text);
                     }
                 })
@@ -321,7 +330,10 @@ fn single_instance() -> bool {
     let dev = std::env::current_exe()
         .map(|p| subhub_core::update::is_dev_build(&p))
         .unwrap_or(false);
-    let name = if dev {
+    // Demo mode has its own, so it runs next to the installed app and a dev build.
+    let name = if demo::on() {
+        w!("Local\\AISubHub.SingleInstance.Demo")
+    } else if dev {
         w!("Local\\AISubHub.SingleInstance.Dev")
     } else {
         w!("Local\\AISubHub.SingleInstance")
@@ -341,7 +353,7 @@ fn update_tray(shell: &ShellRef, state: &Entity<AppState>, cx: &mut App) {
     if !state.read(cx).display().hover_details {
         hover_card::hide(cx);
     }
-    let _ = shell.borrow_mut().tray.set_tip("AI SubHub", false);
+    let _ = shell.borrow_mut().tray.set_tip(demo::app_name(), false);
 }
 
 /// What the popover opens above: the tray icon, or the taskbar display that was clicked.

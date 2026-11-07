@@ -37,6 +37,8 @@ pub enum Icon {
     ChevronRight,
     ChevronDown,
     ChevronLeft,
+    Ellipsis,
+    Route,
     Provider(ProviderKind),
 }
 
@@ -75,6 +77,8 @@ impl Icon {
             Icon::ChevronRight => "icons/chevron-right.svg",
             Icon::ChevronDown => "icons/chevron-down.svg",
             Icon::ChevronLeft => "icons/chevron-left.svg",
+            Icon::Ellipsis => "icons/ellipsis.svg",
+            Icon::Route => "icons/route.svg",
             Icon::Provider(ProviderKind::Claude) => "icons/provider-claude.svg",
             Icon::Provider(ProviderKind::Codex) => "icons/provider-openai.svg",
         }

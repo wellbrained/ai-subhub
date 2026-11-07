@@ -40,7 +40,11 @@ pub fn registered() -> Option<String> {
     }
 }
 
+/// Demo mode never reads or writes the Run key: it shows off.
 pub fn is_enabled() -> bool {
+    if crate::demo::on() {
+        return false;
+    }
     registered().is_some()
 }
 
@@ -50,6 +54,9 @@ fn current_command() -> Result<String, String> {
 }
 
 pub fn set_enabled(on: bool) -> Result<(), String> {
+    if crate::demo::on() {
+        return Err(crate::demo::NOT_AVAILABLE.into());
+    }
     unsafe {
         if on {
             let command = current_command()?;
@@ -80,6 +87,9 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
 /// Development builds (cargo's `target\debug|release`) never take it over: the installed app
 /// stays on startup while a dev build runs for testing (owner, 2026-11-07).
 pub fn refresh_if_enabled() {
+    if crate::demo::on() {
+        return;
+    }
     // A development build must not take over the installed app's entry.
     if std::env::current_exe().map_or(true, |p| subhub_core::update::is_dev_build(&p)) {
         return;

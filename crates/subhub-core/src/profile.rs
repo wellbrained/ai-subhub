@@ -124,7 +124,7 @@ pub fn discover_dirs(home: &Path, env: &ProfileEnv) -> Vec<(ProviderKind, PathBu
 
 /// A canonical path without Windows' verbatim `\\?\` prefix when it is a plain drive path, so
 /// stored profile folders stay usable as `CLAUDE_CONFIG_DIR` / `CODEX_HOME` and readable.
-fn plain(p: PathBuf) -> PathBuf {
+pub(crate) fn plain(p: PathBuf) -> PathBuf {
     let s = p.to_string_lossy();
     match s.strip_prefix(r"\\?\") {
         Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),

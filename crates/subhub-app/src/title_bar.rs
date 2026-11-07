@@ -121,7 +121,8 @@ pub fn bar(
                         .text_sm()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(SharedString::from(title)),
-                ),
+                )
+                .when(crate::demo::on(), |d| d.child(crate::demo::pill(t))),
         )
         .children(after_title)
         .child(
