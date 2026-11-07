@@ -115,7 +115,7 @@ Core: `subhub-core/src/billing.rs`, a port of the C# `MonthlyBilling.cs`.
 
 ## Start with Windows and About
 
-- General → Start with Windows: HKCU `Software\Microsoft\Windows\CurrentVersion\Run`, value `AI SubHub` = the quoted exe path (`startup.rs`). The switch reflects the registry, not a setting; an enabled entry follows the exe when it starts from a new path. No administrator rights.
+- General → Start with Windows: HKCU `Software\Microsoft\Windows\CurrentVersion\Run`, value `AI SubHub` = the quoted exe path (`startup.rs`). The switch reflects the registry, not a setting; an enabled entry follows the exe when it starts from a new path, except for development builds (`target\debug|release`): the installed app stays on startup while a dev build runs for testing (owner, 2026-11-07; a dev run had moved it to the worktree). No administrator rights.
 - About shows the settings file location (`settings::default_path()`).
 
 ## Settings fields added
