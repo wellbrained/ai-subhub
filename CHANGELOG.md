@@ -8,6 +8,7 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 - Statistics and Settings have their own title bar in the app's colours instead of the Windows caption bar.
 - New app icon ("Night glow") and a simpler, sharper tray icon.
 - The Days table shows the last week and scrolls for older days; Codex is blue in the statistics.
+- Detect / Import: finds your Claude and Codex CLI profiles and imports the ones you pick, without duplicates. Offered on first start and in Settings.
 
 ## 0.1.0 – 2026-11-07
 

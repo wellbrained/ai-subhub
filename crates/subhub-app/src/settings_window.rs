@@ -1,6 +1,8 @@
 //! Settings window: category menu on the left, one content column on the right (owner rule).
 //! Menu: settings pages, then a separated provider section (one page per account), with
 //! "+ Add account" and "About" pinned at the bottom.
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::Focusable as _;
@@ -8,8 +10,10 @@ use gpui::{
     AnyElement, Context, Entity, FontWeight, Hsla, IntoElement, ParentElement, Render,
     SharedString, Styled, Subscription, Window, div, prelude::*, px,
 };
+use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::switch::Switch;
+use subhub_core::detect::{DetectStatus, DetectedProfile};
 use subhub_core::model::{Account, ProviderKind};
 use subhub_core::secrets;
 use subhub_core::settings::{
@@ -35,7 +39,15 @@ enum Page {
     Updates,
     Account(Uuid),
     Add,
+    Detect,
     About,
+}
+
+/// Tabs on Detect / Import (owner, 2026-11-07).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DetectTab {
+    Cli,
+    Hub,
 }
 
 const TOP_PAGES: [(Page, &str); 8] = [
@@ -93,6 +105,12 @@ pub struct SettingsWindow {
     toast_message: Option<String>,
     message_until: Option<std::time::Instant>,
     dismissed: Option<String>,
+    /// Detect / Import page: the last detection and the ticked folders.
+    detected: Vec<DetectedProfile>,
+    picked: HashSet<PathBuf>,
+    /// The account list the detection was computed against (`accounts_sig`).
+    detect_sig: u64,
+    detect_tab: DetectTab,
     _subs: Vec<Subscription>,
 }
 
@@ -126,6 +144,7 @@ impl SettingsWindow {
         // "Manage projects…" from a Launch menu opens this window straight on Projects.
         let start_page = match state.update(cx, |s, _| s.pending_settings_page.take()) {
             Some(SettingsTarget::Projects) => Page::Projects,
+            Some(SettingsTarget::Detect) => Page::Detect,
             None => Page::General,
         };
         let rename = cx.new(|cx| InputState::new(window, cx).placeholder("Account name"));
@@ -151,11 +170,12 @@ impl SettingsWindow {
                     this.message = Some(m);
                 }
                 // A Launch menu asked for a page while this window was already open.
-                if let Some(SettingsTarget::Projects) =
-                    state.update(cx, |s, _| s.pending_settings_page.take())
-                {
-                    this.go(Page::Projects, window, cx);
+                match state.update(cx, |s, _| s.pending_settings_page.take()) {
+                    Some(SettingsTarget::Projects) => this.go(Page::Projects, window, cx),
+                    Some(SettingsTarget::Detect) => this.go(Page::Detect, window, cx),
+                    None => {}
                 }
+                this.redetect_if_accounts_changed(cx);
                 // A change the user made was saved: show the "Saved" toast.
                 let saves = state.read(cx).user_saves;
                 if saves != this.seen_saves {
@@ -230,9 +250,13 @@ impl SettingsWindow {
                 }
             }),
         ];
-        Self {
+        let mut this = Self {
             state,
             page: start_page,
+            detected: vec![],
+            picked: HashSet::new(),
+            detect_sig: 0,
+            detect_tab: DetectTab::Cli,
             confirm_remove: None,
             project_label,
             editing_project: None,
@@ -261,7 +285,11 @@ impl SettingsWindow {
             message_until: None,
             dismissed: None,
             _subs: subs,
+        };
+        if this.page == Page::Detect {
+            this.run_detect(cx);
         }
+        this
     }
 
     /// Saves edited name/tag of the open account page (Enter, blur, page switch).
@@ -420,6 +448,9 @@ impl SettingsWindow {
         self.confirm_remove = None;
         self.confirm_remove_project = None;
         self.message = None;
+        if page == Page::Detect {
+            self.run_detect(cx);
+        }
         if let Page::Account(id) = page {
             let (label, own) = {
                 let s = self.state.read(cx);
@@ -608,6 +639,12 @@ impl Render for SettingsWindow {
                     .on_click(cx.listener(|this, _, window, cx| this.go(Page::Add, window, cx))),
             )
             .child(
+                nav_item("nav-detect", self.page == Page::Detect, &t)
+                    .child(icon(Icon::ScanSearch, 14.0, t.muted))
+                    .child("Detect / Import")
+                    .on_click(cx.listener(|this, _, window, cx| this.go(Page::Detect, window, cx))),
+            )
+            .child(
                 nav_item("nav-about", self.page == Page::About, &t)
                     .child(icon(Icon::Info, 14.0, t.muted))
                     .child("About")
@@ -643,6 +680,7 @@ impl Render for SettingsWindow {
             Page::Hub => self.hub(&t, cx).into_any_element(),
             Page::Account(id) => self.account_page(id, &t, cx).into_any_element(),
             Page::Add => self.add_form(&t, cx).into_any_element(),
+            Page::Detect => self.detect_page(&t, cx).into_any_element(),
             Page::Tools => self.tools_page(&t, cx).into_any_element(),
             Page::Projects => self.projects_page(&t, cx).into_any_element(),
             Page::Statistics => self.statistics_page(&t, cx).into_any_element(),
@@ -2541,6 +2579,441 @@ impl SettingsWindow {
             )
     }
 
+    /// Runs profile detection again and ticks the rows that are new with a known login.
+    fn run_detect(&mut self, cx: &mut Context<Self>) {
+        self.detected = self.state.read(cx).detect_profiles();
+        self.detect_sig = accounts_sig(self.state.read(cx));
+        self.picked = self
+            .detected
+            .iter()
+            .filter(|d| d.preselected())
+            .map(|d| d.dir.clone())
+            .collect();
+    }
+
+    /// The account list changed while the page is open (e.g. the first refresh added the hub
+    /// logins): statuses are recomputed, ticks on rows that are still importable are kept, rows
+    /// that were not importable before get their default tick.
+    fn redetect_if_accounts_changed(&mut self, cx: &mut Context<Self>) {
+        let sig = accounts_sig(self.state.read(cx));
+        if self.page != Page::Detect || sig == self.detect_sig {
+            return;
+        }
+        let before: HashSet<PathBuf> = self
+            .detected
+            .iter()
+            .filter(|d| d.importable())
+            .map(|d| d.dir.clone())
+            .collect();
+        let picked = std::mem::take(&mut self.picked);
+        self.detected = self.state.read(cx).detect_profiles();
+        self.detect_sig = sig;
+        self.picked = self
+            .detected
+            .iter()
+            .filter(|d| {
+                d.importable()
+                    && if before.contains(&d.dir) {
+                        picked.contains(&d.dir)
+                    } else {
+                        d.preselected()
+                    }
+            })
+            .map(|d| d.dir.clone())
+            .collect();
+    }
+
+    fn import_picked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let picks: Vec<DetectedProfile> = self
+            .detected
+            .iter()
+            .filter(|d| d.importable() && self.picked.contains(&d.dir))
+            .cloned()
+            .collect();
+        if picks.is_empty() {
+            return;
+        }
+        let (report, msg) = self.state.update(cx, |s, cx| {
+            let r = s.import_profiles(&picks, cx);
+            cx.notify();
+            r
+        });
+        // Show what was imported: the first new (or linked) account's page.
+        match report.added.first().or(report.linked.first()) {
+            Some(&id) => self.go(Page::Account(id), window, cx),
+            None => self.run_detect(cx),
+        }
+        self.message = Some(msg);
+        cx.notify();
+    }
+
+    /// Detect / Import: CLI profiles found on this PC (with what importing would do) and the
+    /// hub's logins, which the hub adds by itself on each refresh.
+    fn detect_page(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+        let importable: Vec<&DetectedProfile> =
+            self.detected.iter().filter(|d| d.importable()).collect();
+        let n_picked = importable
+            .iter()
+            .filter(|d| self.picked.contains(&d.dir))
+            .count();
+
+        let toolbar = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_2()
+            .pb_2()
+            .child(
+                button("det-all", "Select all", t, false).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.picked = this
+                            .detected
+                            .iter()
+                            .filter(|d| d.importable())
+                            .map(|d| d.dir.clone())
+                            .collect();
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                button("det-none", "Select none", t, false).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.picked.clear();
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                icon_button("det-again", Icon::Refresh, "Detect again", t).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.run_detect(cx);
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(div().flex_1())
+            .child(
+                button(
+                    "det-import",
+                    &format!("Import selected ({n_picked})"),
+                    t,
+                    n_picked > 0,
+                )
+                .when(n_picked == 0, |d| d.opacity(0.5).cursor_default())
+                .on_click(cx.listener(|this, _, window, cx| this.import_picked(window, cx))),
+            );
+
+        let mut list = div().flex().flex_col();
+        for p in [ProviderKind::Claude, ProviderKind::Codex] {
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .pt_4()
+                    .pb_1()
+                    .child(icon(Icon::Provider(p), 12.0, provider_color(p, t.muted)))
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(t.faint)
+                            .child(SharedString::from(provider_name(p).to_uppercase())),
+                    ),
+            );
+            let rows: Vec<(usize, &DetectedProfile)> = self
+                .detected
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| d.provider == p)
+                .collect();
+            if rows.is_empty() {
+                list = list.child(
+                    div()
+                        .py_2()
+                        .text_xs()
+                        .text_color(t.faint)
+                        .child("No profiles found"),
+                );
+            }
+            for (i, d) in rows {
+                list = list.child(self.detect_row(i, d, t, cx));
+            }
+        }
+
+        let tab = self.detect_tab;
+        let tabs = div().pb_3().child(chips(
+            "det-tab",
+            &[(DetectTab::Cli, "CLI profiles"), (DetectTab::Hub, "Hub")],
+            &tab,
+            t,
+            {
+                let me = cx.entity();
+                move |v, cx| {
+                    me.update(cx, |this, cx| {
+                        this.detect_tab = v;
+                        cx.notify();
+                    })
+                }
+            },
+        ));
+        let page = div()
+            .flex()
+            .flex_col()
+            .child(heading("Detect / Import"))
+            .child(tabs);
+        if tab == DetectTab::Hub {
+            return page
+                .child(div().pb_1().text_xs().text_color(t.muted).child(
+                    "Logins in your CLIProxyAPI hub. The hub adds them by itself on each \
+                     refresh; a login that also has a CLI profile stays one account.",
+                ))
+                .child(self.detect_hub_block(t, cx));
+        }
+        page.child(div().pb_3().text_xs().text_color(t.muted).child(
+            "CLI profiles found in your user folder (.claude*, .codex*), in \
+                 CLAUDE_CONFIG_DIR and CODEX_HOME, and in .config\\claude. Only the \
+                 login email is read; tokens are never touched. A login is never added \
+                 twice.",
+        ))
+        .child(toolbar)
+        .child(list)
+        .when(self.detected.is_empty(), |d| {
+            d.child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .pt_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(t.muted)
+                            .child("No CLI profiles found. Pick a profile folder yourself:"),
+                    )
+                    .child(button("det-add", "Add account", t, false).on_click(
+                        cx.listener(|this, _, window, cx| this.go(Page::Add, window, cx)),
+                    )),
+            )
+        })
+    }
+
+    fn detect_row(
+        &self,
+        i: usize,
+        d: &DetectedProfile,
+        t: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let importable = d.importable();
+        let checked = importable && self.picked.contains(&d.dir);
+        let folder = d
+            .dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let title = d.email.clone().unwrap_or(folder);
+        let path = d.dir.display().to_string();
+        let path = path.strip_prefix(r"\\?\").unwrap_or(&path).to_string();
+        // Importable rows carry no tag: whether the import makes a new account or links the
+        // profile to the account that already has this login (e.g. from the hub) is internal
+        // (owner, 2026-11-07). Only rows that cannot be imported say why.
+        let status = match &d.status {
+            DetectStatus::New | DetectStatus::Joins { .. } => None,
+            DetectStatus::Added { label, .. } => Some(format!("Already added as {label}")),
+            DetectStatus::SameLogin { dir } => {
+                let name = dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                Some(format!("Same login as {name}"))
+            }
+        };
+        // Informed, not asked (owner, 2026-11-07): the login is also in the hub; importing makes
+        // no second account, it adds this folder as the account's CLI source.
+        let in_hub = match &d.status {
+            DetectStatus::Joins { account, .. } | DetectStatus::Added { account, .. } => self
+                .state
+                .read(cx)
+                .account(*account)
+                .is_some_and(|a| a.hub.is_some()),
+            _ => false,
+        };
+        let dir = d.dir.clone();
+        let control: AnyElement = if importable {
+            Checkbox::new(("det-pick", i))
+                .checked(checked)
+                .on_click(cx.listener(move |this, v: &bool, _, cx| {
+                    if *v {
+                        this.picked.insert(dir.clone());
+                    } else {
+                        this.picked.remove(&dir);
+                    }
+                    cx.notify();
+                }))
+                .into_any_element()
+        } else {
+            div().size(px(16.0)).into_any_element()
+        };
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .py_3()
+            .border_b_1()
+            .border_color(t.border)
+            .when(!importable, |d| d.opacity(0.6))
+            .child(div().flex_none().child(control))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(SharedString::from(title)),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_xs()
+                            .text_color(t.muted)
+                            .child(SharedString::from(path)),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .gap_1()
+                    .when(d.email.is_none(), |r| {
+                        r.child(tag("No login found", t.warn, t))
+                    })
+                    .when(in_hub, |r| r.child(tag("Also in the hub", t.muted, t)))
+                    .when_some(status, |r, s| r.child(tag(&s, t.muted, t))),
+            )
+    }
+
+    /// Hub logins are read-only here: the hub adds them on every refresh.
+    fn detect_hub_block(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
+        let s = self.state.read(cx);
+        let line = match &s.hub {
+            HubStatus::Ok(n) => format!(
+                "{n} login{} in the hub, added automatically on each refresh.",
+                if *n == 1 { "" } else { "s" }
+            ),
+            HubStatus::Off => "The hub is off.".into(),
+            HubStatus::NoKey => "The hub is not set up yet (no management key).".into(),
+            HubStatus::Unknown => "The hub has not been checked yet.".into(),
+            HubStatus::Unreachable => "The hub is not reachable.".into(),
+            HubStatus::Unauthorized => "The hub did not accept the management key.".into(),
+            HubStatus::Error(e) => format!("Hub problem: {e}"),
+        };
+        let set_up = !matches!(s.hub, HubStatus::Ok(_));
+        let folder_name = |p: &std::path::Path| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| p.display().to_string())
+        };
+        // One account per login (owner, 2026-11-07): a hub login that also has a CLI profile is
+        // the same account with both sources; the row says which folder, or that one was found
+        // but not imported yet.
+        let hub_accounts: Vec<(ProviderKind, String, Option<String>, String, bool)> = s
+            .settings
+            .accounts
+            .iter()
+            .filter(|a| a.hub.is_some())
+            .map(|a| {
+                let cli = match &a.profile_dir {
+                    Some(dir) => format!("Also as CLI profile {}", folder_name(dir)),
+                    None => match self.detected.iter().find(|d| {
+                        d.importable()
+                            && d.provider == a.provider
+                            && d.email
+                                .as_deref()
+                                .zip(a.email.as_deref())
+                                .is_some_and(|(x, y)| x.eq_ignore_ascii_case(y))
+                    }) {
+                        Some(d) => {
+                            format!("CLI profile {} found, not imported", folder_name(&d.dir))
+                        }
+                        None => "Hub only".into(),
+                    },
+                };
+                (
+                    a.provider,
+                    a.label.clone(),
+                    a.email.clone(),
+                    cli,
+                    a.hub.as_ref().is_some_and(|h| h.benched),
+                )
+            })
+            .collect();
+        let mut rows = div().flex().flex_col();
+        for (p, label, email, status, benched) in hub_accounts {
+            rows =
+                rows.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .py_2()
+                        .border_b_1()
+                        .border_color(t.border)
+                        .child(icon(Icon::Provider(p), 12.0, provider_color(p, t.muted)))
+                        .child(div().flex_1().min_w_0().truncate().text_sm().child(
+                            SharedString::from(match email {
+                                Some(e) => format!("{label} · {e}"),
+                                None => label,
+                            }),
+                        ))
+                        .when(benched, |r| r.child(tag("Benched", t.warn, t)))
+                        .child(tag(&status, t.muted, t)),
+                );
+        }
+        let source = format!("Source: CLIProxyAPI hub at {}", s.settings.hub.base_url);
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(t.muted)
+                    .child(SharedString::from(source)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_2()
+                    .py_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_xs()
+                            .text_color(t.muted)
+                            .child(SharedString::from(line)),
+                    )
+                    .when(set_up, |d| {
+                        d.child(button("det-hub", "Hub & steering", t, false).on_click(
+                            cx.listener(|this, _, window, cx| this.go(Page::Hub, window, cx)),
+                        ))
+                    }),
+            )
+            .child(rows)
+    }
+
     fn hub(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
         let s = self.state.read(cx);
         let enabled = s.settings.hub.enabled;
@@ -2626,6 +3099,16 @@ impl SettingsWindow {
                 t,
             ))
     }
+}
+
+/// What detection statuses depend on: each account's id, provider, email and profile folder.
+fn accounts_sig(s: &AppState) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for a in &s.settings.accounts {
+        (a.id, a.provider, &a.email, &a.profile_dir, &a.label).hash(&mut h);
+    }
+    h.finish()
 }
 
 fn source_label(a: &Account) -> &'static str {

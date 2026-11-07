@@ -168,9 +168,12 @@ fn main() {
             sync_taskbar(&shell, cx);
             show_whats_new(&shell, updated_from.as_deref(), cx);
 
-            // First start without accounts: open settings so the hub key / accounts can be set up.
-            let s = state.read(cx);
-            if s.settings.accounts.is_empty() {
+            // First start without accounts: open Settings on Detect / Import, which lists the
+            // CLI profiles found on this PC (and points to the hub setup).
+            if state.read(cx).settings.accounts.is_empty() {
+                state.update(cx, |s, _| {
+                    s.pending_settings_page = Some(state::SettingsTarget::Detect)
+                });
                 open_settings(&shell, cx);
             }
         });

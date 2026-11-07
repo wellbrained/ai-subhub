@@ -77,7 +77,15 @@ pub fn set_enabled(on: bool) -> Result<(), String> {
 }
 
 /// An enabled entry follows the exe when it runs from a new path (a moved or updated build).
+/// Development builds (cargo's `target\debug|release`) never take it over: the installed app
+/// stays on startup while a dev build runs for testing (owner, 2026-11-07).
 pub fn refresh_if_enabled() {
+    let dev = std::env::current_exe()
+        .map(|p| subhub_core::update::is_dev_build(&p))
+        .unwrap_or(true);
+    if dev {
+        return;
+    }
     if let (Some(current), Ok(want)) = (registered(), current_command())
         && current != want
     {
