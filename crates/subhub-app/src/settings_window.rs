@@ -101,6 +101,8 @@ pub struct SettingsWindow {
     /// Detect / Import page: the last detection and the ticked folders.
     detected: Vec<DetectedProfile>,
     picked: HashSet<PathBuf>,
+    /// The account list the detection was computed against (`accounts_sig`).
+    detect_sig: u64,
     _subs: Vec<Subscription>,
 }
 
@@ -165,6 +167,7 @@ impl SettingsWindow {
                     Some(SettingsTarget::Detect) => this.go(Page::Detect, window, cx),
                     None => {}
                 }
+                this.redetect_if_accounts_changed(cx);
                 // A change the user made was saved: show the "Saved" toast.
                 let saves = state.read(cx).user_saves;
                 if saves != this.seen_saves {
@@ -244,6 +247,7 @@ impl SettingsWindow {
             page: start_page,
             detected: vec![],
             picked: HashSet::new(),
+            detect_sig: 0,
             confirm_remove: None,
             project_label,
             editing_project: None,
@@ -2574,10 +2578,43 @@ impl SettingsWindow {
     /// Runs profile detection again and ticks the rows that are new with a known login.
     fn run_detect(&mut self, cx: &mut Context<Self>) {
         self.detected = self.state.read(cx).detect_profiles();
+        self.detect_sig = accounts_sig(self.state.read(cx));
         self.picked = self
             .detected
             .iter()
             .filter(|d| d.preselected())
+            .map(|d| d.dir.clone())
+            .collect();
+    }
+
+    /// The account list changed while the page is open (e.g. the first refresh added the hub
+    /// logins): statuses are recomputed, ticks on rows that are still importable are kept, rows
+    /// that were not importable before get their default tick.
+    fn redetect_if_accounts_changed(&mut self, cx: &mut Context<Self>) {
+        let sig = accounts_sig(self.state.read(cx));
+        if self.page != Page::Detect || sig == self.detect_sig {
+            return;
+        }
+        let before: HashSet<PathBuf> = self
+            .detected
+            .iter()
+            .filter(|d| d.importable())
+            .map(|d| d.dir.clone())
+            .collect();
+        let picked = std::mem::take(&mut self.picked);
+        self.detected = self.state.read(cx).detect_profiles();
+        self.detect_sig = sig;
+        self.picked = self
+            .detected
+            .iter()
+            .filter(|d| {
+                d.importable()
+                    && if before.contains(&d.dir) {
+                        picked.contains(&d.dir)
+                    } else {
+                        d.preselected()
+                    }
+            })
             .map(|d| d.dir.clone())
             .collect();
     }
@@ -3007,6 +3044,16 @@ impl SettingsWindow {
                 t,
             ))
     }
+}
+
+/// What detection statuses depend on: each account's id, provider, email and profile folder.
+fn accounts_sig(s: &AppState) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for a in &s.settings.accounts {
+        (a.id, a.provider, &a.email, &a.profile_dir, &a.label).hash(&mut h);
+    }
+    h.finish()
 }
 
 fn source_label(a: &Account) -> &'static str {
