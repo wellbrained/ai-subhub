@@ -283,8 +283,6 @@ pub struct Busy {
     pub popover_open: bool,
     pub settings_open: bool,
     pub stats_open: bool,
-    /// The "Updated to …" dialog.
-    pub notes_open: bool,
     /// A sign-in terminal is being watched.
     pub signing_in: bool,
     /// The popover's top edge is being dragged.
@@ -769,10 +767,6 @@ mod tests {
             },
             Busy {
                 stats_open: true,
-                ..idle
-            },
-            Busy {
-                notes_open: true,
                 ..idle
             },
             Busy {

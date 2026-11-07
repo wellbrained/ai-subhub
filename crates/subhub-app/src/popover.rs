@@ -14,7 +14,8 @@ use subhub_core::settings::Density;
 
 use crate::format;
 use crate::icons::{Icon, icon, provider_color};
-use crate::state::{AppState, HubStatus, SettingsTarget, provider_name};
+use crate::state::{AppState, HubStatus, PendingNotes, SettingsTarget, provider_name};
+use gpui_component::scroll::ScrollableElement;
 use crate::theme::{self, Tokens};
 
 pub const WIDTH: f32 = 460.0;
@@ -31,6 +32,8 @@ pub struct Popover {
     last_height: f32,
     /// The top edge is being dragged (the height follows the cursor, not the content).
     dragging: bool,
+    /// Scroll position of the patch-notes dialog's body.
+    notes_scroll: gpui::ScrollHandle,
     _subs: Vec<Subscription>,
 }
 
@@ -45,7 +48,13 @@ impl Popover {
     ) -> Self {
         let on_close = std::rc::Rc::new(on_close);
         // A drag cut short by closing the popover must not block automatic updates.
-        state.update(cx, |s, _| s.popover_dragging = false);
+        // A Launch dropdown left open last time would float above the notes dialog.
+        state.update(cx, |s, _| {
+            s.popover_dragging = false;
+            if s.pending_notes.is_some() {
+                s.launch_open = None;
+            }
+        });
         let blur_close = on_close.clone();
         let subs = vec![
             // Content changes (new readings, hidden windows) re-fit the height, bottom anchored.
@@ -92,6 +101,7 @@ impl Popover {
             focus,
             last_height,
             dragging: false,
+            notes_scroll: gpui::ScrollHandle::new(),
             _subs: subs,
         }
     }
@@ -197,12 +207,17 @@ impl Popover {
 const MIN_HEIGHT: f32 = 240.0;
 
 impl Render for Popover {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let s = self.state.read(cx);
         let d = s.display().clone();
         let t = Tokens::new(theme::is_dark(d.theme, cx), &d.accent);
         let compact = d.density == Density::Compact;
         let esc_close = self.on_close.clone();
+        let esc_state = self.state.clone();
+        let notes_dialog = s
+            .pending_notes
+            .as_ref()
+            .map(|p| self.notes_dialog(p, &t, f32::from(window.viewport_size().height), cx));
         // "Manage projects…" in a Launch menu: open Settings on the Projects page.
         let manage: std::rc::Rc<dyn Fn(&mut App)> = {
             let state = self.state.clone();
@@ -266,7 +281,12 @@ impl Render for Popover {
             .track_focus(&self.focus)
             .on_key_down(move |ev: &gpui::KeyDownEvent, window, cx| {
                 if ev.keystroke.key == "escape" {
-                    esc_close(window, cx);
+                    // The patch-notes dialog closes first, not the popover.
+                    if esc_state.read(cx).pending_notes.is_some() {
+                        esc_state.update(cx, |s, cx| s.dismiss_whats_new(cx));
+                    } else {
+                        esc_close(window, cx);
+                    }
                 }
             })
             .size_full()
@@ -304,10 +324,179 @@ impl Render for Popover {
                         }),
                     ),
             )
+            .children(notes_dialog)
     }
 }
 
 impl Popover {
+    /// "Updated to vX.Y.Z" over the popover content: a dim scrim (click closes) and a rounded
+    /// card near the top with the notes of every version since the last one seen, scrollable,
+    /// and a Got it button. Absolutely positioned, so the popover's height never changes.
+    fn notes_dialog(
+        &self,
+        p: &PendingNotes,
+        t: &Tokens,
+        viewport_h: f32,
+        cx: &Context<Self>,
+    ) -> impl IntoElement {
+        const TOP: f32 = 40.0;
+        const BOTTOM_GAP: f32 = 12.0;
+        // Title, button and padding around the scrolling body.
+        const CHROME: f32 = 126.0;
+        const GUTTER: f32 = 12.0;
+        let body_max = (viewport_h * 0.6)
+            .min(viewport_h - TOP - BOTTOM_GAP - CHROME)
+            .max(60.0);
+
+        let mut notes = div().flex().flex_col().gap_3();
+        for s in &p.sections {
+            let mut head = div().flex().items_baseline().gap_2().child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(SharedString::from(format!("v{}", s.version))),
+            );
+            if let Some(date) = &s.date {
+                head = head.child(
+                    div()
+                        .text_xs()
+                        .text_color(t.faint)
+                        .child(SharedString::from(date.clone())),
+                );
+            }
+            let mut block = div().flex().flex_col().gap(px(6.0)).child(head);
+            for b in &s.bullets {
+                block = block.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .text_sm()
+                        .child(
+                            div()
+                                .flex_none()
+                                .mt(px(7.0))
+                                .size(px(4.0))
+                                .rounded_full()
+                                .bg(t.faint),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(SharedString::from(b.clone())),
+                        ),
+                );
+            }
+            notes = notes.child(block);
+        }
+
+        let scrim = if t.dark { 0.55 } else { 0.32 };
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .child(
+                div()
+                    .id("notes-scrim")
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .occlude()
+                    .bg(gpui::hsla(0.0, 0.0, 0.0, scrim))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _: &gpui::MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.state.update(cx, |s, cx| s.dismiss_whats_new(cx));
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .top(px(TOP))
+                    .left_0()
+                    .w_full()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .id("notes-card")
+                            .occlude()
+                            .w(px(380.0))
+                            .max_w_full()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .p_4()
+                            .rounded(px(12.0))
+                            .bg(t.surface)
+                            .border_1()
+                            .border_color(t.border)
+                            .shadow(vec![gpui::BoxShadow {
+                                color: gpui::hsla(0.0, 0.0, 0.0, if t.dark { 0.45 } else { 0.16 }),
+                                offset: gpui::point(px(0.0), px(8.0)),
+                                blur_radius: px(24.0),
+                                spread_radius: px(-4.0),
+                                inset: false,
+                            }])
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(2.0))
+                                    .child(
+                                        div()
+                                            .text_base()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(SharedString::from(format!(
+                                                "Updated to v{}",
+                                                p.version
+                                            ))),
+                                    )
+                                    .child(
+                                        div().text_xs().text_color(t.muted).child("What's new"),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .relative()
+                                    .child(
+                                        div()
+                                            .id("notes-scroll")
+                                            .max_h(px(body_max))
+                                            .overflow_y_scroll()
+                                            .track_scroll(&self.notes_scroll)
+                                            // Room for the always-visible scrollbar.
+                                            .pr(px(GUTTER))
+                                            .child(notes),
+                                    )
+                                    .vertical_scrollbar(&self.notes_scroll),
+                            )
+                            .child(
+                                div().flex().justify_end().child(
+                                    div()
+                                        .id("notes-ok")
+                                        .px_4()
+                                        .py(px(5.0))
+                                        .rounded(px(8.0))
+                                        .text_xs()
+                                        .cursor_pointer()
+                                        .bg(t.accent)
+                                        .text_color(gpui::white())
+                                        .hover(|s| s.opacity(0.9))
+                                        .child("Got it")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.state.update(cx, |s, cx| s.dismiss_whats_new(cx));
+                                        })),
+                                ),
+                            ),
+                    ),
+            )
+    }
+
     fn header(&self, s: &AppState, t: &Tokens) -> impl IntoElement {
         let now = Utc::now();
         let status = if s.refreshing {

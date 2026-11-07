@@ -19,7 +19,6 @@ mod theme;
 mod title_bar;
 mod tray;
 mod updater;
-mod whats_new;
 mod window_style;
 
 use std::cell::RefCell;
@@ -49,8 +48,6 @@ struct Shell {
     popover: Option<WindowHandle<Root>>,
     settings: Option<WindowHandle<Root>>,
     stats: Option<WindowHandle<Root>>,
-    /// The "Updated to …" dialog.
-    notes: Option<WindowHandle<Root>>,
     /// Always-visible taskbar displays: monitor id, window, and the style it was opened with.
     taskbar: Vec<(
         String,
@@ -89,6 +86,9 @@ fn main() {
     }
     updater::clean_leftovers();
     let updated_from = start.updated_from;
+    // Test helper: pretend the previous version was 0.1.0, so the patch-notes dialog shows the
+    // next time the popover opens (nothing is saved).
+    let show_notes = args.iter().any(|a| a == "--show-whats-new");
     gpui_platform::application()
         .with_assets(assets::Assets)
         .with_quit_mode(QuitMode::Explicit)
@@ -115,7 +115,6 @@ fn main() {
                 popover: None,
                 settings: None,
                 stats: None,
-                notes: None,
                 taskbar: Vec::new(),
                 closed_at: None,
                 state: state.clone(),
@@ -195,7 +194,10 @@ fn main() {
             spawn_updater(shell.clone(), cx);
             update_tray(&shell, &state, cx);
             sync_taskbar(&shell, cx);
-            show_whats_new(&shell, updated_from.as_deref(), cx);
+            // Nothing opens by itself: the popover shows the patch notes next time it opens.
+            state.update(cx, |s, _| {
+                s.prepare_whats_new(updated_from.as_deref(), show_notes)
+            });
 
             // First start without accounts: open Settings on Detect / Import, which lists the
             // CLI profiles found on this PC (and points to the hub setup).
@@ -234,73 +236,20 @@ fn is_open(handle: Option<WindowHandle<Root>>, cx: &mut App) -> bool {
 
 /// What keeps an automatic restart waiting right now.
 fn busy_now(shell: &ShellRef, cx: &mut App) -> subhub_core::update::Busy {
-    let (popover, settings, stats, notes, state) = {
+    let (popover, settings, stats, state) = {
         let s = shell.borrow();
-        (s.popover, s.settings, s.stats, s.notes, s.state.clone())
+        (s.popover, s.settings, s.stats, s.state.clone())
     };
     let popover_open = is_open(popover, cx);
     let settings_open = is_open(settings, cx);
     let stats_open = is_open(stats, cx);
-    let notes_open = is_open(notes, cx);
     let s = state.read(cx);
     subhub_core::update::Busy {
         popover_open,
         settings_open,
         stats_open,
-        notes_open,
         signing_in: !s.signing_in.is_empty(),
         popover_dragging: popover_open && s.popover_dragging,
-    }
-}
-
-/// After an update (or any start on a newer version than the last one seen): the patch notes in
-/// a small dialog, then the version is remembered. A fresh install just remembers it.
-fn show_whats_new(shell: &ShellRef, updated_from: Option<&str>, cx: &mut App) {
-    let state = shell.borrow().state.clone();
-    let running = updater::running_version();
-    let wn = subhub_core::update::whats_new(
-        &state.read(cx).settings.updates.last_seen_version,
-        updated_from,
-        &running,
-        updater::CHANGELOG,
-    );
-    if wn.mark_seen {
-        // Saved before the dialog opens, so it never shows twice.
-        state.update(cx, |s, _| {
-            s.settings.updates.last_seen_version = running.to_string();
-            s.save();
-        });
-    }
-    if wn.sections.is_empty() {
-        return;
-    }
-    let border = border_color(&state, cx);
-    let height = whats_new::height_for(&wn.sections);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(
-            size(px(whats_new::WIDTH), px(height)),
-            cx,
-        )),
-        titlebar: None,
-        kind: WindowKind::PopUp,
-        focus: true,
-        show: true,
-        is_movable: false,
-        is_resizable: false,
-        is_minimizable: false,
-        window_background: WindowBackgroundAppearance::Opaque,
-        ..Default::default()
-    };
-    let sections = wn.sections;
-    if let Ok(h) = cx.open_window(options, |window, cx| {
-        let view = cx.new(|cx| whats_new::WhatsNew::new(state, running, sections, window, cx));
-        cx.new(|cx| Root::new(view, window, cx))
-    }) {
-        let _ = h.update(cx, |_, window, _| {
-            window_style::round(window, border);
-            window.activate_window();
-        });
-        shell.borrow_mut().notes = Some(h);
     }
 }
 

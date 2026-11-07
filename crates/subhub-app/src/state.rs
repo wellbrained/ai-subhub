@@ -106,6 +106,19 @@ pub struct AppState {
     pub update: crate::updater::UpdateState,
     /// The popover's top edge is being dragged (an automatic restart waits for it).
     pub popover_dragging: bool,
+    /// Patch notes waiting for the popover's next opening (shown as a dialog over it until the
+    /// user closes it). Not saved; recomputed at every start.
+    pub pending_notes: Option<PendingNotes>,
+}
+
+/// The "Updated to vX.Y.Z" dialog's content.
+#[derive(Debug, Clone)]
+pub struct PendingNotes {
+    pub version: subhub_core::update::Version,
+    /// Newest first.
+    pub sections: Vec<subhub_core::changelog::Section>,
+    /// Closing it saves `last_seen_version` (false for the `--show-whats-new` test flag).
+    pub remember: bool,
 }
 
 impl AppState {
@@ -155,6 +168,47 @@ impl AppState {
             pending_settings_page: None,
             update: crate::updater::UpdateState::new(),
             popover_dragging: false,
+            pending_notes: None,
+        }
+    }
+
+    /// At start: decides whether patch notes are waiting (nothing opens by itself; the popover
+    /// shows them next time it opens). A fresh install, a downgrade or no notes for the versions
+    /// in between only remember the version, silently. `force` (the `--show-whats-new` start
+    /// flag) pretends the previous version was 0.1.0 and saves nothing.
+    pub fn prepare_whats_new(&mut self, updated_from: Option<&str>, force: bool) {
+        let running = crate::updater::running_version();
+        let last_seen = if force {
+            "0.1.0"
+        } else {
+            self.settings.updates.last_seen_version.as_str()
+        };
+        let wn = subhub_core::update::whats_new(
+            last_seen,
+            updated_from,
+            &running,
+            crate::updater::CHANGELOG,
+        );
+        if !wn.sections.is_empty() {
+            self.pending_notes = Some(PendingNotes {
+                version: running,
+                sections: wn.sections,
+                remember: !force,
+            });
+        } else if wn.mark_seen && !force {
+            self.settings.updates.last_seen_version = running.to_string();
+            self.save();
+        }
+    }
+
+    /// The dialog was closed (Got it, scrim, Esc): only now the notes count as seen.
+    pub fn dismiss_whats_new(&mut self, cx: &mut Context<Self>) {
+        if let Some(p) = self.pending_notes.take() {
+            if p.remember {
+                self.settings.updates.last_seen_version = p.version.to_string();
+                self.save();
+            }
+            cx.notify();
         }
     }
 

@@ -4,6 +4,8 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 
 ## Unreleased
 
+- After an update, the patch notes no longer pop up at startup; they appear as a small dialog the next time you open the popover.
+
 ## 0.1.1 – 2026-11-07
 
 - Statistics redesigned: work tokens, cache hit rate, month run-rate, cost by type and a Models / Providers / Days breakdown with a daily chart per provider.
