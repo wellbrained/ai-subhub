@@ -8,6 +8,8 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 - Statistics and Settings have their own title bar in the app's colours instead of the Windows caption bar.
 - New app icon ("Night glow") and a simpler, sharper tray icon.
 - The Days table shows the last week and scrolls for older days; Codex is blue in the statistics.
+- Settings → Taskbar: a clear "Show usage next to the tray" switch; off leaves just the tray icon and keeps your style.
+- New installs start with the Badge style on the taskbar.
 
 ## 0.1.0 – 2026-11-07
 

@@ -295,11 +295,11 @@ fn stats_dump(path: Option<&String>) {
 /// Opens, closes or reopens the taskbar display to match the Display setting.
 fn sync_taskbar(shell: &ShellRef, cx: &mut App) {
     let state = shell.borrow().state.clone();
-    let mode = state.read(cx).display().taskbar_mode;
+    let d = state.read(cx).display();
+    // None = switched off: just the tray icon.
+    let wanted = d.taskbar_enabled.then_some(d.taskbar_mode);
     let current = shell.borrow().taskbar.map(|(_, m)| m);
-    if current == Some(mode)
-        || (current.is_none() && mode == subhub_core::settings::TaskbarMode::Off)
-    {
+    if current == wanted {
         return;
     }
     let old = shell.borrow_mut().taskbar.take();
@@ -310,7 +310,7 @@ fn sync_taskbar(shell: &ShellRef, cx: &mut App) {
     let on_click: taskbar::OnClick = Rc::new(move |cx: &mut App, b| {
         toggle_popover(&toggle_shell, Anchor::TaskbarDisplay(b), cx)
     });
-    if let Some(h) = taskbar::open(state, on_click, cx) {
+    if let (Some(mode), Some(h)) = (wanted, taskbar::open(state, on_click, cx)) {
         shell.borrow_mut().taskbar = Some((h, mode));
     }
 }

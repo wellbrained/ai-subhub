@@ -1269,17 +1269,30 @@ impl SettingsWindow {
         let d = self.state.read(cx).display().clone();
         let u = self.updater();
         let (u1, u2, u3, u4) = (u.clone(), u.clone(), u.clone(), u.clone());
+        let u0 = u.clone();
         div()
             .flex()
             .flex_col()
             .child(heading("Taskbar"))
+            .child(row(
+                "Show usage next to the tray",
+                Some("Always visible on the taskbar (hidden during fullscreen); click to open, drag to move. Off: just the tray icon."),
+                Switch::new("tb-on")
+                    .checked(d.taskbar_enabled)
+                    .on_click(move |v, _, cx| {
+                        let v = *v;
+                        u0(Box::new(move |d| d.taskbar_enabled = v), cx)
+                    }),
+                t,
+            ))
+            // Style, count, accounts and position only matter while the display is on.
+            .when(d.taskbar_enabled, |page| page
             .child(block(
-                "Display",
-                Some("Always visible on the taskbar (hidden during fullscreen); click to open, drag to move. Badge: provider, account tag, 5h and weekly. Bars: 5-hour bar + %. Numbers: 5-hour over weekly. Focus: one account big + how many others are ready."),
+                "Style",
+                Some("Badge: provider, account tag, 5h and weekly. Bars: 5-hour bar + %. Numbers: 5-hour over weekly. Focus: one account big + how many others are ready."),
                 chips(
                     "tbm",
                     &[
-                        (TaskbarMode::Off, "Off"),
                         (TaskbarMode::Badge, "Badge"),
                         (TaskbarMode::Bars, "Bars"),
                         (TaskbarMode::Numbers, "Numbers"),
@@ -1341,7 +1354,7 @@ impl SettingsWindow {
                     },
                 ),
                 t,
-            ))
+            )))
     }
 
     fn account_page(&self, id: Uuid, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {

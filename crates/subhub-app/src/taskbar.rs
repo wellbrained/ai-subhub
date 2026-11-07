@@ -684,7 +684,7 @@ pub fn open(
     cx: &mut App,
 ) -> Option<WindowHandle<TaskbarDisplay>> {
     let s = state.read(cx);
-    if s.display().taskbar_mode == TaskbarMode::Off {
+    if !s.display().taskbar_enabled || s.display().taskbar_mode == TaskbarMode::Off {
         return None;
     }
     let bounds = bounds_for(s)?;

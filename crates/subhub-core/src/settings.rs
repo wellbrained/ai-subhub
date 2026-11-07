@@ -52,6 +52,8 @@ pub enum ThemeMode {
 /// Always-visible display on the taskbar (ADR 0001 refinements). Values are % left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TaskbarMode {
+    /// Legacy "no display": older files load it as `taskbar_enabled = false` + Badge
+    /// (`settings_store::sanitize`). The UI offers an on/off switch instead.
     Off,
     /// Per account a bordered badge like T3 Code's provider tags: provider glyph, coloured
     /// two-letter account tag, 5h and W mini bars with %.
@@ -129,6 +131,9 @@ pub struct DisplaySettings {
     /// tray (default), true = quit SubHub completely.
     #[serde(default)]
     pub close_quits: bool,
+    /// Show the taskbar display next to the tray. Off leaves just the tray icon; the style is
+    /// kept for when it is switched back on.
+    pub taskbar_enabled: bool,
     pub taskbar_mode: TaskbarMode,
     pub taskbar_position: TaskbarPosition,
     /// Where the user dragged the taskbar display: logical px from the taskbar's right edge to
@@ -166,7 +171,8 @@ impl Default for DisplaySettings {
             close_popover_on_blur: false,
             popover_height: None,
             close_quits: false,
-            taskbar_mode: TaskbarMode::Bars,
+            taskbar_enabled: true,
+            taskbar_mode: TaskbarMode::Badge,
             taskbar_position: TaskbarPosition::Right,
             taskbar_offset: None,
             taskbar_accounts: TaskbarAccounts::Favorites,
