@@ -1,0 +1,456 @@
+//! Settings file `%LOCALAPPDATA%\AI SubHub\settings.json`. Holds metadata, preferences and
+//! cached readings only, never secrets. The C# app's settings are only ever read (`import`).
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::billing::{MonthlyBilling, ReminderMark};
+use crate::model::{Account, ProviderKind, Reading, UsageState};
+use crate::projects::Project;
+
+pub const SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum UsageStyle {
+    #[default]
+    Remaining,
+    Used,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Gauge {
+    #[default]
+    Ring,
+    Bar,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ResetFormat {
+    #[default]
+    Relative,
+    Exact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Density {
+    #[default]
+    Comfortable,
+    Compact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+/// Always-visible display on the taskbar (ADR 0001 refinements). Values are % left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TaskbarMode {
+    Off,
+    /// Per account a bordered badge like T3 Code's provider tags: provider glyph, coloured
+    /// two-letter account tag, 5h and W mini bars with %.
+    #[default]
+    Badge,
+    /// Per account: name, 5-hour bar with the % printed (preview R1). Old "Mix"/"Blocks"
+    /// values load as this.
+    #[serde(alias = "Mix", alias = "Blocks")]
+    Bars,
+    /// Numbers only, two lines (5-hour over weekly), labels once (preview R2). Old "Table"
+    /// values load as this.
+    #[serde(alias = "Table")]
+    Numbers,
+    /// One account big (5-hour and weekly) plus "+N ready" (preview R4).
+    Focus,
+}
+
+/// Which accounts the taskbar display shows. The popover always shows all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TaskbarAccounts {
+    /// Accounts starred "on taskbar" (at most 3); the steering target when none is starred.
+    #[default]
+    Favorites,
+    /// Only the steering target (the account new hub threads go to).
+    Focus,
+    /// The steering target plus any account running low.
+    Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TaskbarPosition {
+    /// Right of the widgets/weather button (centred taskbars only).
+    Left,
+    /// Next to the tray icons (default; works with left-aligned taskbars too).
+    #[default]
+    Right,
+}
+
+/// What the tray ring shows.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum TrayMetric {
+    /// Lowest % left across pinned windows (falls back to all visible windows if none pinned).
+    #[default]
+    LowestPinned,
+    LowestAll,
+    Window {
+        account: Uuid,
+        key: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DisplaySettings {
+    pub usage_style: UsageStyle,
+    /// Gauge per view section.
+    pub priority_gauge: Gauge,
+    pub all_usage_gauge: Gauge,
+    /// % left at or below which a window is "Running out".
+    pub running_out_threshold: u8,
+    pub reset_format: ResetFormat,
+    pub show_plan: bool,
+    pub show_email: bool,
+    pub density: Density,
+    pub theme: ThemeMode,
+    /// "#rrggbb"
+    pub accent: String,
+    pub tray_metric: TrayMetric,
+    /// Close the popover when another window takes focus. Off: it stays open until the tray
+    /// icon, Esc or its close button (the owner's preference, 2026-11-06).
+    pub close_popover_on_blur: bool,
+    /// Popover height the user dragged its top edge to (logical px); None = fit the content.
+    pub popover_height: Option<f32>,
+    /// What the close buttons (popover ✕, settings window X) do: false = keep running in the
+    /// tray (default), true = quit SubHub completely.
+    #[serde(default)]
+    pub close_quits: bool,
+    pub taskbar_mode: TaskbarMode,
+    pub taskbar_position: TaskbarPosition,
+    /// Where the user dragged the taskbar display: logical px from the taskbar's right edge to
+    /// the display's right edge. None = automatic placement for `taskbar_position`.
+    #[serde(default)]
+    pub taskbar_offset: Option<f32>,
+    #[serde(default)]
+    pub taskbar_accounts: TaskbarAccounts,
+    /// Accounts starred for the taskbar, in star order (Favorites mode shows the first 3).
+    #[serde(default)]
+    pub taskbar_favorites: Vec<Uuid>,
+    /// How many accounts the taskbar display shows at most (1–5).
+    #[serde(default = "default_taskbar_count")]
+    pub taskbar_count: u8,
+}
+
+fn default_taskbar_count() -> u8 {
+    3
+}
+
+impl Default for DisplaySettings {
+    fn default() -> Self {
+        Self {
+            usage_style: UsageStyle::Remaining,
+            priority_gauge: Gauge::Ring,
+            all_usage_gauge: Gauge::Bar,
+            running_out_threshold: 25,
+            reset_format: ResetFormat::Relative,
+            show_plan: true,
+            show_email: false,
+            density: Density::Comfortable,
+            theme: ThemeMode::System,
+            accent: "#3b82f6".into(),
+            tray_metric: TrayMetric::LowestPinned,
+            close_popover_on_blur: false,
+            popover_height: None,
+            close_quits: false,
+            taskbar_mode: TaskbarMode::Bars,
+            taskbar_position: TaskbarPosition::Right,
+            taskbar_offset: None,
+            taskbar_accounts: TaskbarAccounts::Favorites,
+            taskbar_favorites: vec![],
+            taskbar_count: default_taskbar_count(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HubSettings {
+    pub enabled: bool,
+    pub base_url: String,
+}
+
+impl Default for HubSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            base_url: "http://127.0.0.1:8317".into(),
+        }
+    }
+}
+
+/// Hub steering: the only thing SubHub writes to the hub is each login's credential priority.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SteeringSettings {
+    pub enabled: bool,
+    /// Manual pick (clicked Hub tag); None = Auto.
+    pub preferred: Option<Uuid>,
+    /// Account SubHub last made top.
+    pub current: Option<Uuid>,
+    /// Hub file name -> priority before SubHub first changed it (None = it had none).
+    pub original_priorities: HashMap<String, Option<i64>>,
+    /// Priority given to the target login.
+    pub top_priority: i64,
+}
+
+impl Default for SteeringSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            preferred: None,
+            current: None,
+            original_priorities: HashMap::new(),
+            top_priority: 100,
+        }
+    }
+}
+
+/// Where the sign-in CLI login opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum Terminal {
+    /// Windows Terminal when installed, else PowerShell.
+    #[default]
+    WindowsTerminal,
+    PowerShell,
+}
+
+/// Tools SubHub launches: the sign-in terminal and the provider CLIs. `None` = auto-detect.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolsSettings {
+    pub terminal: Terminal,
+    pub claude_exe: Option<PathBuf>,
+    pub codex_exe: Option<PathBuf>,
+}
+
+impl ToolsSettings {
+    pub fn exe_for(&self, provider: ProviderKind) -> Option<&Path> {
+        match provider {
+            ProviderKind::Claude => self.claude_exe.as_deref(),
+            ProviderKind::Codex => self.codex_exe.as_deref(),
+        }
+    }
+}
+
+/// Self-update behavior (Settings -> Updates). Checks run in both modes; Auto also downloads
+/// and installs when SubHub is idle, Manual waits for the Install button.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum UpdateMode {
+    Auto,
+    #[default]
+    Manual,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    pub mode: UpdateMode,
+    /// Last successful check.
+    pub last_check: Option<DateTime<Utc>>,
+    /// Version whose patch notes were shown (or that was installed fresh); empty = never run.
+    pub last_seen_version: String,
+}
+
+/// Persisted refresh schedule per account (failure backoff + provider cooldown survive restarts).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CachedSchedule {
+    pub state: UsageState,
+    pub failures: u32,
+    pub next_attempt: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Settings {
+    pub schema_version: u32,
+    /// In the user's order; the views group them by provider.
+    pub accounts: Vec<Account>,
+    /// User-defined group names in order (e.g. "Work", "Personal").
+    pub groups: Vec<String>,
+    pub display: DisplaySettings,
+    pub hub: HubSettings,
+    pub refresh_minutes: u32,
+    /// Last successful reading per account (shown stale when overdue or after failure).
+    pub readings: HashMap<Uuid, Reading>,
+    pub schedules: HashMap<Uuid, CachedSchedule>,
+    /// User-set account tags for the taskbar badge (1–3 chars, as typed); missing = automatic.
+    pub account_tags: HashMap<Uuid, String>,
+    pub steering: SteeringSettings,
+    /// Terminal and CLI paths for sign-in.
+    pub tools: ToolsSettings,
+    /// Optional monthly renewal / access end date per account.
+    pub billing: HashMap<Uuid, MonthlyBilling>,
+    /// Last billing reminder shown per account (cycle date + threshold), so none repeats.
+    pub billing_reminders: HashMap<Uuid, ReminderMark>,
+    /// Saved local folders shared by all accounts, in the user's manual order (Launch menu).
+    pub projects: Vec<Project>,
+    /// Update mode, last check and the version whose patch notes were shown.
+    pub updates: UpdateSettings,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            accounts: vec![],
+            groups: vec![],
+            display: DisplaySettings::default(),
+            hub: HubSettings::default(),
+            refresh_minutes: 5,
+            readings: HashMap::new(),
+            schedules: HashMap::new(),
+            account_tags: HashMap::new(),
+            steering: SteeringSettings::default(),
+            tools: ToolsSettings::default(),
+            billing: HashMap::new(),
+            billing_reminders: HashMap::new(),
+            projects: vec![],
+            updates: UpdateSettings::default(),
+        }
+    }
+}
+
+pub fn default_path() -> PathBuf {
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("AI SubHub").join("settings.json")
+}
+
+/// Loads settings; a missing file gives defaults. A corrupt file is kept as `settings.json.bad`
+/// and defaults are returned (never silently overwritten).
+pub fn load(path: &Path) -> anyhow::Result<Settings> {
+    crate::settings_store::load(path)
+}
+
+/// Atomic write (temp file + rename).
+pub fn save(path: &Path, settings: &Settings) -> anyhow::Result<()> {
+    crate::settings_store::save(path, settings)
+}
+
+#[cfg(test)]
+mod compat_tests {
+    use super::*;
+
+    #[test]
+    fn empty_and_pre_billing_files_still_load() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.tools, ToolsSettings::default());
+        assert!(s.billing.is_empty() && s.billing_reminders.is_empty());
+
+        // The shape written before tools/billing existed.
+        let mut v = serde_json::to_value(Settings::default()).unwrap();
+        for k in ["tools", "billing", "billing_reminders"] {
+            assert!(v.as_object_mut().unwrap().remove(k).is_some(), "{k}");
+        }
+        let s: Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(s, Settings::default());
+    }
+
+    /// Settings files written while user prices existed (removed 2026-11-07) still load.
+    #[test]
+    fn old_files_with_user_prices_still_load() {
+        let s: Settings = serde_json::from_str(
+            r#"{"prices": {"x": {"input": 1.0, "output": 2.0, "cache_write": 1.0, "cache_read": 0.1}}, "refresh_minutes": 7}"#,
+        )
+        .unwrap();
+        assert_eq!(s.refresh_minutes, 7);
+    }
+
+    /// Files written before projects existed load with an empty list; projects roundtrip.
+    #[test]
+    fn older_files_without_projects_still_load() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert!(s.projects.is_empty());
+
+        let mut v = serde_json::to_value(Settings::default()).unwrap();
+        assert!(v.as_object_mut().unwrap().remove("projects").is_some());
+        let s: Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(s, Settings::default());
+
+        let mut s = Settings::default();
+        crate::projects::add(&mut s.projects, "App", Path::new("C:\\work\\app")).unwrap();
+        s.projects[0].hidden = true;
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+    }
+
+    /// Files written before updates existed load with the defaults; a partial block fills in.
+    #[test]
+    fn older_files_without_updates_still_load() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.updates, UpdateSettings::default());
+        assert_eq!(s.updates.mode, UpdateMode::Manual);
+
+        let mut v = serde_json::to_value(Settings::default()).unwrap();
+        assert!(v.as_object_mut().unwrap().remove("updates").is_some());
+        let s: Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(s, Settings::default());
+
+        let s: Settings = serde_json::from_str(r#"{"updates": {"mode": "Auto"}}"#).unwrap();
+        assert_eq!(s.updates.mode, UpdateMode::Auto);
+        assert!(s.updates.last_check.is_none() && s.updates.last_seen_version.is_empty());
+
+        let mut s = Settings::default();
+        s.updates.mode = UpdateMode::Auto;
+        s.updates.last_check = Some(Utc::now());
+        s.updates.last_seen_version = "0.1.0".into();
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn tools_and_billing_roundtrip() {
+        let id = Uuid::new_v4();
+        let mut s = Settings::default();
+        s.tools.terminal = Terminal::PowerShell;
+        s.tools.codex_exe = Some(PathBuf::from("C:\\bin\\codex.exe"));
+        let date = chrono::NaiveDate::from_ymd_opt(2026, 12, 1).unwrap();
+        s.billing.insert(id, MonthlyBilling::new(date));
+        s.billing_reminders
+            .insert(id, ReminderMark { date, days: 7 });
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(
+            back.tools.exe_for(ProviderKind::Codex),
+            s.tools.codex_exe.as_deref()
+        );
+        assert_eq!(back.tools.exe_for(ProviderKind::Claude), None);
+    }
+}
+
+#[cfg(test)]
+mod taskbar_tests {
+    use super::*;
+
+    #[test]
+    fn old_taskbar_modes_still_load() {
+        for (old, new) in [
+            ("Mix", TaskbarMode::Bars),
+            ("Blocks", TaskbarMode::Bars),
+            ("Table", TaskbarMode::Numbers),
+            ("Off", TaskbarMode::Off),
+        ] {
+            let s: Settings =
+                serde_json::from_str(&format!(r#"{{"display": {{"taskbar_mode": "{old}"}}}}"#))
+                    .unwrap();
+            assert_eq!(s.display.taskbar_mode, new, "{old}");
+        }
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.display.taskbar_accounts, TaskbarAccounts::Favorites);
+    }
+}

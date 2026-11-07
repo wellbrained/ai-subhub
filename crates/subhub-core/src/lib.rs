@@ -1,0 +1,26 @@
+//! AI SubHub core: no UI dependency. Owns the domain model, settings, provider and hub
+//! readers, refresh scheduling, account merging and the Priority classification.
+pub mod billing;
+pub mod changelog;
+pub mod claude;
+pub mod codex;
+pub mod history;
+pub mod hub;
+pub mod launch;
+pub mod limits;
+pub mod merge;
+pub mod model;
+mod plan;
+pub mod priority;
+pub mod profile;
+pub mod projects;
+pub mod refresh;
+pub mod schedule;
+pub mod secrets;
+pub mod settings;
+mod settings_store;
+pub mod stats;
+pub mod steer;
+pub mod swap;
+pub mod update;
+mod util;

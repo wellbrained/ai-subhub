@@ -1,0 +1,739 @@
+//! Always-visible taskbar display (ADR 0001 refinements). Windows has no API for third-party
+//! content in the taskbar, so this is a small borderless, topmost tool window placed over a free
+//! part of the taskbar (left by the widgets/weather, or right by the tray), re-raised every second
+//! because the taskbar comes to the front when clicked. Click opens the popover.
+use std::time::Duration;
+
+use gpui::{
+    App, AppContext, Bounds, Context, Entity, Hsla, IntoElement, ParentElement, Render,
+    SharedString, Styled, Subscription, Window, WindowBackgroundAppearance, WindowBounds,
+    WindowHandle, WindowKind, WindowOptions, div, point, prelude::*, px, size,
+};
+use subhub_core::model::{Account, AllowanceWindow};
+use subhub_core::settings::{TaskbarAccounts, TaskbarMode, TaskbarPosition};
+use uuid::Uuid;
+
+use crate::format;
+use crate::state::AppState;
+use crate::theme::Tokens;
+
+/// Accounts the display shows, per Display → "Taskbar shows" (the popover always shows all).
+fn shown(s: &AppState) -> Vec<&Account> {
+    let d = s.display();
+    let usable = |a: &&Account| !a.hidden && s.settings.readings.contains_key(&a.id);
+    let target = s
+        .settings
+        .steering
+        .preferred
+        .or(s.settings.steering.current);
+    let by_id = |id: Uuid| {
+        s.settings
+            .accounts
+            .iter()
+            .find(|a| a.id == id)
+            .filter(usable)
+    };
+    let focus = || target.and_then(by_id).into_iter().collect::<Vec<_>>();
+    let list: Vec<&Account> = match d.taskbar_accounts {
+        TaskbarAccounts::Favorites => {
+            // Starred accounts always show, with "—" until their first reading.
+            let favs: Vec<&Account> = d
+                .taskbar_favorites
+                .iter()
+                .filter_map(|id| {
+                    s.settings
+                        .accounts
+                        .iter()
+                        .find(|a| a.id == *id && !a.hidden)
+                })
+                .take(d.taskbar_count.clamp(1, 5) as usize)
+                .collect();
+            if favs.is_empty() { focus() } else { favs }
+        }
+        TaskbarAccounts::Focus => focus(),
+        TaskbarAccounts::Auto => {
+            let mut v = focus();
+            for a in s.settings.accounts.iter().filter(usable) {
+                if v.iter().any(|x| x.id == a.id) {
+                    continue;
+                }
+                let low = s.settings.readings[&a.id]
+                    .windows
+                    .iter()
+                    .filter(|w| !a.hidden_windows.contains(&w.key))
+                    .any(|w| w.remaining_percent() <= d.running_out_threshold as f64);
+                if low {
+                    v.push(a);
+                }
+            }
+            v.truncate(d.taskbar_count.clamp(1, 5) as usize);
+            v
+        }
+    };
+    if list.is_empty() {
+        // Nothing chosen yet: the first account with a reading, so the display is never blank.
+        s.settings.accounts.iter().filter(usable).take(1).collect()
+    } else {
+        list
+    }
+}
+
+/// Other hub accounts with room in both windows (Focus style "+N ready").
+fn ready_others(s: &AppState, shown_ids: &[Uuid]) -> usize {
+    s.settings
+        .accounts
+        .iter()
+        .filter(|a| !a.hidden && !shown_ids.contains(&a.id) && !s.is_stale(a.id))
+        .filter(|a| a.hub.as_ref().is_some_and(|h| !h.benched))
+        .filter(|a| {
+            let (session, week) = session_and_week(s, a);
+            session.is_some_and(|w| w.remaining_percent() > 5.0)
+                && week.is_none_or(|w| w.remaining_percent() > 0.0)
+        })
+        .count()
+}
+
+/// Short label for the taskbar: the part after " · " if the label was auto-made from an email
+/// ("alex.morgan · gmail" -> "gmail"), else the first 10 chars.
+fn short_name(a: &Account) -> String {
+    let base = a.label.rsplit(" · ").next().unwrap_or(&a.label);
+    base.chars().take(10).collect()
+}
+
+/// Two-letter account tag and a stable colour per account (like T3 Code's provider tags).
+/// Windows mode (taskbar, Start) is dark unless `SystemUsesLightTheme` = 1. Separate from the
+/// app mode, which drives the popover and settings.
+pub fn taskbar_is_dark() -> bool {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let mut value: u32 = 0;
+    let mut size = size_of::<u32>() as u32;
+    let ok = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            windows::core::w!("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"),
+            windows::core::w!("SystemUsesLightTheme"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut value as *mut u32 as *mut _),
+            Some(&mut size),
+        )
+    };
+    !(ok.is_ok() && value == 1)
+}
+
+/// Provider icon colour: Claude's orange, Codex neutral.
+fn provider_color(p: subhub_core::model::ProviderKind, neutral: Hsla) -> Hsla {
+    match p {
+        subhub_core::model::ProviderKind::Claude => gpui::rgb(0xd97757).into(),
+        subhub_core::model::ProviderKind::Codex => neutral,
+    }
+}
+
+/// The account's tag: the user's own (Settings → Accounts, up to 3 chars, as typed), else two
+/// letters from the short name.
+/// Clearly different hues; no two accounts share one while there are enough.
+const TAG_PALETTE: [u32; 8] = [
+    0x3b82f6, 0x22c55e, 0xef4444, 0xf59e0b, 0xa855f7, 0x14b8a6, 0xec4899, 0x84cc16,
+];
+
+/// The preferred palette slot of an account: from its login email (stable when accounts merge
+/// and the id changes), else the id.
+fn tag_seed(a: &Account) -> usize {
+    let seed: Vec<u8> = match &a.email {
+        Some(e) => e.to_lowercase().into_bytes(),
+        None => a.id.as_bytes().to_vec(),
+    };
+    seed.iter()
+        .fold(0u32, |h, b| h.wrapping_mul(31).wrapping_add(*b as u32)) as usize
+        % TAG_PALETTE.len()
+}
+
+/// Palette slot per account in settings order: each takes its preferred slot, or the next free
+/// one when an earlier account already has it, so colours never collide (up to 8 accounts).
+fn tag_slot(accounts: &[Account], id: uuid::Uuid) -> Option<usize> {
+    let mut used = [false; TAG_PALETTE.len()];
+    for a in accounts {
+        if used.iter().all(|u| *u) {
+            used = [false; TAG_PALETTE.len()];
+        }
+        let mut slot = tag_seed(a);
+        while used[slot] {
+            slot = (slot + 1) % TAG_PALETTE.len();
+        }
+        used[slot] = true;
+        if a.id == id {
+            return Some(slot);
+        }
+    }
+    None
+}
+
+pub fn account_tag(s: &AppState, a: &Account) -> (String, Hsla) {
+    let tag: String = match s.settings.account_tags.get(&a.id) {
+        Some(own) if !own.trim().is_empty() => own.trim().chars().take(3).collect(),
+        _ => short_name(a)
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .take(2)
+            .collect::<String>()
+            .to_uppercase(),
+    };
+    let slot = tag_slot(&s.settings.accounts, a.id).unwrap_or_else(|| tag_seed(a));
+    (
+        if tag.is_empty() { "??".into() } else { tag },
+        gpui::rgb(TAG_PALETTE[slot]).into(),
+    )
+}
+
+pub fn width_for(s: &AppState) -> f32 {
+    let n = shown(s).len().max(1) as f32;
+    match s.display().taskbar_mode {
+        TaskbarMode::Badge => 12.0 + n * 128.0 + (n - 1.0) * 2.0,
+        TaskbarMode::Bars => 20.0 + n * 96.0 + (n - 1.0) * 16.0,
+        TaskbarMode::Numbers => 20.0 + n * 84.0 + (n - 1.0) * 16.0,
+        TaskbarMode::Focus => 20.0 + 150.0,
+        TaskbarMode::Off => 0.0,
+    }
+}
+
+/// Called when the display is clicked, with its screen bounds (logical px).
+pub type OnClick = std::rc::Rc<dyn Fn(&mut App, Bounds<gpui::Pixels>)>;
+
+pub struct TaskbarDisplay {
+    state: Entity<AppState>,
+    on_click: OnClick,
+    /// Horizontal drag in progress: (cursor x at press, display left at press, moved yet).
+    drag: Option<(i32, f32, bool)>,
+    _subs: Vec<Subscription>,
+}
+
+fn cursor_x() -> i32 {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut p = POINT::default();
+    unsafe {
+        let _ = GetCursorPos(&mut p);
+    }
+    p.x
+}
+
+impl TaskbarDisplay {
+    fn new(
+        state: Entity<AppState>,
+        on_click: OnClick,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let subs = vec![cx.observe_in(&state, window, |_, state, window, cx| {
+            // Re-fit width and position when accounts or the mode change.
+            place(window, state.read(cx));
+            cx.notify();
+        })];
+        Self {
+            state,
+            on_click,
+            drag: None,
+            _subs: subs,
+        }
+    }
+}
+
+/// The 5-hour and weekly windows of an account (first match each).
+fn session_and_week(
+    s: &AppState,
+    a: &Account,
+) -> (Option<AllowanceWindow>, Option<AllowanceWindow>) {
+    let Some(r) = s.settings.readings.get(&a.id) else {
+        return (None, None);
+    };
+    let vis = |w: &&AllowanceWindow| !a.hidden_windows.contains(&w.key);
+    let session = r
+        .windows
+        .iter()
+        .filter(vis)
+        .find(|w| subhub_core::steer::is_session_window(&w.key))
+        .cloned();
+    let week = r
+        .windows
+        .iter()
+        .filter(vis)
+        .find(|w| subhub_core::steer::is_weekly_window(&w.key))
+        .cloned();
+    (session, week)
+}
+
+impl Render for TaskbarDisplay {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let s = self.state.read(cx);
+        let d = s.display().clone();
+        // Readable on the taskbar: 12 px text, 6 px bars, brighter secondary text.
+        // Colours follow the *taskbar's* mode (Windows mode), not the app theme: Windows lets
+        // them differ, and the window itself is transparent over the taskbar.
+        let t = Tokens::new(taskbar_is_dark(), &d.accent);
+        let secondary: Hsla = if t.dark {
+            gpui::rgb(0xd4d4d8).into()
+        } else {
+            gpui::rgb(0x3f3f46).into()
+        };
+        let label_c: Hsla = if t.dark {
+            gpui::rgb(0xa1a1aa).into()
+        } else {
+            gpui::rgb(0x52525b).into()
+        };
+        let track: Hsla = if t.dark {
+            gpui::rgb(0x3f3f46).into()
+        } else {
+            gpui::rgb(0xd4d4d8).into()
+        };
+        let target = s
+            .settings
+            .steering
+            .preferred
+            .or(s.settings.steering.current);
+        let on_click = self.on_click.clone();
+        let accounts = shown(s);
+        let ids: Vec<Uuid> = accounts.iter().map(|a| a.id).collect();
+
+        let value = |w: &Option<AllowanceWindow>, stale: bool| -> (String, Hsla, f32) {
+            match w {
+                None => ("—".into(), label_c, 0.0),
+                Some(w) => {
+                    let c = if stale {
+                        label_c
+                    } else {
+                        t.level(w.remaining_percent(), d.running_out_threshold)
+                    };
+                    (format::percent(w, &d), c, format::gauge_fraction(w, &d))
+                }
+            }
+        };
+        let bar = |frac: f32, c: Hsla, wpx: f32| {
+            div().w(px(wpx)).h(px(6.0)).rounded_full().bg(track).child(
+                div()
+                    .h_full()
+                    .rounded_full()
+                    .bg(c)
+                    .w(gpui::relative(frac.clamp(0.0, 1.0))),
+            )
+        };
+        // Same typography as the taskbar clock: Segoe UI Variable, 12 px, regular, two lines,
+        // full-contrast text (owner: "check font settings from the date").
+        let clock_text: Hsla = if t.dark {
+            gpui::rgb(0xffffff).into()
+        } else {
+            gpui::rgb(0x000000).into()
+        };
+        let pct_color = |c: Hsla| {
+            if c == t.accent || c == label_c {
+                clock_text
+            } else {
+                c
+            }
+        };
+        let line = || {
+            div()
+                .h(px(16.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(4.0))
+        };
+        // Thin outline, no fill: sits on the taskbar like a tray item.
+        let outline: Hsla = if t.dark {
+            gpui::white().opacity(0.22)
+        } else {
+            gpui::black().opacity(0.22)
+        };
+        let badges = d.taskbar_mode == TaskbarMode::Badge;
+        let mut row = div()
+            .flex()
+            .items_center()
+            .gap(px(if badges { 2.0 } else { 16.0 }));
+        for (i, a) in accounts.iter().enumerate() {
+            let (session, week) = session_and_week(s, a);
+            let stale = s.is_stale(a.id);
+            let (sv, sc, sf) = value(&session, stale);
+            let (wv, wc, _) = value(&week, stale);
+            let dot = target == Some(a.id);
+            let name_line = |extra: Option<String>| {
+                line()
+                    .when(dot, |d| {
+                        d.child(div().size(px(5.0)).rounded_full().bg(t.accent))
+                    })
+                    .child(SharedString::from(short_name(a)))
+                    .when_some(extra, |d, e| d.child(div().text_color(label_c).child(e)))
+            };
+            let pair = || {
+                line()
+                    .child(div().text_color(pct_color(sc)).child(sv.clone()))
+                    .child(div().text_color(label_c).child("·"))
+                    .child(div().text_color(pct_color(wc)).child(wv.clone()))
+            };
+            let col = match d.taskbar_mode {
+                // T3-Code-style badge: glyph, coloured account tag, 5h and W mini bars + %.
+                TaskbarMode::Badge => {
+                    let (tag, tag_bg) = account_tag(s, a);
+                    let (_, _, wf) = value(&week, stale);
+                    // Two rows like the clock: left block spans both (glyph + tag), right block
+                    // is "5h bar %" over "W bar %".
+                    let metric = |label: &'static str, v: String, c: Hsla, f: f32| {
+                        div()
+                            .h(px(16.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .child(
+                                div()
+                                    .w(px(15.0))
+                                    .whitespace_nowrap()
+                                    .text_size(px(11.0))
+                                    .text_color(label_c)
+                                    .child(label),
+                            )
+                            .child(bar(f, c, 26.0))
+                            .child(
+                                div()
+                                    .w(px(30.0))
+                                    .flex()
+                                    .justify_end()
+                                    .text_color(pct_color(c))
+                                    .child(v),
+                            )
+                    };
+                    // Like a tray icon: no box, full height, rounded highlight on hover; the
+                    // steering account gets a small accent bar at the bottom (like Windows'
+                    // marker under the running app).
+                    div()
+                        .relative()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .h(px(40.0))
+                        .px(px(6.0))
+                        .rounded(px(4.0))
+                        .hover(|st| st.bg(outline.opacity(0.35)))
+                        .when(dot, |d| {
+                            d.child(
+                                div()
+                                    .absolute()
+                                    // Under the icon column only (px 6 + icon 26), so it does
+                                    // not read as a third row under the W bar.
+                                    .bottom(px(0.0))
+                                    .left(px(6.0))
+                                    .w(px(26.0))
+                                    .flex()
+                                    .justify_center()
+                                    .child(
+                                        div().w(px(12.0)).h(px(3.0)).rounded_full().bg(t.accent),
+                                    ),
+                            )
+                        })
+                        // T3 Code style: provider icon with the tag centred on its bottom edge.
+                        .child(
+                            div()
+                                .relative()
+                                .w(px(26.0))
+                                .h(px(30.0))
+                                .flex()
+                                .justify_center()
+                                .child(crate::icons::icon(
+                                    crate::icons::Icon::Provider(a.provider),
+                                    20.0,
+                                    provider_color(a.provider, label_c),
+                                ))
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .bottom(px(0.0))
+                                        .left(px(-6.0))
+                                        .right(px(-6.0))
+                                        .flex()
+                                        .justify_center()
+                                        .child(
+                                            div()
+                                                .px(px(3.0))
+                                                .rounded(px(3.0))
+                                                .bg(tag_bg)
+                                                .text_size(px(9.0))
+                                                .line_height(px(11.0))
+                                                .font_weight(gpui::FontWeight::BOLD)
+                                                .text_color(gpui::white())
+                                                .child(tag),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .child(metric("5h", sv.clone(), sc, sf))
+                                .child(metric("W", wv.clone(), wc, wf)),
+                        )
+                }
+                // Line 1: name and 5-hour %, line 2: the 5-hour bar.
+                TaskbarMode::Bars | TaskbarMode::Off => div()
+                    .flex()
+                    .flex_col()
+                    .w(px(96.0))
+                    .child(
+                        div()
+                            .h(px(16.0))
+                            .flex()
+                            .items_center()
+                            .gap(px(4.0))
+                            .when(dot, |d| {
+                                d.child(div().size(px(5.0)).rounded_full().bg(t.accent))
+                            })
+                            .child(SharedString::from(short_name(a)))
+                            .child(div().flex_1())
+                            .child(div().text_color(pct_color(sc)).child(sv.clone())),
+                    )
+                    .child(
+                        div()
+                            .h(px(16.0))
+                            .flex()
+                            .items_center()
+                            .child(bar(sf, sc, 96.0)),
+                    ),
+                // Clock-like: "82% · 27%" over the name.
+                TaskbarMode::Numbers => {
+                    div().flex().flex_col().child(pair()).child(name_line(None))
+                }
+                // One account: the pair over "name · +N ready".
+                TaskbarMode::Focus => {
+                    let others = ready_others(s, &ids);
+                    div().flex().flex_col().child(pair()).child(name_line(
+                        (others > 0 && i == 0).then(|| format!("· +{others} ready")),
+                    ))
+                }
+            };
+            row = row.child(col);
+            if d.taskbar_mode == TaskbarMode::Focus {
+                break;
+            }
+        }
+        if accounts.is_empty() {
+            row = row.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(secondary)
+                    .child("AI SubHub"),
+            );
+        }
+        div()
+            .id("taskbar-display")
+            .size_full()
+            .flex()
+            .items_center()
+            // Clock typography: Segoe UI Variable 12 px, 16 px lines.
+            .font_family("Segoe UI Variable Text")
+            .text_size(px(12.0))
+            .line_height(px(16.0))
+            .text_color(if t.dark { gpui::white() } else { gpui::black() })
+            .justify_center()
+            .cursor_pointer()
+            .child(
+                // Transparent window, no boxes: a thin divider on each side marks the group as
+                // its own taskbar section (badges have per-badge hover like tray icons; other
+                // styles hover as a whole).
+                div()
+                    .h(px(40.0))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.0))
+                    .child(div().w(px(1.0)).h(px(24.0)).bg(outline))
+                    .child(
+                        div()
+                            .h_full()
+                            .flex()
+                            .items_center()
+                            .px(px(if badges { 0.0 } else { 8.0 }))
+                            .rounded(px(4.0))
+                            .when(!badges, |d| d.hover(|st| st.bg(outline.opacity(0.35))))
+                            .child(row),
+                    )
+                    .child(div().w(px(1.0)).h(px(24.0)).bg(outline)),
+            )
+            // Press + move = drag along the taskbar (remembered); press + release = click.
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, _| {
+                    this.drag = Some((cursor_x(), window.bounds().origin.x.as_f32(), false));
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
+                let Some((start, left, moved)) = this.drag else {
+                    return;
+                };
+                if ev.pressed_button != Some(gpui::MouseButton::Left) {
+                    return;
+                }
+                let dx = (cursor_x() - start) as f32 / window.scale_factor();
+                if !moved && dx.abs() < 4.0 {
+                    return;
+                }
+                this.drag = Some((start, left, true));
+                let b = window.bounds();
+                let Some((r, scale)) = taskbar_rect() else {
+                    return;
+                };
+                let w = b.size.width.as_f32();
+                let x = (left + dx).clamp(r.left as f32 / scale, r.right as f32 / scale - w);
+                crate::window_style::set_bounds(
+                    window,
+                    Bounds {
+                        origin: point(px(x), b.origin.y),
+                        size: b.size,
+                    },
+                );
+                cx.notify();
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _, window, cx| {
+                    match this.drag.take() {
+                        Some((_, _, true)) => {
+                            // Save as distance from the taskbar's right edge.
+                            if let Some((r, scale)) = taskbar_rect() {
+                                let b = window.bounds();
+                                let offset = r.right as f32 / scale
+                                    - (b.origin.x.as_f32() + b.size.width.as_f32());
+                                this.state.update(cx, |s, _| {
+                                    s.update_display(|d| d.taskbar_offset = Some(offset.max(0.0)))
+                                });
+                            }
+                        }
+                        _ => on_click(cx, window.bounds()),
+                    }
+                }),
+            )
+    }
+}
+
+/// Taskbar rect and scale (physical px).
+fn taskbar_rect() -> Option<(windows::Win32::Foundation::RECT, f32)> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::HiDpi::GetDpiForWindow;
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowRect};
+    unsafe {
+        let bar = FindWindowW(windows::core::w!("Shell_TrayWnd"), None).ok()?;
+        let mut r = RECT::default();
+        GetWindowRect(bar, &mut r).ok()?;
+        let dpi = GetDpiForWindow(bar);
+        Some((r, if dpi == 0 { 1.0 } else { dpi as f32 / 96.0 }))
+    }
+}
+
+fn tray_area_left() -> Option<i32> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, FindWindowW, GetWindowRect};
+    unsafe {
+        let bar = FindWindowW(windows::core::w!("Shell_TrayWnd"), None).ok()?;
+        let notify =
+            FindWindowExW(Some(bar), None, windows::core::w!("TrayNotifyWnd"), None).ok()?;
+        let mut r = RECT::default();
+        GetWindowRect(notify, &mut r).ok()?;
+        Some(r.left)
+    }
+}
+
+/// Logical bounds over the taskbar for the current settings.
+fn bounds_for(s: &AppState) -> Option<Bounds<gpui::Pixels>> {
+    let (r, scale) = taskbar_rect()?;
+    let height_phys = r.bottom - r.top;
+    if height_phys <= 0 || (r.right - r.left) < (r.bottom - r.top) * 3 {
+        return None; // vertical or hidden taskbar: not supported
+    }
+    let w = width_for(s);
+    // Start 2 px below the taskbar's top so its top border line stays visible (owner, 2026-11-06),
+    // then fill the rest of the height.
+    const TOP_GAP: f32 = 2.0;
+    let h = (height_phys as f32 / scale - TOP_GAP).clamp(28.0, 64.0);
+    let top = r.top as f32 / scale + TOP_GAP;
+    let right = r.right as f32 / scale;
+    let x = match (s.display().taskbar_offset, s.display().taskbar_position) {
+        // Dragged by the user: keep the same distance from the taskbar's right edge.
+        (Some(offset), _) => right - offset - w,
+        // Right of the widgets button (weather), which is ~170 px wide on Windows 11.
+        (None, TaskbarPosition::Left) => r.left as f32 / scale + 176.0,
+        (None, TaskbarPosition::Right) => {
+            // Windows 11's XAML taskbar has no TrayNotifyWnd to measure on many builds; then
+            // assume ~380 px for tray icons + clock. The user can drag it into place.
+            let tray = tray_area_left()
+                .map(|l| l as f32 / scale)
+                .unwrap_or(right - 380.0);
+            tray - w - 8.0
+        }
+    };
+    let x = x.clamp(r.left as f32 / scale, right - w);
+    Some(Bounds {
+        origin: point(px(x), px(top)),
+        size: size(px(w), px(h)),
+    })
+}
+
+fn place(window: &mut Window, s: &AppState) {
+    if let Some(b) = bounds_for(s) {
+        crate::window_style::set_bounds(window, b);
+    }
+}
+
+pub fn open(
+    state: Entity<AppState>,
+    on_click: OnClick,
+    cx: &mut App,
+) -> Option<WindowHandle<TaskbarDisplay>> {
+    let s = state.read(cx);
+    if s.display().taskbar_mode == TaskbarMode::Off {
+        return None;
+    }
+    let bounds = bounds_for(s)?;
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: None,
+        kind: WindowKind::PopUp,
+        focus: false,
+        show: true,
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        window_background: WindowBackgroundAppearance::Transparent,
+        ..Default::default()
+    };
+    let handle = cx
+        .open_window(options, |window, cx| {
+            // No gpui-component Root here: it paints the theme background, and this window
+            // must stay transparent (only text, bars and outlines on the taskbar).
+            cx.new(|cx| TaskbarDisplay::new(state, on_click, window, cx))
+        })
+        .ok()?;
+    let _ = handle.update(cx, |_, window, _| crate::window_style::no_frame(window));
+    // Keep it above the taskbar, which comes to the front whenever it is clicked.
+    cx.spawn(async move |cx| {
+        let mut was_dark = taskbar_is_dark();
+        loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            let alive = handle.update(cx, |_, window, cx| {
+                // Windows mode switched (light/dark taskbar): redraw with matching colours.
+                let dark = taskbar_is_dark();
+                if dark != was_dark {
+                    was_dark = dark;
+                    cx.notify();
+                }
+                // Step aside for fullscreen videos, games and presentations; the taskbar is
+                // hidden there too. Otherwise stay above the taskbar.
+                if crate::window_style::fullscreen_app_in_front() {
+                    crate::window_style::set_visible(window, false);
+                } else {
+                    crate::window_style::set_visible(window, true);
+                    crate::window_style::raise_topmost(window);
+                }
+            });
+            if alive.is_err() {
+                break;
+            }
+        }
+    })
+    .detach();
+    Some(handle)
+}
