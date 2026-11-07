@@ -16,9 +16,11 @@ Crate `crates/subhub-app` (GPUI). Domain logic lives in `crates/subhub-core`; th
 ## Tray icon
 
 - Own `Shell_NotifyIconW` module (`tray.rs`, `NOTIFYICON_VERSION_4`). Left click (`NIN_SELECT`) toggles the popover; right click (`WM_CONTEXTMENU`) opens Open / Refresh usage / Settings / Quit. Only one of each click pair is handled (a click also sends `WM_LBUTTONUP`; handling both opened and closed the popover at once).
-- Icon: the static logo. Tip text (`hover::tip_text`): "AI SubHub · % left", then "Name 5h 37% W 64%" per visible account plus its state ("(stale)", "(cooling down)", …), cut at a line end with "…" to 127 UTF-16 units. It is always set, so screen readers read it; Windows draws it (`NIF_SHOWTIP`) only when hover cards are off. With hover cards on, `NIF_SHOWTIP` is left out and the hover card (below) replaces it.
+- Icon: the static logo. Tooltip: just "AI SubHub", Windows' plain tooltip like other tray apps (owner, 2026-11-07: the usage is one click away in the popover; the earlier usage text and the tray hover card were removed).
 
 ## Hover cards (2026-11-07)
+
+**Tray icon: plain text tooltip again (owner, 2026-11-07).** The hover card over the tray icon was removed: the tray always sets `NIF_SHOWTIP` and the tip is just "AI SubHub", `NIN_POPUPOPEN` / `NIN_POPUPCLOSE` / `WM_MOUSEMOVE` are ignored. Hover cards remain for the taskbar badges only; the tray parts below are historical.
 
 Core: `subhub-core/src/hover.rs` (card model: per account 5h then weekly window, other windows only when neither exists, health Fresh/Stale/Cooling down/Sign in needed/CLI missing/Benched/No reading yet, steering role, "+N more"; tip text) and `placement.rs` (`card_origin`). App: `hover_card.rs`. Owner request: the grey native tooltip "isn't looking good".
 
@@ -27,7 +29,7 @@ Core: `subhub-core/src/hover.rs` (card model: per account 5h then weekly window,
 - Hiding: `NIN_POPUPCLOSE`, a click or drag on the display, the popover opening (`toggle_popover`), the setting switched off, or the **watchdog**: every 100 ms, two checks in a row with the pointer off the anchor (3 px slack) hide it, since Windows does not always send the close. No card while the popover is open or a fullscreen app is in front.
 - Placement (`placement::card_origin`, tested): centred on the anchor (tray icon: its real rect, also inside the overflow flyout, `Tray::icon_rect`; the popover keeps using the notification area), 8 px from it on the desktop side (above a bottom taskbar, below a top one), 12 px inside the anchor monitor's work area on the other sides; all physical px with the anchor monitor's scale.
 - One card window per monitor: it is opened on the anchor's monitor (`display_id`, shown at once) and reopened when the next anchor is on another monitor. Moving a GPUI window onto another monitor inside a GPUI update re-enters GPUI (WM_MOVE → display change → `AsyncApp::update`) and panics; seen 2026-11-07 with both the taskbar display and the card. A hidden window stays on the default monitor until shown, so the card is created visible.
-- Setting: Taskbar → "Show details on hover" (`display.hover_details`, default on). Off: the plain Windows tooltip on the tray icon, nothing on the badges.
+- Setting: Taskbar → "Show details on hover" (`display.hover_details`, default on): cards over the taskbar badges. Off: nothing on the badges. The tray icon always shows the plain text tooltip.
 - Verified 2026-11-07 (dev build, sandboxed `LOCALAPPDATA`, two 2560x1440 monitors): badge card after the delay, switching between badges, hiding when the pointer leaves, stale pill, card on the second monitor's taskbar, tray card (all four accounts) after a posted `NIN_POPUPOPEN`, reopening on the other monitor. Not verified: a real hover over the dev tray icon (Windows 11 keeps new icons hidden in the overflow until allowed in taskbar settings, and its icon did not get pointer events there); check with the installed build.
 
 ## Popover (layout A)

@@ -100,8 +100,9 @@ fn main() {
             theme::apply_component_theme(dark, None, cx);
 
             let (tx, mut rx) = futures::channel::mpsc::unbounded();
-            let rich = state.read(cx).display().hover_details;
-            let tray = match Tray::new(tx, "AI SubHub", rich) {
+            // The tray icon keeps Windows' plain text tooltip (owner, 2026-11-07: no hover card
+            // on the tray icon); hover cards are for the taskbar badges only.
+            let tray = match Tray::new(tx, "AI SubHub", false) {
                 Ok(t) => t,
                 Err(_) => {
                     // Never run without a way back.
@@ -173,23 +174,10 @@ fn main() {
                             TrayEvent::Settings => open_settings(&shell, cx),
                             TrayEvent::Statistics => open_stats(&shell, cx),
                             TrayEvent::Quit => cx.quit(),
-                            TrayEvent::HoverOpen | TrayEvent::HoverMove => {
-                                let r = shell.borrow().tray.icon_rect();
-                                if let Some(r) = r {
-                                    let anchor = subhub_core::placement::Rect {
-                                        left: r.left as f32,
-                                        top: r.top as f32,
-                                        right: r.right as f32,
-                                        bottom: r.bottom as f32,
-                                    };
-                                    if ev == TrayEvent::HoverOpen {
-                                        hover_card::tray_enter(anchor, cx);
-                                    } else {
-                                        hover_card::tray_move(anchor, cx);
-                                    }
-                                }
-                            }
-                            TrayEvent::HoverClose => hover_card::tray_leave(cx),
+                            // The tray icon shows Windows' text tooltip, no hover card.
+                            TrayEvent::HoverOpen
+                            | TrayEvent::HoverMove
+                            | TrayEvent::HoverClose => {}
                         });
                     }
                 })
@@ -398,17 +386,13 @@ fn single_instance() -> bool {
     }
 }
 
-/// The tray icon is the static logo; only the tip text follows the state. The text is set
-/// either way (screen readers read it); Windows draws it only when hover cards are off.
+/// The tray icon is the static logo with Windows' plain tooltip showing just the app name, like
+/// other tray apps (owner, 2026-11-07: the usage is one click away in the popover).
 fn update_tray(shell: &ShellRef, state: &Entity<AppState>, cx: &mut App) {
-    let s = state.read(cx);
-    let views = hover_card::account_views(s);
-    let tip = subhub_core::hover::tip_text(&subhub_core::hover::tray_card(&views, views.len()));
-    let rich = s.display().hover_details;
-    if !rich {
+    if !state.read(cx).display().hover_details {
         hover_card::hide(cx);
     }
-    let _ = shell.borrow_mut().tray.set_tip(&tip, rich);
+    let _ = shell.borrow_mut().tray.set_tip("AI SubHub", false);
 }
 
 /// What the popover opens above: the tray icon, or the taskbar display that was clicked.

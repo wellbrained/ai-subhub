@@ -1326,7 +1326,7 @@ impl SettingsWindow {
             ))
             .child(row(
                 "Show details on hover",
-                Some("A small card over the tray icon and each taskbar badge: both windows, % left, reset times and status. Off: the plain Windows tooltip on the tray icon."),
+                Some("A small card over each taskbar badge: both windows, % left, reset times and status. The tray icon keeps its plain text tooltip."),
                 Switch::new("hover-on")
                     .checked(d.hover_details)
                     .on_click({

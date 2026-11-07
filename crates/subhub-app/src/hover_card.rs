@@ -90,41 +90,6 @@ fn generation() -> u64 {
     CTL.with(|c| c.borrow().generation)
 }
 
-/// The pointer rests on the tray icon (Windows already waited its hover time).
-pub fn tray_enter(anchor: Rect, cx: &mut App) {
-    let g = bump();
-    show(Source::Tray, anchor, g, cx);
-}
-
-/// The pointer moved over the tray icon (WM_MOUSEMOVE). Fallback for when Windows does not send
-/// NIN_POPUPOPEN: once the pointer rests for `BADGE_DELAY`, show the card.
-pub fn tray_move(anchor: Rect, cx: &mut App) {
-    if CTL.with(|c| c.borrow().shown) == Some(Source::Tray) {
-        return; // shown: its watchdog is running, keep it
-    }
-    let g = bump();
-    if CTL.with(|c| c.borrow().shown).is_some() {
-        show(Source::Tray, anchor, g, cx); // a badge card is up: switch at once
-        return;
-    }
-    cx.spawn(async move |cx| {
-        cx.background_executor().timer(BADGE_DELAY).await;
-        cx.update(|cx| {
-            if generation() == g && cursor_in(&anchor) {
-                show(Source::Tray, anchor, g, cx);
-            }
-        });
-    })
-    .detach();
-}
-
-/// Windows says the tray icon's hover ended.
-pub fn tray_leave(cx: &mut App) {
-    if CTL.with(|c| c.borrow().shown) == Some(Source::Tray) {
-        hide(cx);
-    }
-}
-
 /// The pointer entered a badge (`anchor` in physical px). Moving between badges switches the
 /// card at once; otherwise it shows after `BADGE_DELAY` if the pointer is still there.
 pub fn badge_enter(account: Uuid, anchor: Rect, cx: &mut App) {

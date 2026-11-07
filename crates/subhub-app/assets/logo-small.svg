@@ -3,7 +3,7 @@
        icons). Same mark, fewer and thicker shapes: no glow, no bar tracks, a bigger orb and tag,
        bars on whole pixels at 16/24/32 px. -->
   <defs>
-    <clipPath id="sq"><path d="M32 1C7 1 1 7 1 32s6 31 31 31 31-6 31-31S57 1 32 1Z"/></clipPath>
+    <clipPath id="sq"><rect x="1" y="1" width="62" height="62" rx="10"/></clipPath>
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0" stop-color="#3a3366"/><stop offset="1" stop-color="#191530"/>
     </linearGradient>
@@ -21,4 +21,6 @@
     <rect x="3" y="34" width="30" height="18" rx="9" fill="#1f1a3b"/>
     <rect x="6" y="37" width="24" height="12" rx="6" fill="#ffffff"/>
   </g>
+  <!-- Hairline edge so the tile stays visible on dark title bars. -->
+  <rect x="1.5" y="1.5" width="61" height="61" rx="9.5" fill="none" stroke="#ffffff" stroke-opacity=".16"/>
 </svg>

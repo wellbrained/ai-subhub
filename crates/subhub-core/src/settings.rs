@@ -160,8 +160,8 @@ pub struct DisplaySettings {
     pub taskbar_offsets: BTreeMap<String, f32>,
     #[serde(default)]
     pub taskbar_monitors: TaskbarMonitors,
-    /// Hover cards over the tray icon and the taskbar badges. Off: the plain Windows tooltip on
-    /// the tray icon, nothing on the badges.
+    /// Hover cards over the taskbar badges (off: nothing on hover). The tray icon always keeps
+    /// Windows' plain text tooltip (owner, 2026-11-07).
     pub hover_details: bool,
     #[serde(default)]
     pub taskbar_accounts: TaskbarAccounts,
