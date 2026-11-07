@@ -14,8 +14,8 @@ use subhub_core::schedule::Schedule;
 use crate::format;
 use crate::icons::{Icon, icon, provider_color};
 use crate::state::{AppState, CardMenu, HubStatus, PendingNotes, SettingsTarget, provider_name};
-use gpui_component::scroll::ScrollableElement;
 use crate::theme::{self, Tokens};
+use gpui_component::scroll::ScrollableElement;
 
 pub const WIDTH: f32 = 460.0;
 
@@ -438,17 +438,14 @@ impl Popover {
                                     .flex_col()
                                     .gap(px(2.0))
                                     .child(
-                                        div()
-                                            .text_base()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(SharedString::from(format!(
+                                        div().text_base().font_weight(FontWeight::SEMIBOLD).child(
+                                            SharedString::from(format!(
                                                 "Updated to v{}",
                                                 p.version
-                                            ))),
+                                            )),
+                                        ),
                                     )
-                                    .child(
-                                        div().text_xs().text_color(t.muted).child("What's new"),
-                                    ),
+                                    .child(div().text_xs().text_color(t.muted).child("What's new")),
                             )
                             .child(
                                 div()

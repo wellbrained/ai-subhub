@@ -190,9 +190,8 @@ fn main() {
                             TrayEvent::Statistics => open_stats(&shell, cx),
                             TrayEvent::Quit => cx.quit(),
                             // The tray icon shows Windows' text tooltip, no hover card.
-                            TrayEvent::HoverOpen
-                            | TrayEvent::HoverMove
-                            | TrayEvent::HoverClose => {}
+                            TrayEvent::HoverOpen | TrayEvent::HoverMove | TrayEvent::HoverClose => {
+                            }
                         });
                     }
                 })

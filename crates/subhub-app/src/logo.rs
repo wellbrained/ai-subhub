@@ -22,14 +22,26 @@ enum Shape {
 /// Tray mark, painted back to front (the tag is drawn over the dot).
 const SHAPES: [(Shape, [u8; 3], f32); 5] = [
     // 5-hour (long, blue) and weekly (short, amber).
-    (Shape::Rect(9.2, 4.0, 6.0, 3.0, 1.5), [0x5b, 0x93, 0xf8], 1.0),
-    (Shape::Rect(9.2, 9.6, 3.2, 3.0, 1.5), [0xf5, 0xa5, 0x24], 1.0),
+    (
+        Shape::Rect(9.2, 4.0, 6.0, 3.0, 1.5),
+        [0x5b, 0x93, 0xf8],
+        1.0,
+    ),
+    (
+        Shape::Rect(9.2, 9.6, 3.2, 3.0, 1.5),
+        [0xf5, 0xa5, 0x24],
+        1.0,
+    ),
     // Provider dot, lowered so the tag overlaps it.
     (Shape::Circle(4.5, 6.9, 3.1), [0xe0, 0x7a, 0x55], 1.0),
     // Cut-out ring separates tag from dot, like the real badge.
     (Shape::Rect(0.6, 9.0, 7.8, 4.8, 2.4), [0, 0, 0], 0.0),
     // Tag pill.
-    (Shape::Rect(1.2, 9.6, 6.6, 3.6, 1.8), [0xe8, 0x59, 0x0c], 1.0),
+    (
+        Shape::Rect(1.2, 9.6, 6.6, 3.6, 1.8),
+        [0xe8, 0x59, 0x0c],
+        1.0,
+    ),
 ];
 
 fn coverage(shape: &Shape, x: f32, y: f32) -> bool {
@@ -102,7 +114,14 @@ pub fn rgba(size: u32) -> Vec<u8> {
 /// The app icon, `size` px square: the small master up to 32 px, the full icon above;
 /// straight (non-premultiplied) RGBA.
 pub fn app_rgba(size: u32) -> Vec<u8> {
-    svg_rgba(if size <= SMALL_MAX { APP_SMALL_SVG } else { APP_SVG }, size)
+    svg_rgba(
+        if size <= SMALL_MAX {
+            APP_SMALL_SVG
+        } else {
+            APP_SVG
+        },
+        size,
+    )
 }
 
 /// Renders an SVG to `size` x `size` straight RGBA (falls back to the tray mark).
@@ -115,7 +134,11 @@ fn svg_rgba(svg: &[u8], size: u32) -> Vec<u8> {
         return rgba(size);
     };
     let k = size as f32 / tree.size().width();
-    resvg::render(&tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut());
+    resvg::render(
+        &tree,
+        tiny_skia::Transform::from_scale(k, k),
+        &mut pixmap.as_mut(),
+    );
     pixmap
         .pixels()
         .iter()
@@ -129,7 +152,9 @@ fn svg_rgba(svg: &[u8], size: u32) -> Vec<u8> {
 /// The app icon in a title bar, `size` px square (the small master: title bars are 16-32 px).
 pub fn app_mark(size: f32) -> gpui::Img {
     use gpui::{Styled, px};
-    gpui::img("icons/app-logo-small.svg").size(px(size)).flex_none()
+    gpui::img("icons/app-logo-small.svg")
+        .size(px(size))
+        .flex_none()
 }
 
 /// Window icon for GPUI (`WindowOptions.icon`).
