@@ -72,7 +72,7 @@ pub struct OverviewState {
     result: Option<(u64, Instant, Arc<Overview>)>,
     /// The signature a background run is computing.
     computing: Option<u64>,
-    /// The open row (one at a time).
+    /// The topic page shown (None: the summary page).
     pub open: Option<TipRow>,
     /// The tip list under the top tip is expanded.
     pub tips_open: bool,
@@ -883,6 +883,9 @@ pub fn body(ov: &OverviewState, cx: &Ctx) -> AnyElement {
             .into_any_element();
     };
     let o = o.as_ref();
+    if let Some(page) = ov.open {
+        return topic_page(page, ov, o, cx);
+    }
     let (first, rest) = verdict(o);
     let verdict_line = div()
         .text_size(px(20.0))
@@ -907,7 +910,109 @@ pub fn body(ov: &OverviewState, cx: &Ctx) -> AnyElement {
         .child(verdict_line)
         .child(kpis(o, t).mt(px(18.0)))
         .child(tips_block(ov, o, cx).mt(px(24.0)))
-        .child(rows(ov, o, cx).mt(px(8.0)))
+        .child(rows(o, cx).mt(px(8.0)))
+        .into_any_element()
+}
+
+/// The small count next to a topic in the sidebar: plans that need a look (red when one is at
+/// its limit), waits while another account was free, days to a renewal within two weeks.
+pub fn nav_badge(ov: &OverviewState, r: TipRow, t: &Tokens) -> Option<AnyElement> {
+    let o = ov.latest()?;
+    let tint = |c: Hsla| c.opacity(if t.dark { 0.16 } else { 0.12 });
+    let (text, fg, bg) = match r {
+        TipRow::Plans => {
+            let v = &o.header.verdict;
+            let n = v.downgrade.len() + v.at_limit.len() + v.unused.len();
+            if n == 0 {
+                return None;
+            }
+            let c = if v.at_limit.is_empty() {
+                t.info
+            } else {
+                t.danger
+            };
+            (n.to_string(), c, tint(c))
+        }
+        TipRow::Windows => {
+            let n = o.windows.ready()?.hits_with_free_account;
+            if n == 0 {
+                return None;
+            }
+            (n.to_string(), t.danger, tint(t.danger))
+        }
+        TipRow::Renewals => {
+            let next = o.header.next_renewal.as_ref()?;
+            if next.days > 14 {
+                return None;
+            }
+            (format!("{} d", next.days), t.muted, t.bg)
+        }
+        TipRow::Usage => return None,
+    };
+    Some(pill(text, fg, bg).into_any_element())
+}
+
+/// The name of a topic page (sidebar and page title).
+pub fn topic_name(r: TipRow) -> &'static str {
+    match r {
+        TipRow::Plans => "Plans",
+        TipRow::Windows => "5-hour windows",
+        TipRow::Renewals => "Renewals",
+        TipRow::Usage => "Where usage goes",
+    }
+}
+
+/// The answer in words and the short right-hand note of a topic (summary line and page head).
+fn topic_line(r: TipRow, o: &Overview, cx: &Ctx) -> (AnyElement, Option<AnyElement>) {
+    match r {
+        TipRow::Plans => plans_line(o, cx),
+        TipRow::Windows => windows_line(o, &cx.s.settings.warmup, cx.t),
+        TipRow::Renewals => renewals_line(o, cx.t),
+        TipRow::Usage => (usage_line(o, cx), None),
+    }
+}
+
+/// One topic as its own page (owner, 2026-11-08: no accordion): title, the answer, the details.
+fn topic_page(r: TipRow, ov: &OverviewState, o: &Overview, cx: &Ctx) -> AnyElement {
+    let t = cx.t;
+    let (answer, right) = topic_line(r, o, cx);
+    let content = match r {
+        TipRow::Plans => plans_content(o, cx),
+        TipRow::Windows => windows_content(o, cx),
+        TipRow::Renewals => renewals_content(o, cx),
+        TipRow::Usage => usage_content(ov, o, cx),
+    };
+    div()
+        .flex()
+        .flex_col()
+        .px(px(SIDE))
+        .pt(px(12.0))
+        .child(
+            div()
+                .text_size(px(20.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(topic_name(r)),
+        )
+        .child(
+            div()
+                .mt(px(4.0))
+                .pb(px(16.0))
+                .flex()
+                .items_center()
+                .gap(px(16.0))
+                .border_b_1()
+                .border_color(t.border)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(BODY))
+                        .text_color(t.muted)
+                        .child(answer),
+                )
+                .children(right),
+        )
+        .child(div().pt(px(20.0)).child(content))
         .into_any_element()
 }
 
@@ -1156,27 +1261,26 @@ fn tips_block(ov: &OverviewState, o: &Overview, cx: &Ctx) -> gpui::Div {
 
 // ---------- rows ----------
 
-/// One topic row: name, the answer in words, a short right-hand note and the chevron; its
-/// details below while open.
-#[allow(clippy::too_many_arguments)]
+/// One summary line: name, the answer in words, a short note and a chevron; a click opens the
+/// topic's page.
 fn row(
     id: &'static str,
     name: &str,
     answer: AnyElement,
     right: Option<AnyElement>,
-    open: bool,
-    content: impl FnOnce() -> AnyElement,
-    on_toggle: impl Fn(&mut App) + 'static,
+    on_open: impl Fn(&mut App) + 'static,
     t: &Tokens,
-) -> gpui::Div {
+) -> gpui::Stateful<gpui::Div> {
     let (chev, chev_hover) = (t.faint, t.text);
-    let head = div()
+    div()
         .id(id)
         .group(id)
         .flex()
         .items_center()
         .gap(px(16.0))
         .py(px(14.0))
+        .border_b_1()
+        .border_color(t.border)
         .cursor_pointer()
         .child(
             div()
@@ -1204,85 +1308,32 @@ fn row(
                 .gap(px(6.0))
                 .children(right),
         )
-        .child(
-            div().w(px(18.0)).flex_none().flex().justify_end().child(
-                icon(
-                    if open {
-                        Icon::ChevronDown
-                    } else {
-                        Icon::ChevronRight
-                    },
-                    14.0,
-                    chev,
-                )
-                .group_hover(id, move |s| s.text_color(chev_hover)),
-            ),
-        )
-        .on_click(move |_, _, cx| on_toggle(cx));
-    div()
-        .flex()
-        .flex_col()
-        .border_b_1()
-        .border_color(t.border)
-        .child(head)
-        .when(open, |d| d.child(div().pb(px(22.0)).child(content())))
+        .child(div().w(px(18.0)).flex_none().flex().justify_end().child(
+            icon(Icon::ChevronRight, 14.0, chev).group_hover(id, move |s| s.text_color(chev_hover)),
+        ))
+        .on_click(move |_, _, cx| on_open(cx))
 }
 
-fn rows(ov: &OverviewState, o: &Overview, cx: &Ctx) -> gpui::Div {
+fn rows(o: &Overview, cx: &Ctx) -> gpui::Div {
     let t = cx.t;
-    let toggle = |r: TipRow| {
-        cx.upd(move |ov| {
-            ov.open = if ov.open == Some(r) { None } else { Some(r) };
-        })
-    };
-    let is = |r: TipRow| ov.open == Some(r);
-    let (plans_answer, plans_right) = plans_line(o, cx);
-    let (win_answer, win_right) = windows_line(o, &cx.s.settings.warmup, t);
-    let (ren_answer, ren_right) = renewals_line(o, t);
-    let usage_answer = usage_line(o, cx);
-    div()
-        .flex()
-        .flex_col()
-        .child(row(
-            "row-plans",
-            "Plans",
-            plans_answer,
-            plans_right,
-            is(TipRow::Plans),
-            || plans_content(o, cx),
-            toggle(TipRow::Plans),
+    let mut list = div().flex().flex_col();
+    for (id, r) in [
+        ("row-plans", TipRow::Plans),
+        ("row-windows", TipRow::Windows),
+        ("row-renewals", TipRow::Renewals),
+        ("row-usage", TipRow::Usage),
+    ] {
+        let (answer, right) = topic_line(r, o, cx);
+        list = list.child(row(
+            id,
+            topic_name(r),
+            answer,
+            right,
+            cx.upd(move |ov| ov.open = Some(r)),
             t,
-        ))
-        .child(row(
-            "row-windows",
-            "5-hour windows",
-            win_answer,
-            win_right,
-            is(TipRow::Windows),
-            || windows_content(o, cx),
-            toggle(TipRow::Windows),
-            t,
-        ))
-        .child(row(
-            "row-renewals",
-            "Renewals",
-            ren_answer,
-            ren_right,
-            is(TipRow::Renewals),
-            || renewals_content(o, cx),
-            toggle(TipRow::Renewals),
-            t,
-        ))
-        .child(row(
-            "row-usage",
-            "Where usage goes",
-            usage_answer,
-            None,
-            is(TipRow::Usage),
-            || usage_content(ov, o, cx),
-            toggle(TipRow::Usage),
-            t,
-        ))
+        ));
+    }
+    list
 }
 
 fn plain(text: impl Into<SharedString>) -> AnyElement {

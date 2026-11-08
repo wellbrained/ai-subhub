@@ -1,7 +1,9 @@
-//! Statistics window (owner-approved redesign, 2026-11-07): a merged title bar with the
-//! `Usage | Limits` tabs, the range switch, Copy as image and Rescan; below it the Usage view
-//! (tiles, "By type", then a Models / Providers / Days breakdown with the daily chart) or the
-//! live Limits board. Data: `subhub_core::stats` (local session logs).
+//! The main window (owner, 2026-11-08: Statistics and Settings are one window with one sidebar;
+//! "Statistics" opens it on Overview, "Settings" on General or a given page). Merged title bar
+//! with the page name, the range switch, Copy as image and Rescan on the statistics pages; a
+//! sidebar with Insights (Overview and its topic pages), Data (Limits now, Tokens & cost) and
+//! Settings (the settings pages, drawn by the embedded `SettingsWindow`). Data:
+//! `subhub_core::stats` (local session logs) and `subhub_core::insights`.
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -18,9 +20,18 @@ use subhub_core::stats::{ModelRow, Point, Range, Summary, summarize};
 
 use crate::icons::{Icon, icon, series_color};
 use crate::overview::{self, OverviewState};
+use crate::settings_window::{MENU_TARGETS, SettingsWindow};
 use crate::state::AppState;
 use crate::theme::{self, Tokens};
 use crate::title_bar::{self, icon_button, seg};
+use subhub_core::insights::TipRow;
+
+/// Which half of the window shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Section {
+    Stats,
+    Settings,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -32,26 +43,10 @@ enum Tab {
     Usage,
 }
 
-/// The one-time fit of the window height to the Usage content (Models view).
-#[derive(Clone, Copy)]
-enum Fit {
-    /// No data yet.
-    Pending,
-    /// Sized from an estimate, now following the measured content height until it is stable.
-    Measuring {
-        since: Instant,
-        last: f32,
-        stable: u8,
-    },
-    /// Never resized by the app again (owner rule: switching tabs or views keeps the height).
-    Done,
-}
-
 pub struct StatsWindow {
     state: Entity<AppState>,
     range: Range,
     tab: Tab,
-    fit: Fit,
     scroll: gpui::ScrollHandle,
     /// The Days table's own scroll area (7 rows visible).
     days_scroll: gpui::ScrollHandle,
@@ -63,25 +58,39 @@ pub struct StatsWindow {
     summary: Option<((Range, u64), Summary)>,
     /// The Overview tab's state and last analysis.
     overview: OverviewState,
-    /// Opens the Settings window (on `AppState::pending_settings_page`).
-    on_settings: Rc<dyn Fn(&mut gpui::App)>,
-    _sub: Subscription,
+    section: Section,
+    /// The settings pages (drawn without their own bar and menu).
+    settings: Entity<SettingsWindow>,
+    _subs: Vec<Subscription>,
 }
 
 impl StatsWindow {
     pub fn new(
         state: Entity<AppState>,
-        on_settings: Rc<dyn Fn(&mut gpui::App)>,
+        section: Section,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        // A row asked for from elsewhere (Settings → General → Warm-up) opens on the Overview.
+        // Settings → General → Warm-up "Open 5-hour windows" switches to that page here.
+        let me = cx.entity().downgrade();
+        let on_stats: Rc<dyn Fn(&mut gpui::App)> = Rc::new(move |cx: &mut gpui::App| {
+            let _ = me.update(cx, |this, cx| {
+                this.section = Section::Stats;
+                cx.notify();
+            });
+        });
+        let settings = cx.new(|cx| SettingsWindow::new(state.clone(), on_stats, window, cx));
+        // A page asked for from elsewhere (a tip, Settings, the popover) opens here.
         let sub = cx.observe(&state, |this: &mut Self, state, cx| {
             if let Some(row) = state.update(cx, |s, _| s.pending_overview_row.take()) {
+                this.section = Section::Stats;
                 this.tab = Tab::Overview;
                 this.overview.open = Some(row);
             }
             cx.notify()
         });
+        // The settings pages change the sidebar highlight.
+        let settings_sub = cx.observe(&settings, |_, _, cx| cx.notify());
         let pending_row = state.update(cx, |s, _| s.pending_overview_row.take());
         // The Limits countdowns tick: re-render twice a minute while that tab is open; the
         // Overview re-renders only when its analysis is old enough to run again. Ends with the
@@ -104,19 +113,17 @@ impl StatsWindow {
             }
         })
         .detach();
-        // Opens on the Overview (owner, 2026-11-07). The one-time height fit belongs to the
-        // Usage content and would resize the window on the first switch to it, so it only runs
-        // when the window opens on Usage.
-        let tab = Tab::Overview;
+        // Opens on the Overview (owner, 2026-11-07); demo screenshots can ask for the data pages
+        // (`--demo-open-row limits|usage`).
+        let tab = match crate::demo::open_row() {
+            Some("limits") => Tab::Limits,
+            Some("usage") => Tab::Usage,
+            _ => Tab::Overview,
+        };
         Self {
             state,
             range: Range::Quarter,
             tab,
-            fit: if tab == Tab::Usage {
-                Fit::Pending
-            } else {
-                Fit::Done
-            },
             scroll: gpui::ScrollHandle::new(),
             days_scroll: gpui::ScrollHandle::new(),
             copied: None,
@@ -129,9 +136,26 @@ impl StatsWindow {
                 }
                 o
             },
-            on_settings,
-            _sub: sub,
+            section,
+            settings,
+            _subs: vec![sub, settings_sub],
         }
+    }
+
+    /// Shows the statistics side (on the page it was on, or a topic page).
+    pub fn show_stats(&mut self, page: Option<Option<TipRow>>, cx: &mut Context<Self>) {
+        self.section = Section::Stats;
+        if let Some(p) = page {
+            self.tab = Tab::Overview;
+            self.overview.open = p;
+        }
+        cx.notify();
+    }
+
+    /// Shows the settings side; the page comes from `AppState::pending_settings_page`.
+    pub fn show_settings(&mut self, cx: &mut Context<Self>) {
+        self.section = Section::Settings;
+        cx.notify();
     }
 
     pub(crate) fn overview_ref(&self) -> &OverviewState {
@@ -153,64 +177,6 @@ impl StatsWindow {
                 let _ = this.update(cx, |_, cx| cx.notify());
             })
             .detach();
-        }
-    }
-
-    /// Sizes the window once to the Usage content: first from an estimate, then to the measured
-    /// height of the content column until two layouts agree (at most 2 s). While this runs the
-    /// Models view is shown whatever the saved choice, so the height never depends on it.
-    fn drive_fit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((_, summary)) = &self.summary else {
-            return;
-        };
-        if self.tab != Tab::Usage {
-            return;
-        }
-        match self.fit {
-            Fit::Done => {}
-            Fit::Pending => {
-                self.fit = Fit::Measuring {
-                    since: Instant::now(),
-                    last: 0.0,
-                    stable: 0,
-                };
-                fit_window(window, cx, estimate_height(summary.models.len()));
-                self.renotify(cx, &[150, 400, 900, 1600]);
-            }
-            Fit::Measuring {
-                since,
-                last,
-                stable,
-            } => {
-                let timed_out = since.elapsed() >= Duration::from_secs(2);
-                let h = self
-                    .scroll
-                    .bounds_for_item(0)
-                    .map_or(0.0, |b| f32::from(b.size.height));
-                if h <= 0.0 && !timed_out {
-                    return;
-                }
-                let target = title_bar::HEIGHT + h;
-                if h > 0.0 && (target - last).abs() > 0.5 && !timed_out {
-                    self.fit = Fit::Measuring {
-                        since,
-                        last: target,
-                        stable: 0,
-                    };
-                    fit_window(window, cx, target);
-                    self.renotify(cx, &[150, 400]);
-                } else if stable >= 1 || timed_out {
-                    self.fit = Fit::Done;
-                    self.renotify(cx, &[30]);
-                } else {
-                    self.fit = Fit::Measuring {
-                        since,
-                        last,
-                        stable: stable + 1,
-                    };
-                    self.renotify(cx, &[120]);
-                }
-            }
         }
     }
 }
@@ -517,7 +483,8 @@ impl Render for StatsWindow {
         let prefs: StatsSettings = self.state.read(cx).settings.stats.clone();
         let on_limits = self.tab == Tab::Limits;
         let on_overview = self.tab == Tab::Overview;
-        if on_overview {
+        // The analysis also feeds the sidebar badges, so it runs whatever page is shown.
+        {
             let state = self.state.clone();
             self.overview.ensure(&state, cx);
         }
@@ -548,34 +515,34 @@ impl Render for StatsWindow {
             );
         }
 
-        self.drive_fit(window, cx);
-        // While the height is being fitted the Models view is shown whatever was saved.
-        let view = if matches!(self.fit, Fit::Done) {
-            prefs.breakdown
-        } else {
-            StatsBreakdown::Models
-        };
+        // Switching pages never resizes the window (owner rule): the one-time height fit of the
+        // former Statistics window is gone.
+        let view = prefs.breakdown;
 
         // ----- title bar -----
-        let tabs = seg(
-            "tab",
-            &[
-                (Tab::Overview, "Overview"),
-                (Tab::Limits, "Limits now"),
-                (Tab::Usage, "Tokens & cost"),
-            ],
-            &self.tab,
-            &t,
-            {
-                let me = me.clone();
-                move |v, cx| {
-                    me.update(cx, |this, cx| {
-                        this.tab = v;
-                        cx.notify();
-                    })
-                }
-            },
-        );
+        let on_settings_side = self.section == Section::Settings;
+        let page_name: String = if on_settings_side {
+            self.settings.read(cx).active_menu().to_string()
+        } else {
+            match self.tab {
+                Tab::Overview => self
+                    .overview
+                    .open
+                    .map_or("Overview", overview::topic_name)
+                    .to_string(),
+                Tab::Limits => "Limits now".into(),
+                Tab::Usage => "Tokens & cost".into(),
+            }
+        };
+        let crumb = div()
+            .window_control_area(gpui::WindowControlArea::Drag)
+            .h_full()
+            .flex()
+            .items_center()
+            .text_sm()
+            .text_color(t.muted)
+            .child(format!("· {page_name}"))
+            .into_any_element();
         let status = |text: &'static str| {
             div()
                 .text_xs()
@@ -647,7 +614,10 @@ impl Render for StatsWindow {
                 })
                 .into_any_element(),
         );
-        let bar = title_bar::bar("stats-bar", "AI SubHub", &t, window, Some(tabs), trailing);
+        if on_settings_side {
+            trailing.clear();
+        }
+        let bar = title_bar::bar("main-bar", "AI SubHub", &t, window, Some(crumb), trailing);
 
         // ----- body -----
         let price_note = {
@@ -665,13 +635,13 @@ impl Render for StatsWindow {
         let body: AnyElement = if on_overview {
             let open_settings: overview::OpenSettings = {
                 let state = self.state.clone();
-                let on_settings = self.on_settings.clone();
+                let me = me.clone();
                 Rc::new(move |target, cx: &mut gpui::App| {
                     state.update(cx, |s, cx| {
                         s.pending_settings_page = Some(target);
                         cx.notify();
                     });
-                    on_settings(cx);
+                    me.update(cx, |this, cx| this.show_settings(cx));
                 })
             };
             let ctx = overview::Ctx {
@@ -699,7 +669,7 @@ impl Render for StatsWindow {
                     })
                 })
             };
-            let open = self.prices_open && matches!(self.fit, Fit::Done);
+            let open = self.prices_open;
             let prices = PriceInfo {
                 note: price_note,
                 open,
@@ -721,6 +691,46 @@ impl Render for StatsWindow {
                 .into_any_element()
         };
 
+        let stats_pane = div()
+            .relative()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .child(
+                div()
+                    .id("stats-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .child(
+                        // Right padding = scrollbar gutter (the bar overlays it), so
+                        // the layout never shifts when the bar appears.
+                        div()
+                            .w_full()
+                            .max_w(px(WIDTH))
+                            .mx_auto()
+                            .pl(px(PAD))
+                            .pr(px(PAD + GUTTER))
+                            .pt(px(16.0))
+                            .pb(px(20.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(14.0))
+                            .child(body),
+                    ),
+            )
+            .vertical_scrollbar(&self.scroll)
+            .children(overlay);
+        let content: AnyElement = if on_settings_side {
+            div()
+                .flex_1()
+                .min_w_0()
+                .h_full()
+                .child(self.settings.clone())
+                .into_any_element()
+        } else {
+            stats_pane.into_any_element()
+        };
         div()
             .size_full()
             .flex()
@@ -731,35 +741,129 @@ impl Render for StatsWindow {
             .child(bar)
             .child(
                 div()
-                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .child(
-                        div()
-                            .id("stats-scroll")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            .child(
-                                // Right padding = scrollbar gutter (the bar overlays it), so
-                                // the layout never shifts when the bar appears.
-                                div()
-                                    .w_full()
-                                    .max_w(px(WIDTH))
-                                    .mx_auto()
-                                    .pl(px(PAD))
-                                    .pr(px(PAD + GUTTER))
-                                    .pt(px(16.0))
-                                    .pb(px(20.0))
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(14.0))
-                                    .child(body),
-                            ),
-                    )
-                    .vertical_scrollbar(&self.scroll)
-                    .children(overlay),
+                    .flex()
+                    .child(self.sidebar(&t, cx))
+                    .child(content),
             )
+    }
+}
+
+/// Sidebar width.
+const NAV_W: f32 = 210.0;
+/// The main window's default width: the statistics content keeps its 1000 px next to the sidebar.
+pub const WINDOW_W: f32 = WIDTH + NAV_W;
+
+impl StatsWindow {
+    /// Insights, Data, Settings (owner-approved mockup `merged.html`, 2026-11-08).
+    fn sidebar(&self, t: &Tokens, cx: &mut Context<Self>) -> AnyElement {
+        let me = cx.entity();
+        let stats = self.section == Section::Stats;
+        let group = |text: &'static str, first: bool| {
+            div()
+                .px(px(10.0))
+                .pt(px(if first { 4.0 } else { 14.0 }))
+                .pb(px(4.0))
+                .text_size(px(11.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(t.faint)
+                .child(text)
+        };
+        let item = |id: SharedString, label: String, active: bool, badge: Option<AnyElement>| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(6.0))
+                .px(px(10.0))
+                .py(px(6.0))
+                .rounded(px(8.0))
+                .text_size(px(13.0))
+                .cursor_pointer()
+                .when(active, |d| {
+                    d.bg(t.bg)
+                        .text_color(t.text)
+                        .font_weight(FontWeight::SEMIBOLD)
+                })
+                .when(!active, |d| {
+                    d.text_color(t.muted)
+                        .hover(|s| s.bg(t.surface_hover).text_color(t.text))
+                })
+                .child(div().min_w_0().truncate().child(label))
+                .children(badge)
+        };
+        let mut nav = div()
+            .id("main-nav")
+            .w(px(NAV_W))
+            .flex_none()
+            .h_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(1.0))
+            .p(px(10.0))
+            .bg(t.surface)
+            .border_r_1()
+            .border_color(t.border)
+            .child(group("INSIGHTS", true));
+        let pages: [Option<TipRow>; 5] = [
+            None,
+            Some(TipRow::Plans),
+            Some(TipRow::Windows),
+            Some(TipRow::Renewals),
+            Some(TipRow::Usage),
+        ];
+        for (i, page) in pages.into_iter().enumerate() {
+            let active = stats && self.tab == Tab::Overview && self.overview.open == page;
+            let label = page.map_or("Overview", overview::topic_name).to_string();
+            let badge = page.and_then(|r| overview::nav_badge(&self.overview, r, t));
+            let me = me.clone();
+            nav = nav.child(
+                item(format!("nav-ins-{i}").into(), label, active, badge).on_click(
+                    move |_, _, cx| me.update(cx, |this, cx| this.show_stats(Some(page), cx)),
+                ),
+            );
+        }
+        nav = nav.child(group("DATA", false));
+        for (i, (tab, label)) in [(Tab::Limits, "Limits now"), (Tab::Usage, "Tokens & cost")]
+            .into_iter()
+            .enumerate()
+        {
+            let active = stats && self.tab == tab;
+            let me = me.clone();
+            nav = nav.child(
+                item(format!("nav-data-{i}").into(), label.into(), active, None).on_click(
+                    move |_, _, cx| {
+                        me.update(cx, |this, cx| {
+                            this.section = Section::Stats;
+                            this.tab = tab;
+                            cx.notify();
+                        })
+                    },
+                ),
+            );
+        }
+        nav = nav.child(group("SETTINGS", false));
+        let current = self.settings.read(cx).active_menu();
+        for (i, (label, target)) in MENU_TARGETS.into_iter().enumerate() {
+            let active = !stats && current == label;
+            let me = me.clone();
+            let state = self.state.clone();
+            nav = nav.child(
+                item(format!("nav-set-{i}").into(), label.into(), active, None).on_click(
+                    move |_, _, cx| {
+                        state.update(cx, |s, cx| {
+                            s.pending_settings_page = Some(target);
+                            cx.notify();
+                        });
+                        me.update(cx, |this, cx| this.show_settings(cx));
+                    },
+                ),
+            );
+        }
+        nav.into_any_element()
     }
 }
 
@@ -769,40 +873,6 @@ pub const WIDTH: f32 = 1000.0 + GUTTER;
 const PAD: f32 = 20.0;
 /// Right gutter reserved for the overlay scrollbar.
 const GUTTER: f32 = 12.0;
-
-/// Sizes the window to a client height (clamped to the work area, centred): GPUI resizes first so
-/// its viewport follows, then the window is moved.
-fn fit_window(window: &mut Window, cx: &mut gpui::App, height: f32) {
-    window.defer(cx, move |window, cx| {
-        let Some(((w, h), (x, y))) = crate::window_style::fit_plan(window, WIDTH, height) else {
-            return;
-        };
-        window.resize(gpui::size(px(w), px(h)));
-        window.defer(cx, move |window, _| {
-            crate::window_style::move_outer(window, x, y);
-            window.refresh();
-        });
-    });
-}
-
-/// First guess of the client height for the Models view with `models` rows, before the content
-/// has been measured: title bar, padding, tiles, by-type card, breakdown header, chart card,
-/// model table with two group rows.
-fn estimate_height(models: usize) -> f32 {
-    46.0 + 16.0
-        + 20.0
-        + 112.0
-        + 14.0
-        + 190.0
-        + 14.0
-        + 30.0
-        + 14.0
-        + 262.0
-        + 14.0
-        + 76.0
-        + 28.0
-        + 32.0 * (models.clamp(1, 14) as f32 + 2.0)
-}
 
 // ---------- Usage view ----------
 

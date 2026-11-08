@@ -36,7 +36,6 @@ use gpui::{
 use gpui_component::Root;
 
 use popover::Popover;
-use settings_window::SettingsWindow;
 use state::AppState;
 use theme::Tokens;
 use tray::{Tray, TrayEvent};
@@ -49,8 +48,9 @@ thread_local! {
 struct Shell {
     tray: Tray,
     popover: Option<WindowHandle<Root>>,
-    settings: Option<WindowHandle<Root>>,
+    /// The main window (Statistics and Settings, owner 2026-11-08) and its view.
     stats: Option<WindowHandle<Root>>,
+    main_view: Option<gpui::WeakEntity<stats_window::StatsWindow>>,
     /// Always-visible taskbar displays: monitor id, window, and the style it was opened with.
     taskbar: Vec<(
         String,
@@ -156,8 +156,8 @@ fn main() {
             let shell: ShellRef = Rc::new(RefCell::new(Shell {
                 tray,
                 popover: None,
-                settings: None,
                 stats: None,
+                main_view: None,
                 taskbar: Vec::new(),
                 closed_at: None,
                 state: state.clone(),
@@ -307,13 +307,14 @@ fn is_open(handle: Option<WindowHandle<Root>>, cx: &mut App) -> bool {
 
 /// What keeps an automatic restart waiting right now.
 fn busy_now(shell: &ShellRef, cx: &mut App) -> subhub_core::update::Busy {
-    let (popover, settings, stats, state) = {
+    let (popover, stats, state) = {
         let s = shell.borrow();
-        (s.popover, s.settings, s.stats, s.state.clone())
+        (s.popover, s.stats, s.state.clone())
     };
     let popover_open = is_open(popover, cx);
-    let settings_open = is_open(settings, cx);
+    // Settings and Statistics are one window now.
     let stats_open = is_open(stats, cx);
+    let settings_open = stats_open;
     let s = state.read(cx);
     subhub_core::update::Busy {
         popover_open,
@@ -583,100 +584,89 @@ fn raise(window: &mut gpui::Window) {
     }
 }
 
-/// Opens (or raises) the Statistics window and starts a scan.
+/// Opens (or raises) the main window on the statistics side and starts a scan.
 fn open_stats(shell: &ShellRef, cx: &mut App) {
+    open_main(shell, stats_window::Section::Stats, cx);
+}
+
+/// Opens (or raises) the main window on the settings side, on
+/// `AppState::pending_settings_page` (General when nothing asked for a page).
+fn open_settings(shell: &ShellRef, cx: &mut App) {
     let state = shell.borrow().state.clone();
-    let existing = shell.borrow().stats;
+    state.update(cx, |s, _| {
+        if s.pending_settings_page.is_none() {
+            s.pending_settings_page = Some(state::SettingsTarget::General);
+        }
+    });
+    open_main(shell, stats_window::Section::Settings, cx);
+}
+
+/// The one main window (owner, 2026-11-08: Statistics and Settings share one window and
+/// sidebar; the entry point decides the page).
+fn open_main(shell: &ShellRef, section: stats_window::Section, cx: &mut App) {
+    let state = shell.borrow().state.clone();
+    let (existing, view) = {
+        let s = shell.borrow();
+        (s.stats, s.main_view.clone())
+    };
     if let Some(h) = existing
         && h.update(cx, |_, window, _| raise(window)).is_ok()
     {
-        state.update(cx, |s, cx| s.start_scan(cx));
+        if let Some(v) = view.and_then(|v| v.upgrade()) {
+            v.update(cx, |w, cx| match section {
+                stats_window::Section::Stats => w.show_stats(None, cx),
+                stats_window::Section::Settings => w.show_settings(cx),
+            });
+        }
+        if section == stats_window::Section::Stats {
+            state.update(cx, |s, cx| s.start_scan(cx));
+        }
         return;
     }
     let border = border_color(&state, cx);
     let height = demo::stats_height().unwrap_or(760.0);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::centered(
-            size(px(stats_window::WIDTH), px(height)),
+            size(px(stats_window::WINDOW_W), px(height)),
             cx,
         )),
         // No system caption: the merged title bar (title_bar.rs) is drawn by the window itself.
         // The title stays for the taskbar and alt-tab.
         titlebar: Some(gpui::TitlebarOptions {
-            title: Some("AI SubHub · Statistics".into()),
+            title: Some("AI SubHub".into()),
             appears_transparent: true,
             ..Default::default()
         }),
-        window_min_size: Some(size(px(760.0), px(480.0))),
+        window_min_size: Some(size(px(860.0), px(480.0))),
         icon: logo::window_icon(),
         show: !demo::hidden(),
         focus: !demo::hidden(),
         ..Default::default()
     };
     let view_state = state.clone();
-    // Overview links ("Account settings…", hub steering) open Settings on a page.
-    let on_settings: Rc<dyn Fn(&mut App)> = {
-        let shell = shell.clone();
-        Rc::new(move |cx: &mut App| open_settings(&shell, cx))
-    };
-    if let Ok(h) = cx.open_window(options, |window, cx| {
-        let view = cx.new(|cx| stats_window::StatsWindow::new(view_state, on_settings, cx));
-        cx.new(|cx| Root::new(view, window, cx))
-    }) {
-        let _ = h.update(cx, |_, window, cx| {
-            window_style::round(window, border);
-            present(window, cx, stats_window::WIDTH, height);
-        });
-        shell.borrow_mut().stats = Some(h);
-        state.update(cx, |s, cx| s.start_scan(cx));
-    }
-}
-
-fn open_settings(shell: &ShellRef, cx: &mut App) {
-    let existing = shell.borrow().settings;
-    if let Some(h) = existing
-        && h.update(cx, |_, window, _| raise(window)).is_ok()
-    {
-        return;
-    }
-    let state = shell.borrow().state.clone();
-    let border = border_color(&state, cx);
-    let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(900.0), px(640.0)), cx)),
-        // No system caption: the merged title bar (title_bar.rs) is drawn by the window itself.
-        titlebar: Some(gpui::TitlebarOptions {
-            title: Some("AI SubHub · Settings".into()),
-            appears_transparent: true,
-            ..Default::default()
-        }),
-        window_min_size: Some(size(px(640.0), px(420.0))),
-        icon: logo::window_icon(),
-        show: !demo::hidden(),
-        focus: !demo::hidden(),
-        ..Default::default()
-    };
     let quit_state = state.clone();
-    // General → Warm-up "Set up…" opens Statistics on the 5-hour windows row.
-    let on_stats: Rc<dyn Fn(&mut App)> = {
-        let shell = shell.clone();
-        Rc::new(move |cx: &mut App| open_stats(&shell, cx))
-    };
+    let mut created: Option<gpui::WeakEntity<stats_window::StatsWindow>> = None;
     if let Ok(h) = cx.open_window(options, |window, cx| {
-        // The window's close button follows General → Close button: only the window closes
-        // (SubHub keeps running in the tray), or SubHub quits completely.
+        // The close button follows General → Close button: only the window closes (SubHub keeps
+        // running in the tray), or SubHub quits completely.
         window.on_window_should_close(cx, move |_, cx| {
             if quit_state.read(cx).display().close_quits {
                 cx.quit();
             }
             true
         });
-        let view = cx.new(|cx| SettingsWindow::new(state, on_stats, window, cx));
+        let view = cx.new(|cx| stats_window::StatsWindow::new(view_state, section, window, cx));
+        created = Some(view.downgrade());
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         let _ = h.update(cx, |_, window, cx| {
             window_style::round(window, border);
-            present(window, cx, 900.0, 640.0);
+            present(window, cx, stats_window::WINDOW_W, height);
         });
-        shell.borrow_mut().settings = Some(h);
+        let mut s = shell.borrow_mut();
+        s.stats = Some(h);
+        s.main_view = created;
+        drop(s);
+        state.update(cx, |s, cx| s.start_scan(cx));
     }
 }

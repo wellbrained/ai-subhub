@@ -316,41 +316,6 @@ pub fn round(window: &Window, border: Hsla) {
     }
 }
 
-/// Plans a client area of `width` x `height` logical px (height cut to the monitor work area minus
-/// a margin), centred: the logical client size to give GPUI and the outer top-left in physical
-/// px. GPUI must do the resizing (its viewport follows its own `resize`), then `move_to`.
-pub fn fit_plan(window: &Window, width: f32, height: f32) -> Option<((f32, f32), (i32, i32))> {
-    use windows::Win32::Foundation::RECT;
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, GetWindowRect};
-    let hwnd = hwnd(window)?;
-    let s = window.scale_factor();
-    unsafe {
-        let (mut outer, mut client) = (RECT::default(), RECT::default());
-        GetWindowRect(hwnd, &mut outer).ok()?;
-        GetClientRect(hwnd, &mut client).ok()?;
-        let mut info = MONITORINFO {
-            cbSize: size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        if !GetMonitorInfoW(mon, &mut info).as_bool() {
-            return None;
-        }
-        let work = info.rcWork;
-        let extra_w = (outer.right - outer.left) - (client.right - client.left);
-        let extra_h = (outer.bottom - outer.top) - (client.bottom - client.top);
-        let margin = (24.0 * s) as i32;
-        let w = ((width * s).round() as i32 + extra_w).min(work.right - work.left - margin);
-        let h = ((height * s).round() as i32 + extra_h).min(work.bottom - work.top - margin);
-        let x = work.left + (work.right - work.left - w) / 2;
-        let y = work.top + (work.bottom - work.top - h) / 2;
-        Some((((w - extra_w) as f32 / s, (h - extra_h) as f32 / s), (x, y)))
-    }
-}
-
 /// Top-left of the client area in physical screen px.
 pub fn client_origin(window: &Window) -> Option<(i32, i32)> {
     use windows::Win32::Foundation::POINT;

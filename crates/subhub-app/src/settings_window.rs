@@ -524,29 +524,6 @@ impl SettingsWindow {
     }
 }
 
-/// One menu entry (caller adds the content).
-fn nav_item(id: impl Into<gpui::ElementId>, active: bool, t: &Tokens) -> gpui::Stateful<gpui::Div> {
-    div()
-        .id(id)
-        .flex()
-        .items_center()
-        .gap_2()
-        .px_3()
-        .py(px(6.0))
-        .rounded(px(8.0))
-        .text_sm()
-        .cursor_pointer()
-        .when(active, |d| {
-            d.bg(t.bg)
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(t.text)
-        })
-        .when(!active, |d| {
-            d.text_color(t.muted)
-                .hover(|s| s.bg(t.surface_hover).text_color(t.text))
-        })
-}
-
 /// The page a request from another window ("Manage projects…", first start) opens.
 fn target_page(target: SettingsTarget) -> Page {
     match target {
@@ -561,39 +538,37 @@ fn target_page(target: SettingsTarget) -> Page {
     }
 }
 
+impl SettingsWindow {
+    /// The label of the menu item for the page shown (the main window's sidebar highlight).
+    pub(crate) fn active_menu(&self) -> &'static str {
+        let page = self.page.menu();
+        MENU.iter()
+            .find(|(p, _)| *p == page)
+            .map_or("General", |(_, l)| *l)
+    }
+}
+
+/// The settings pages for the main window's sidebar: label and where it goes.
+pub(crate) const MENU_TARGETS: [(&str, SettingsTarget); 6] = [
+    ("General", SettingsTarget::General),
+    ("Appearance", SettingsTarget::Appearance),
+    ("Accounts", SettingsTarget::Accounts),
+    ("Hub", SettingsTarget::Hub),
+    ("Projects", SettingsTarget::Projects),
+    ("About & updates", SettingsTarget::About),
+];
+
 impl Render for SettingsWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let d = self.state.read(cx).display().clone();
         let dark = theme::is_dark(d.theme, cx);
         let t = Tokens::new(dark, &d.accent);
-        let bar = crate::title_bar::bar("settings-bar", "Settings", &t, window, None, vec![]);
-
         // An open account page whose account vanished falls back to the account list.
         if let Page::Account(id) = self.page
             && self.state.read(cx).account(id).is_none()
         {
             self.page = Page::Accounts;
         }
-
-        // Six fixed items, no scrolling (owner, 2026-11-07).
-        let mut menu = div().flex().flex_col().gap(px(2.0));
-        for (page, label) in MENU {
-            menu = menu.child(
-                nav_item(label, self.page.menu() == page, &t)
-                    .child(label)
-                    .on_click(cx.listener(move |this, _, window, cx| this.go(page, window, cx))),
-            );
-        }
-        let nav = div()
-            .w(px(200.0))
-            .flex_none()
-            .flex()
-            .flex_col()
-            .p_3()
-            .bg(t.surface)
-            .border_r_1()
-            .border_color(t.border)
-            .child(menu);
 
         let content: AnyElement = match self.page {
             Page::General => self.general(&t, cx).into_any_element(),
@@ -607,42 +582,35 @@ impl Render for SettingsWindow {
         };
         let toast = self.toast(&t, cx);
 
+        // Only the page: the main window draws the title bar and the sidebar (owner, 2026-11-08:
+        // Statistics and Settings are one window). Content scrolls; a toast floats over its
+        // bottom edge.
+        let _ = window;
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
             .bg(t.bg)
             .text_color(t.text)
-            .child(bar)
             .child(
-                div().flex_1().min_h_0().flex().child(nav).child(
-                    // Content scrolls; a toast floats over its bottom edge (a floating toast).
-                    div()
-                        .relative()
-                        .flex_1()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .child(
-                            div()
-                                .id("content")
-                                .flex_1()
-                                .min_h_0()
-                                .overflow_y_scroll()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_6()
-                                        .p_8()
-                                        .pb(px(72.0))
-                                        .max_w(px(640.0))
-                                        .child(content),
-                                ),
-                        )
-                        .when_some(toast, |d, toast| d.child(toast)),
-                ),
+                div()
+                    .id("content")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_6()
+                            .p_8()
+                            .pb(px(72.0))
+                            .max_w(px(680.0))
+                            .child(content),
+                    ),
             )
+            .when_some(toast, |d, toast| d.child(toast))
     }
 }
 
@@ -1111,7 +1079,7 @@ impl SettingsWindow {
                 row(
                     "Warm-up",
                     Some(&hint),
-                    button("warmup-setup", "Set up in Statistics…", t, false).on_click(
+                    button("warmup-setup", "Open 5-hour windows", t, false).on_click(
                         move |_, _, cx| {
                             state.update(cx, |s, _| {
                                 s.pending_overview_row =

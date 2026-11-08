@@ -13,7 +13,7 @@ AI SubHub, a Windows tray app in Rust + GPUI. It started as a rewrite of the ear
 - Behavior rules match the C# app: secrets stay in provider-owned profiles/keyrings or Credential Manager, never in `settings.json`, logs or errors; missing data means unavailable; failed/overdue readings stay visibly stale; reset countdowns never refill quotas locally; provider cooldowns are respected and persisted; Claude's undocumented usage endpoint is parsed in one isolated module.
 - The CLIProxyAPI hub: list accounts and read usage through its management API (`api-call` with `$TOKEN$`), never its auth files. The only write is hub steering: each account's credential priority (ADR 0001, refinements); remember and restore original priorities. Never bench, add, sign in or change config.
 - Own settings file `%LOCALAPPDATA%\AI SubHub\settings.json`; standalone: it never reads the C# app's files (the import was removed, owner 2026-11-07).
-- Settings window: category menu on the left, one content column. Main surface is the tray popover.
+- Main window (Statistics and Settings in one, 2026-11-08): sidebar with Insights / Data / Settings on the left, one content column. Main surface is the tray popover.
 - Version starts at 0.1.0 in `Cargo.toml`; patch bump per deployed change.
 
 ## Feature map

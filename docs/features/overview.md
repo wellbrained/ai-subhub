@@ -14,7 +14,7 @@ The popover answers "how much is left now". The Overview answers what a user doe
 
 ## Decisions (owner, 2026-11-07)
 
-- Overview is a new first tab of the Statistics window and its default; "Limits now" (today's Limits board) and "Tokens & cost" (today's Usage tab) stay behind it.
+- Overview is a new first tab of the Statistics window and its default; "Limits now" (today's Limits board) and "Tokens & cost" (today's Usage tab) stay behind it. *Changed 2026-11-08:* Statistics and Settings became one main window with a sidebar (see "Main window" below); the topics are pages, not expanding rows.
 - Calm layout, everything reachable without scrolling through charts: one verdict sentence, four numbers, the top tip ("N more tips"), then one row per topic that states its answer in words and expands (one open at a time). No cards; space, headings and hairlines only. Messages carry a type icon: tip (lightbulb/clock), danger (triangle), good (check), info (i), saving ($).
 - "Where usage goes" splits usage by task kind (from the tools each step used), main thread vs subagents, plus Project, Thread and Model views.
 - Warm-up becomes a real feature that runs by itself; the 5-hour row explains how windows and resets work and lets the user set their own start.
@@ -134,3 +134,15 @@ Step 4 notes (2026-11-08), where it differs from or adds to the plan:
 - The user always decides (owner, 2026-11-08: "I want the feature, doesn't mean I want it starting by itself"): off by default, nothing runs and no task exists until the user confirms the setup dialog. The warm-up tip's "Set it up…" and the row's "Set up warm-up…" open the dialog filled in with the suggestion (time, accounts, weekdays, Wake the PC off); "Turn on" applies it, Cancel / a click outside leaves everything as it was. With the warm-up on, the row shows it in words with the last runs, "Start a window now", "Change…" (same dialog, "Save") and "Turn off".
 - UI: the Warm-up column replaces "Set your own start" on the right (that text moved under the numbers on the left and, with the warm-up on, says what it does instead). In the dialog the time steps by 15 min with "Use 7:00" when the suggestion differs; account chips for visible accounts with a 5-hour window, hub-only ones disabled with "needs a CLI profile on this PC"; "Turn on" needs a day and an account. The collapsed row shows "Warm-up 7:00 weekdays" (clock, green) instead of the waited time, and the warm-up tip is not shown while it is on. Settings → General has a Warm-up row with its state and "Set up in Statistics…" (opens the Overview with the row open, `AppState::pending_overview_row`).
 - Demo: the warm-up starts off (the suggestion shows, as for a real user); `--demo-open-row warmup-dialog` opens the setup dialog for screenshots. Turned on in the demo, scheduled runs and "Start a window now" only write "Demo: nothing was started".
+
+## Main window (owner, 2026-11-08)
+
+The owner did not like the expanding rows ("accordion", used nowhere else). Of three mockups (topic tabs, sidebar, drill-in pages; `layouts.html`) the sidebar won, and then Settings joined it (`merged.html`): one window "AI SubHub" with a sidebar of three groups.
+
+- **Insights**: Overview (verdict, numbers, tips, one line per topic with a chevron) and one page per topic (Plans, 5-hour windows, Renewals, Where usage goes): title, the answer line with its note, then the details that used to open under the row. Badges: Plans = accounts with a verdict (red with one at its limit, else blue), 5-hour windows = waits while another account was free (red), Renewals = days to a renewal within 14 days.
+- **Data**: Limits now, Tokens & cost (the former tabs).
+- **Settings**: General, Appearance, Accounts, Hub, Projects, About & updates (the former Settings window's pages, drawn without its own bar and menu).
+- Entry points: Statistics (tray, popover) opens it on the statistics side (last page, Overview at first); Settings opens it on General or the page asked for (card menus: the account, Launch: Projects, first start: Add accounts). An open window just switches. Tips, "Account settings…" and Settings → General → Warm-up "Open 5-hour windows" switch pages inside it.
+- The title bar shows "AI SubHub · <page>"; the range switch, Copy as image and Rescan only on the statistics side. Default size 1222 x 760 (the statistics content keeps its 1000 px next to the 210 px sidebar); the former one-time height fit of the Statistics window is gone (switching pages never resizes). The close button follows General → Close button. Auto-update idle check: the main window counts as Settings and Statistics open.
+- Code: `stats_window.rs` is the main window (`Section`, `sidebar`, `show_stats` / `show_settings`), it owns the `SettingsWindow` entity; `main.rs` `open_main` (`open_stats` / `open_settings` call it). Demo: `--demo-open-row limits|usage` opens the data pages.
+
