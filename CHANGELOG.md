@@ -2,6 +2,10 @@
 
 Patch notes shown after an update (embedded in the exe). Each release gets `## X.Y.Z – date` and 3-6 short bullets. Work in progress goes under `## Unreleased` and is renamed when a version is released (`scripts/release.ps1` refuses a version without a section).
 
+## Unreleased
+
+- The taskbar badges no longer flicker on Alt+Tab or when switching windows. They step aside only for a fullscreen app such as a video or game, and only on that monitor.
+
 ## 0.1.7 – 2026-11-08
 
 - The tray icon's right-click menu now matches SubHub: dark or light theme, the app's font and icons, and arrow keys to move.

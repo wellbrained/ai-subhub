@@ -5,6 +5,7 @@
 mod assets;
 mod demo;
 mod fonts;
+mod foreground;
 mod format;
 mod hover_card;
 mod icons;
@@ -19,6 +20,7 @@ mod startup;
 mod state;
 mod stats_window;
 mod taskbar;
+mod taskbar_layout;
 mod theme;
 mod title_bar;
 mod tray;
@@ -128,6 +130,9 @@ fn main() {
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
             fonts::load(cx);
+            if !demo::hidden() {
+                taskbar_layout::start();
+            }
             fonts::apply(cx);
             let state = cx.new(|_| {
                 let mut s = AppState::load();

@@ -581,7 +581,7 @@ impl Render for TaskbarDisplay {
                 cx.listener(|this, _, window, cx| {
                     crate::hover_card::hide(cx);
                     this.drag = Some((cursor_x(), window.bounds().origin.x.as_f32(), false));
-                    this.drag_bar = taskbar_for(&this.monitor);
+                    this.drag_bar = taskbar_for(&this.monitor).map(|(bar, _)| bar);
                 }),
             )
             .on_mouse_move(cx.listener(|this, ev: &gpui::MouseMoveEvent, window, cx| {
@@ -657,10 +657,12 @@ fn physical_rect(window: &Window, b: Bounds<gpui::Pixels>) -> Option<subhub_core
     })
 }
 
-/// The taskbar on this monitor: rect (physical px), scale, main or not.
-fn taskbar_for(monitor: &str) -> Option<Bar> {
+/// The taskbar on this monitor: rect (physical px), scale, main or not, and its measured layout
+/// (`taskbar_layout`, None until first read).
+fn taskbar_for(monitor: &str) -> Option<(Bar, Option<crate::taskbar_layout::Layout>)> {
     let m = crate::monitors::find(monitor)?;
-    Some((m.taskbar_rect()?, m.scale, m.is_main))
+    let layout = m.taskbar.and_then(crate::taskbar_layout::get);
+    Some(((m.taskbar_rect()?, m.scale, m.is_main), layout))
 }
 
 fn tray_area_left() -> Option<i32> {
@@ -678,7 +680,8 @@ fn tray_area_left() -> Option<i32> {
 
 /// Logical bounds over this monitor's taskbar for the current settings.
 fn bounds_for(s: &AppState, monitor: &str) -> Option<Bounds<gpui::Pixels>> {
-    let (r, scale, is_main) = taskbar_for(monitor)?;
+    let ((r, scale, is_main), layout) = taskbar_for(monitor)?;
+    let layout = layout.unwrap_or_default();
     let height_phys = r.bottom - r.top;
     if height_phys <= 0 || (r.right - r.left) < (r.bottom - r.top) * 3 {
         return None; // vertical or hidden taskbar: not supported
@@ -696,18 +699,23 @@ fn bounds_for(s: &AppState, monitor: &str) -> Option<Bounds<gpui::Pixels>> {
     ) {
         // Dragged by the user: keep the same distance from the taskbar's right edge.
         (Some(offset), _) => right - offset - w,
-        // Right of the widgets button (weather), which is ~170 px wide on Windows 11.
-        (None, TaskbarPosition::Left) => r.left as f32 / scale + 176.0,
-        (None, TaskbarPosition::Right) if is_main => {
-            // Windows 11's XAML taskbar has no TrayNotifyWnd to measure on many builds; then
-            // assume ~380 px for tray icons + clock. The user can drag it into place.
-            let tray = tray_area_left()
-                .map(|l| l as f32 / scale)
-                .unwrap_or(right - 380.0);
-            tray - w - 8.0
+        // Right of the widgets button (weather): measured (owner, 2026-11-08: a 44 px icon on
+        // his PC, ~170 px with the weather text); without one, right of the taskbar's start.
+        (None, TaskbarPosition::Left) => match layout.widgets_right {
+            Some(wr) => wr as f32 / scale + 8.0,
+            None if layout.tray_left.is_some() => r.left as f32 / scale + 8.0,
+            None => r.left as f32 / scale + 176.0,
+        },
+        // Left of the tray area: TrayNotifyWnd on the main taskbar, else what UI Automation saw
+        // (the clock on other monitors); the old guesses only before the first read.
+        (None, TaskbarPosition::Right) => {
+            let measured = if is_main { tray_area_left() } else { None }.or(layout.tray_left);
+            match measured {
+                Some(l) => l as f32 / scale - w - 8.0,
+                None if is_main => right - 380.0 - w - 8.0,
+                None => right - 160.0 - w,
+            }
         }
-        // Other taskbars have no tray icons, only the clock (~160 px with show-desktop).
-        (None, TaskbarPosition::Right) => right - 160.0 - w,
     };
     let x = x.clamp(r.left as f32 / scale, right - w);
     Some(Bounds {
@@ -757,10 +765,22 @@ pub fn open(
             cx.new(|cx| TaskbarDisplay::new(state, monitor, on_click, window, cx))
         })
         .ok()?;
-    let _ = handle.update(cx, |_, window, _| crate::window_style::no_frame(window));
+    let raw = handle
+        .update(cx, |_, window, _| {
+            crate::window_style::no_frame(window);
+            crate::window_style::hwnd(window)
+        })
+        .ok()
+        .flatten();
+    if let Some(h) = raw {
+        crate::foreground::track(h);
+    }
     // Keep it above the taskbar, which comes to the front whenever it is clicked.
     cx.spawn(async move |cx| {
         let mut was_dark = taskbar_is_dark();
+        // Fullscreen checks in a row: hide only after two (a moment of a fullscreen-looking
+        // window, e.g. a game's loading screen or a window being dragged, does not blink it).
+        let mut fullscreen_seen = 0u8;
         loop {
             cx.background_executor().timer(Duration::from_secs(1)).await;
             let alive = handle.update(cx, |this, window, cx| {
@@ -777,14 +797,23 @@ pub fn open(
                 }
                 // Step aside for fullscreen videos, games and presentations; the taskbar is
                 // hidden there too. Otherwise stay above the taskbar.
-                if crate::window_style::fullscreen_app_in_front() {
-                    crate::window_style::set_visible(window, false);
+                // Only for a fullscreen app on this display's own monitor (owner, 2026-11-08).
+                if crate::window_style::fullscreen_app_over(window) {
+                    fullscreen_seen = fullscreen_seen.saturating_add(1);
                 } else {
+                    fullscreen_seen = 0;
+                }
+                if fullscreen_seen >= 2 {
+                    crate::window_style::set_visible(window, false);
+                } else if fullscreen_seen == 0 {
                     crate::window_style::set_visible(window, true);
                     crate::window_style::raise_topmost(window);
                 }
             });
             if alive.is_err() {
+                if let Some(h) = raw {
+                    crate::foreground::untrack(h);
+                }
                 break;
             }
         }
