@@ -285,6 +285,7 @@ impl Render for Popover {
             .flex_col()
             .bg(t.bg)
             .text_color(t.text)
+            .font_family(crate::fonts::family())
             .relative()
             // Corners, outline and shadow come from DWM (window_style::round).
             .child(self.header(s, &t))

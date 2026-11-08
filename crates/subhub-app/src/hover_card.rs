@@ -344,10 +344,9 @@ fn watch(g: u64, cx: &mut App) {
 /// Demo showcase (`showcase.rs`): the badge card of `account` as a plain view, with its size.
 pub fn showcase_card(
     state: Entity<AppState>,
-    account: Uuid,
+    source: Source,
     cx: &mut App,
 ) -> Option<(Entity<HoverCard>, f32, f32)> {
-    let source = Source::Badge(account);
     let card = card_for(state.read(cx), source)?;
     let (w, h) = (width_of(source), card_height(&card, source));
     Some((cx.new(|cx| HoverCard::new(state, source, cx)), w, h))
@@ -550,7 +549,7 @@ impl Render for HoverCard {
             .text_color(t.text)
             .text_size(px(12.0))
             .line_height(px(16.0))
-            .font_family("Segoe UI Variable Text");
+            .font_family(crate::fonts::family());
         if self.source == Source::Tray {
             let latest = card.accounts.iter().filter_map(|a| a.fetched_at).max();
             body = body.child(

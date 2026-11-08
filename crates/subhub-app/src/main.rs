@@ -4,6 +4,7 @@
 
 mod assets;
 mod demo;
+mod fonts;
 mod format;
 mod hover_card;
 mod icons;
@@ -123,6 +124,8 @@ fn main() {
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
+            fonts::load(cx);
+            fonts::apply(cx);
             let state = cx.new(|_| {
                 let mut s = AppState::load();
                 if let Some(theme) = demo_theme {
@@ -280,9 +283,10 @@ fn main() {
                     open_stats(&shell, cx);
                 } else if page == "popover" {
                     toggle_popover(&shell, Anchor::Tray, cx);
-                } else if page == "taskbar" && demo::hidden() {
-                    // README picture of the taskbar display and a hover card (showcase.rs).
-                    showcase::open(state.clone(), cx);
+                } else if (page == "taskbar" || page == "traycard") && demo::hidden() {
+                    // README picture of the taskbar display and a hover card (showcase.rs);
+                    // "traycard": the tray icon's card instead of a badge's.
+                    showcase::open(state.clone(), page == "traycard", cx);
                 }
             }
         });

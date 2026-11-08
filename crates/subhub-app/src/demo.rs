@@ -30,6 +30,18 @@ pub fn on() -> bool {
 static OPEN_ROW: OnceLock<String> = OnceLock::new();
 static STATS_HEIGHT: OnceLock<f32> = OnceLock::new();
 static HIDDEN: OnceLock<bool> = OnceLock::new();
+static FONT: OnceLock<String> = OnceLock::new();
+static FONT_FILE: OnceLock<String> = OnceLock::new();
+
+/// `--demo-font NAME`: font family for the popover and hover cards (font comparison shots).
+pub fn font() -> Option<&'static str> {
+    FONT.get().map(String::as_str)
+}
+
+/// `--demo-font-file PATH`: a font file to load first (fonts not installed on the PC).
+pub fn font_file() -> Option<&'static str> {
+    FONT_FILE.get().map(String::as_str)
+}
 
 /// `--demo-hidden`: screenshots without touching the desktop (owner, 2026-11-07: demo runs on
 /// the PC he works on). No tray icon, balloons, taskbar display or hover cards; windows open far
@@ -52,6 +64,12 @@ pub fn read_flags(args: &[String]) {
             .and_then(|i| args.get(i + 1).cloned())
     };
     let _ = HIDDEN.set(args.iter().any(|a| a == "--demo-hidden"));
+    if let Some(f) = value("--demo-font") {
+        let _ = FONT.set(f);
+    }
+    if let Some(f) = value("--demo-font-file") {
+        let _ = FONT_FILE.set(f);
+    }
     if let Some(row) = value("--demo-open-row") {
         let _ = OPEN_ROW.set(row);
     }

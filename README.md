@@ -122,4 +122,6 @@ Built with Rust and [GPUI](https://www.gpui.rs/) (via `gpui-pre` and `gpui-compo
 
 Bug reports and focused pull requests are welcome. Please include your Windows version, the provider, the CLI version, steps to reproduce and a redacted error message. Keep tokens, credential files and private profile contents out of issues and screenshots (demo mode helps). Run `cargo test --workspace` and `cargo clippy --workspace --all-targets` before submitting.
 
+The app's font is [Geist](https://github.com/vercel/geist-font) by Vercel, under the SIL Open Font License 1.1 ([crates/subhub-app/assets/fonts/OFL.txt](crates/subhub-app/assets/fonts/OFL.txt)).
+
 AI SubHub is an independent project and is not affiliated with Anthropic or OpenAI.

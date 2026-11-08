@@ -14,6 +14,8 @@ use crate::taskbar::TaskbarDisplay;
 /// Window size (logical px).
 pub const WIDTH: f32 = 680.0;
 pub const HEIGHT: f32 = 270.0;
+/// Height with the tray icon's card (taller than a badge card).
+const TRAY_HEIGHT: f32 = 520.0;
 /// Height of the mock taskbar (Windows 11: 48 px).
 const BAR_H: f32 = 48.0;
 /// Room right of the display for tray icons and the clock.
@@ -23,19 +25,27 @@ pub struct Showcase {
     display: Entity<TaskbarDisplay>,
     display_w: f32,
     card: Option<(Entity<HoverCard>, f32, f32)>,
+    /// The card is the tray icon's (above the ring), not a badge's.
+    tray: bool,
 }
 
 impl Showcase {
-    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<AppState>, tray: bool, cx: &mut Context<Self>) -> Self {
         let display_w = crate::taskbar::width_for(state.read(cx));
         let display = cx.new(|cx| TaskbarDisplay::showcase(state.clone(), cx));
         // The card of the first account on the taskbar display (the one under the pointer).
         let first = crate::taskbar::shown_ids(state.read(cx)).into_iter().next();
-        let card = first.and_then(|id| crate::hover_card::showcase_card(state, id, cx));
+        let source = match (tray, first) {
+            (true, _) => Some(crate::hover_card::Source::Tray),
+            (false, Some(id)) => Some(crate::hover_card::Source::Badge(id)),
+            (false, None) => None,
+        };
+        let card = source.and_then(|s| crate::hover_card::showcase_card(state, s, cx));
         Self {
             display,
             display_w,
             card,
+            tray,
         }
     }
 }
@@ -99,10 +109,16 @@ impl Render for Showcase {
                     ),
             );
         if let Some((card, w, h)) = &self.card {
+            // Badge card above its badge; the tray card above the ring (second tray glyph).
+            let left = if self.tray {
+                (WIDTH - 12.0 - 100.0 - *w / 2.0).min(WIDTH - *w - 12.0)
+            } else {
+                (display_left - 24.0).max(12.0)
+            };
             root = root.child(
                 div()
                     .absolute()
-                    .left(px((display_left - 24.0).max(12.0)))
+                    .left(px(left))
                     .bottom(px(BAR_H + 10.0))
                     .w(px(*w))
                     .h(px(*h))
@@ -119,10 +135,11 @@ impl Render for Showcase {
 }
 
 /// Opens the showcase window off-screen (hidden demo runs only).
-pub fn open(state: Entity<AppState>, cx: &mut App) {
+pub fn open(state: Entity<AppState>, tray: bool, cx: &mut App) {
     use gpui::{TitlebarOptions, WindowBounds, WindowOptions, size};
+    let height = if tray { TRAY_HEIGHT } else { HEIGHT };
     let options = WindowOptions {
-        window_bounds: Some(WindowBounds::centered(size(px(WIDTH), px(HEIGHT)), cx)),
+        window_bounds: Some(WindowBounds::centered(size(px(WIDTH), px(height)), cx)),
         titlebar: Some(TitlebarOptions {
             title: Some("AI SubHub showcase".into()),
             appears_transparent: true,
@@ -132,7 +149,7 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
         focus: false,
         ..Default::default()
     };
-    if let Ok(h) = cx.open_window(options, |_, cx| cx.new(|cx| Showcase::new(state, cx))) {
+    if let Ok(h) = cx.open_window(options, |_, cx| cx.new(|cx| Showcase::new(state, tray, cx))) {
         let _ = h.update(cx, |_, window, cx| {
             crate::window_style::show_off_screen(
                 window,
@@ -140,7 +157,7 @@ pub fn open(state: Entity<AppState>, cx: &mut App) {
                 crate::demo::OFF_SCREEN,
                 crate::demo::OFF_SCREEN,
                 WIDTH,
-                HEIGHT,
+                height,
             );
         });
     }

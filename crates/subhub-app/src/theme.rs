@@ -139,6 +139,7 @@ pub fn apply_component_theme(dark: bool, window: Option<&mut Window>, cx: &mut A
         gpui_component::ThemeMode::Light
     };
     gpui_component::Theme::change(mode, window, cx);
+    crate::fonts::apply(cx);
     // Scrollbars are always visible when content scrolls (not only while scrolling); the
     // OS auto-hide setting would otherwise pick fading bars.
     gpui_component::Theme::set_scrollbar_mode(gpui_component::scroll::ScrollbarMode::Always, cx);
