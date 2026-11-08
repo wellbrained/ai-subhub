@@ -177,7 +177,11 @@ fn main() {
                 cx.spawn(async move |cx| {
                     loop {
                         cx.background_executor().timer(Duration::from_secs(3)).await;
-                        cx.update(|cx| sync_taskbar(&shell, cx));
+                        cx.update(|cx| {
+                            sync_taskbar(&shell, cx);
+                            // The tray mark follows the Windows mode (dark / light taskbar).
+                            shell.borrow_mut().tray.sync_theme();
+                        });
                     }
                 })
                 .detach();
@@ -273,6 +277,8 @@ fn main() {
                     open_settings(&shell, cx);
                 } else if page == "stats" {
                     open_stats(&shell, cx);
+                } else if page == "popover" {
+                    toggle_popover(&shell, Anchor::Tray, cx);
                 }
             }
         });
@@ -476,8 +482,10 @@ fn toggle_popover(shell: &ShellRef, anchor: Anchor, cx: &mut App) {
         })),
         titlebar: None,
         kind: WindowKind::PopUp,
-        focus: true,
-        show: true,
+        // Demo `--demo-hidden`: never shown or activated on the desktop (off-screen, captured
+        // with PrintWindow).
+        focus: !demo::hidden(),
+        show: !demo::hidden(),
         is_movable: false,
         is_resizable: false,
         is_minimizable: false,
@@ -513,9 +521,9 @@ fn toggle_popover(shell: &ShellRef, anchor: Anchor, cx: &mut App) {
         cx.new(|cx| Root::new(view, window, cx))
     });
     if let Ok(handle) = result {
-        let _ = handle.update(cx, |_, window, _| {
+        let _ = handle.update(cx, |_, window, cx| {
             window_style::round(window, border);
-            window.activate_window();
+            present(window, cx, popover::WIDTH, height);
         });
         shell.borrow_mut().popover = Some(handle);
     }

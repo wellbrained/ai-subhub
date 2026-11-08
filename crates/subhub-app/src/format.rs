@@ -64,21 +64,6 @@ pub fn ago(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::Duration;
-
-    #[test]
-    fn durations() {
-        let now = Utc::now();
-        assert_eq!(duration_until(now + Duration::minutes(73), now), "1h 13m");
-        assert_eq!(duration_until(now + Duration::hours(52), now), "2d 4h");
-        assert_eq!(duration_until(now + Duration::seconds(20), now), "1m");
-        assert_eq!(duration_until(now - Duration::minutes(1), now), "reset due");
-    }
-}
-
 /// Text that may not fit: cut off with "…", the full text in a tooltip on hover (owner,
 /// 2026-11-08: names that are cut off show in full on hover). `key` keeps the element id
 /// unique next to other clipped texts.
@@ -122,4 +107,19 @@ pub fn capped(key: &str, count: usize, row_h: f32, list: gpui::Div) -> gpui::Any
         // Room for the overlay scrollbar.
         .child(list.pr(gpui::px(14.0)))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+
+    #[test]
+    fn durations() {
+        let now = Utc::now();
+        assert_eq!(duration_until(now + Duration::minutes(73), now), "1h 13m");
+        assert_eq!(duration_until(now + Duration::hours(52), now), "2d 4h");
+        assert_eq!(duration_until(now + Duration::seconds(20), now), "1m");
+        assert_eq!(duration_until(now - Duration::minutes(1), now), "reset due");
+    }
 }

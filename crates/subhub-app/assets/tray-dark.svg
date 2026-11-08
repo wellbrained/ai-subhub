@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Hub ring bare mark (tray, title bar, popover header) for dark backgrounds: no tile, light centre. -->
+  <defs>
+    <linearGradient id="o" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff8a5c"/><stop offset="1" stop-color="#e2552a"/></linearGradient>
+    <linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#38bdf8"/><stop offset="1" stop-color="#2563eb"/></linearGradient>
+    <linearGradient id="y" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#facc15"/><stop offset="1" stop-color="#f59e0b"/></linearGradient>
+  </defs>
+  <g fill="none" stroke-width="12" stroke-linecap="round">
+    <path d="M42.33 12.58 A22 22 0 0 1 53.99 32.77" stroke="url(#o)"/>
+    <path d="M43.66 50.66 A22 22 0 0 1 20.34 50.66" stroke="url(#b)"/>
+    <path d="M10.01 32.77 A22 22 0 0 1 21.67 12.58" stroke="url(#y)"/>
+  </g>
+  <circle cx="32" cy="32" r="9" fill="#ffffff"/>
+</svg>

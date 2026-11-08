@@ -2,6 +2,10 @@
 
 Patch notes shown after an update (embedded in the exe). Each release gets `## X.Y.Z – date` and 3-6 short bullets. Work in progress goes under `## Unreleased` and is renamed when a version is released (`scripts/release.ps1` refuses a version without a section).
 
+## Unreleased
+
+- New logo: a ring of three accounts around one hub. The tray icon follows a dark or light taskbar, the title bar and popover header show it too.
+
 ## 0.1.3 – 2026-11-08
 
 - One main window for Statistics and Settings, with a sidebar: Insights (Overview, Plans & renewals, Usage patterns), Data (Limits now, Tokens & cost) and Settings.

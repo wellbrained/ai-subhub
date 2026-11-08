@@ -51,6 +51,8 @@ static SENDER: OnceLock<UnboundedSender<TrayEvent>> = OnceLock::new();
 pub struct Tray {
     hwnd: HWND,
     icon: HICON,
+    /// Which tray mark is shown: for a dark taskbar or a light one.
+    dark: bool,
     /// No notify icon (demo `--demo-hidden`): tips and balloons are skipped.
     hidden: bool,
 }
@@ -92,7 +94,8 @@ impl Tray {
                 Some(hinstance.into()),
                 None,
             )?;
-            let icon = logo_icon()?;
+            let dark = crate::taskbar::taskbar_is_dark();
+            let icon = logo_icon(dark)?;
             let mut nid = base_nid(hwnd);
             nid.uFlags = NIF_ICON | NIF_MESSAGE | tip_flags(rich);
             nid.uCallbackMessage = WM_TRAY;
@@ -105,7 +108,12 @@ impl Tray {
                 nid.Anonymous.uVersion = NOTIFYICON_VERSION_4;
                 Shell_NotifyIconW(NIM_SETVERSION, &nid).ok()?;
             }
-            Ok(Self { hwnd, icon, hidden })
+            Ok(Self {
+                hwnd,
+                icon,
+                dark,
+                hidden,
+            })
         }
     }
 
@@ -122,6 +130,27 @@ impl Tray {
             Shell_NotifyIconW(NIM_MODIFY, &nid).ok()?;
         }
         Ok(())
+    }
+
+    /// Swaps the tray mark when the Windows mode (taskbar) switched between dark and light.
+    pub fn sync_theme(&mut self) {
+        let dark = crate::taskbar::taskbar_is_dark();
+        if dark == self.dark || self.hidden {
+            return;
+        }
+        let Ok(icon) = logo_icon(dark) else { return };
+        unsafe {
+            let mut nid = base_nid(self.hwnd);
+            nid.uFlags = NIF_ICON;
+            nid.hIcon = icon;
+            if Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() {
+                let _ = DestroyIcon(self.icon);
+                self.icon = icon;
+                self.dark = dark;
+            } else {
+                let _ = DestroyIcon(icon);
+            }
+        }
     }
 
     /// A balloon / toast notice from the tray icon (billing reminders, run-out nudge); a click on
@@ -368,9 +397,9 @@ pub fn dump_rings(path: &str, rings: &[(f32, [u8; 3])]) -> std::io::Result<()> {
 }
 
 /// Draws an anti-aliased ring (track + filled arc from 12 o'clock, clockwise) into a 32x32 icon.
-/// The static app logo as a 32x32 icon (Windows scales it for the tray).
-fn logo_icon() -> anyhow::Result<HICON> {
-    let rgba = crate::logo::rgba(32);
+/// The tray mark as a 32x32 icon (Windows scales it for the tray), for a dark or light taskbar.
+fn logo_icon(dark: bool) -> anyhow::Result<HICON> {
+    let rgba = crate::logo::tray_rgba(32, dark);
     let mut bgra = rgba.clone();
     for i in (0..bgra.len()).step_by(4) {
         bgra.swap(i, i + 2);

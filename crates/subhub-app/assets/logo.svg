@@ -1,34 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
-  <!-- AI SubHub app icon "Night glow" (owner pick E, 2026-11-07): the S4 skeleton badge on a
-       violet rounded rectangle, no glow (owner, 2026-11-07). Provider orb with the tag pill overlapping its lower edge, a long 5-hour
-       bar and a short weekly bar. Static: never shows live values. -->
+  <!-- AI SubHub app icon "Hub ring" (owner pick, 2026-11-08): a centre with three coloured arcs, your accounts around one hub. Dark tile, 48 px and up. Generated; static, never live values. -->
   <defs>
-    <clipPath id="sq"><rect x="2" y="2" width="60" height="60" rx="10"/></clipPath>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#25213f"/><stop offset="1" stop-color="#0e0c1c"/>
-    </linearGradient>
-    <radialGradient id="orb" cx=".35" cy=".3" r=".75">
-      <stop offset="0" stop-color="#ffc2a3"/><stop offset=".45" stop-color="#ff8a5c"/><stop offset="1" stop-color="#d9531f"/>
-    </radialGradient>
-    <linearGradient id="blue" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#22d3ee"/>
-    </linearGradient>
-    <linearGradient id="amber" x1="0" y1="0" x2="1" y2="0">
-      <stop offset="0" stop-color="#f97316"/><stop offset="1" stop-color="#fbbf24"/>
-    </linearGradient>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#191d3a"/><stop offset="1" stop-color="#0b0e1e"/></linearGradient>
+    <linearGradient id="o" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff8a5c"/><stop offset="1" stop-color="#e2552a"/></linearGradient>
+    <linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#38bdf8"/><stop offset="1" stop-color="#2563eb"/></linearGradient>
+    <linearGradient id="y" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#facc15"/><stop offset="1" stop-color="#f59e0b"/></linearGradient>
   </defs>
-  <g clip-path="url(#sq)">
-    <rect width="64" height="64" fill="url(#bg)"/>
-    <!-- Bar tracks, then the 5-hour (long) and weekly (short) bars. -->
-    <rect x="33" y="21" width="22" height="8" rx="4" fill="#ffffff" fill-opacity=".1"/>
-    <rect x="33" y="21" width="20" height="8" rx="4" fill="url(#blue)"/>
-    <rect x="33" y="38.5" width="22" height="8" rx="4" fill="#ffffff" fill-opacity=".1"/>
-    <rect x="33" y="38.5" width="10" height="8" rx="4" fill="url(#amber)"/>
-    <!-- Provider orb, lowered so the tag overlaps it. -->
-    <circle cx="19" cy="28.5" r="9.5" fill="url(#orb)"/>
-    <!-- Gap ring in the background colour separates tag from orb, like the real badge. -->
-    <rect x="7.4" y="35.4" width="23.2" height="12.2" rx="6.1" fill="#141127"/>
-    <rect x="9" y="37" width="20" height="9" rx="4.5" fill="#ffffff" fill-opacity=".94"/>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="url(#bg)"/>
+  <g fill="none" stroke-width="9" stroke-linecap="round">
+    <path d="M39.73 14.64 A19 19 0 0 1 50.9 33.99" stroke="url(#o)"/>
+    <path d="M43.17 47.37 A19 19 0 0 1 20.83 47.37" stroke="url(#b)"/>
+    <path d="M13.1 33.99 A19 19 0 0 1 24.27 14.64" stroke="url(#y)"/>
   </g>
-  <rect x="2.5" y="2.5" width="59" height="59" rx="9.5" fill="none" stroke="#ffffff" stroke-opacity=".12"/>
+  <circle cx="32" cy="32" r="7.5" fill="#eef1ff"/>
+  <rect x="1.5" y="1.5" width="61" height="61" rx="13.5" fill="none" stroke="#ffffff" stroke-opacity=".16"/>
 </svg>

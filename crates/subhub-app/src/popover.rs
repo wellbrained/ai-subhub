@@ -515,6 +515,7 @@ impl Popover {
             .px_4()
             .pt_3()
             .pb_1()
+            .child(crate::logo::app_mark(24.0, t.dark))
             .child(
                 div()
                     .text_base()
