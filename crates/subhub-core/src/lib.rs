@@ -14,6 +14,7 @@ pub mod launch;
 pub mod limits;
 pub mod merge;
 pub mod model;
+pub mod nudge;
 pub mod placement;
 mod plan;
 pub mod priority;

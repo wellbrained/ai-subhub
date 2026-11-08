@@ -23,6 +23,8 @@ const NIN_KEYSELECT: u32 = WM_USER + 1;
 /// NOTIFYICON_VERSION_4 without NIF_SHOWTIP: the pointer rests on the icon / left it.
 const NIN_POPUPOPEN: u32 = WM_USER + 6;
 const NIN_POPUPCLOSE: u32 = WM_USER + 7;
+/// The user clicked a balloon (billing reminder, run-out nudge): open the popover.
+const NIN_BALLOONUSERCLICK: u32 = WM_USER + 5;
 const ID_OPEN: usize = 1;
 const ID_REFRESH: usize = 2;
 const ID_SETTINGS: usize = 3;
@@ -122,7 +124,8 @@ impl Tray {
         Ok(())
     }
 
-    /// A balloon / toast notice from the tray icon (billing reminders).
+    /// A balloon / toast notice from the tray icon (billing reminders, run-out nudge); a click on
+    /// it opens the popover.
     pub fn balloon(&mut self, title: &str, text: &str) {
         if self.hidden {
             return;
@@ -277,6 +280,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // NIN_SELECT, and a right click WM_RBUTTONUP *and* WM_CONTEXTMENU: handle one of each only.
         match (lparam.0 as u32) & 0xffff {
             NIN_SELECT | NIN_KEYSELECT => send(TrayEvent::Toggle),
+            NIN_BALLOONUSERCLICK => send(TrayEvent::Open),
             NIN_POPUPOPEN => send(TrayEvent::HoverOpen),
             NIN_POPUPCLOSE => send(TrayEvent::HoverClose),
             WM_MOUSEMOVE => send(TrayEvent::HoverMove),

@@ -101,6 +101,8 @@ pub struct AppState {
     queued_retry: HashSet<Uuid>,
     /// Billing reminders to show as tray balloons (title, text); drained by main.
     pub pending_notices: Vec<(String, String)>,
+    /// Recent 5-hour readings per account (run-out nudge pace). Not persisted.
+    nudge_trails: HashMap<Uuid, Vec<subhub_core::nudge::Point>>,
     /// Latest usage-statistics scan (shared with the Statistics window) and its bookkeeping.
     pub stats: Option<std::sync::Arc<Scan>>,
     pub stats_scanning: bool,
@@ -177,6 +179,7 @@ impl AppState {
             signing_in: HashSet::new(),
             queued_retry: HashSet::new(),
             pending_notices: vec![],
+            nudge_trails: HashMap::new(),
             stats: None,
             stats_scanning: false,
             stats_rev: 0,
@@ -859,6 +862,7 @@ impl AppState {
                 && let Some(reading) = result.reading.clone()
             {
                 self.history.record(id, &reading);
+                self.trail_point(id, &reading);
                 self.settings.readings.insert(id, reading);
             }
             if let Some(acc) = self.settings.accounts.iter_mut().find(|a| a.id == id)
@@ -884,7 +888,79 @@ impl AppState {
             );
         }
         self.fold_duplicates();
+        self.check_nudges();
         self.save();
+    }
+
+    /// Keeps the last hour of 5-hour readings per account for the run-out nudge's pace.
+    fn trail_point(&mut self, id: Uuid, reading: &subhub_core::model::Reading) {
+        let Some(w) = reading
+            .windows
+            .iter()
+            .find(|w| subhub_core::steer::is_session_window(&w.key))
+        else {
+            return;
+        };
+        let trail = self.nudge_trails.entry(id).or_default();
+        if trail.last().is_some_and(|p| p.at == reading.fetched_at) {
+            return;
+        }
+        trail.push(subhub_core::nudge::Point {
+            at: reading.fetched_at,
+            used: w.used_percent,
+            resets_at: w.resets_at,
+        });
+        let cutoff = reading.fetched_at - Duration::minutes(60);
+        trail.retain(|p| p.at >= cutoff);
+    }
+
+    /// Run-out nudge (owner, 2026-11-08): a tray balloon about 15 minutes before an account's
+    /// 5-hour window runs out, when another account of the same provider has a fresh one. Off
+    /// by default; quiet for hub accounts while steering moves them; one per window.
+    fn check_nudges(&mut self) {
+        use subhub_core::nudge;
+        let now = Utc::now();
+        nudge::prune(&mut self.settings.nudge, now);
+        if !self.settings.nudge.enabled {
+            return;
+        }
+        let steering = self.settings.steering.enabled && matches!(self.hub, HubStatus::Ok(_));
+        let due = nudge::due(&nudge::Input {
+            now,
+            accounts: &self.settings.accounts,
+            readings: &self.settings.readings,
+            trails: &self.nudge_trails,
+            stale: &|id| self.is_stale(id),
+            settings: &self.settings.nudge,
+            steering,
+            refresh_minutes: self.settings.refresh_minutes,
+        });
+        for n in due {
+            let name = |id| {
+                self.account(id)
+                    .map(|a| format!("{} ({})", a.label, provider_name(a.provider)))
+                    .unwrap_or_default()
+            };
+            let reset = n
+                .resets_at
+                .with_timezone(&chrono::Local)
+                .format("%-H:%M")
+                .to_string();
+            self.pending_notices.push((
+                format!("{} runs out in {}", name(n.account), nudge::about(n.minutes)),
+                format!(
+                    "{} has a fresh 5-hour window ({:.0}% left); this one resets at {reset}. Click to see your accounts.",
+                    name(n.other),
+                    n.other_left
+                ),
+            ));
+            self.settings.nudge.shown.insert(n.account, n.resets_at);
+        }
+    }
+
+    pub fn set_nudge(&mut self, on: bool) {
+        self.settings.nudge.enabled = on;
+        self.user_changed();
     }
 
     /// A profile account that just learned its email absorbs the hub-only account for the same

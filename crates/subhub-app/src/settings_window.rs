@@ -1092,6 +1092,32 @@ impl SettingsWindow {
                 )
                 .into_any_element()
             })
+            .child({
+                let s = self.state.read(cx);
+                let steering = s.settings.steering.enabled
+                    && s.settings.accounts.iter().any(|a| a.hub.is_some());
+                let hint = if steering {
+                    "A notification about 15 minutes before an account's 5-hour window runs out, when another account of the same provider has a fresh one. At most one per window. Off for hub accounts while hub steering is on: the hub moves on by itself."
+                } else {
+                    "A notification about 15 minutes before an account's 5-hour window runs out, when another account of the same provider has a fresh one. At most one per window."
+                };
+                let state = self.state.clone();
+                row(
+                    "Tell me before a window runs out",
+                    Some(hint),
+                    Switch::new("nudge")
+                        .checked(s.settings.nudge.enabled)
+                        .on_click(move |v, _, cx| {
+                            let v = *v;
+                            state.update(cx, |s, cx| {
+                                s.set_nudge(v);
+                                cx.notify();
+                            });
+                        }),
+                    t,
+                )
+                .into_any_element()
+            })
             .child(row(
                 "Close button",
                 Some("What ✕ on the popover and this window's close button do. Quit is always in the tray icon's menu."),

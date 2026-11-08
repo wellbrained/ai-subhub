@@ -1,6 +1,6 @@
 # Statistics → Overview (plan)
 
-Status: planned 2026-11-07. Built: step 1 (Core: scan v2, `insights`, demo fixtures; 2026-11-07), step 2 (App: Overview tab; 2026-11-08), step 3 (App: 5-hour windows row; 2026-11-08), step 4 (Warm-up; 2026-11-08); step 5 open. CoreHub #470. Mockups: `overview2.html` (page), `warmup.html` (5-hour row) in the session scratch folder; screenshots go to `docs/images/` once built.
+Status: planned 2026-11-07. Built: step 1 (Core: scan v2, `insights`, demo fixtures; 2026-11-07), step 2 (App: Overview tab; 2026-11-08), step 3 (App: 5-hour windows row; 2026-11-08), step 4 (Warm-up; 2026-11-08), step 5 (Tray nudge; 2026-11-08). CoreHub #470. Mockups: `overview2.html` (page), `warmup.html` (5-hour row) in the session scratch folder; screenshots go to `docs/images/` once built.
 
 ## Goal
 
@@ -91,7 +91,7 @@ Inputs: `readings-history.jsonl` (per refresh: account, window, used %, resets_a
 
 1. **Collecting data**: rows show "Collecting data · first result around Nov 21" instead of guesses.
 2. **Dismiss tips**: "Not for me" hides a tip id (settings `dismissed_tips`); "Show hidden tips" brings them back.
-3. **Tray nudge** (off by default, Settings → General): when an account's session will run out within ~15 min at its current pace and another account of the provider has a fresh window, one balloon per window.
+3. **Tray nudge** (off by default, Settings → General): when an account's session will run out within ~15 min at its current pace and another account of the provider has a fresh window, one balloon per window. *Built 2026-11-08, see "Tray nudge" below.*
 4. **What-if** for ending plans and suggested downgrades (see Analysis).
 5. **Light theme**: all colours from `Tokens`; demo screenshots in both themes before release.
 
@@ -145,4 +145,14 @@ The owner did not like the expanding rows ("accordion", used nowhere else). Of t
 - Entry points: Statistics (tray, popover) opens it on the statistics side (last page, Overview at first); Settings opens it on General or the page asked for (card menus: the account, Launch: Projects, first start: Add accounts). An open window just switches. Tips, "Account settings…" and Settings → General → Warm-up "Open 5-hour windows" switch pages inside it.
 - The title bar shows "AI SubHub · <page>"; the range switch, Copy as image and Rescan only on the statistics side. Default size 1222 x 760 (the statistics content keeps its 1000 px next to the 210 px sidebar); the former one-time height fit of the Statistics window is gone (switching pages never resizes). The close button follows General → Close button. Auto-update idle check: the main window counts as Settings and Statistics open.
 - Code: `stats_window.rs` is the main window (`Section`, `sidebar`, `show_stats` / `show_settings`), it owns the `SettingsWindow` entity; `main.rs` `open_main` (`open_stats` / `open_settings` call it). Demo: `--demo-open-row limits|usage` opens the data pages.
+
+## Tray nudge (owner, 2026-11-08)
+
+Mockups `nudge.html` and `nudge-q.html`. The owner chose the plain tray balloon (no toast buttons: those need a registered app identity) and no notice for accounts the hub steers.
+
+- Setting: Settings → General "Tell me before a window runs out", off by default (`settings.nudge.enabled`). Only tells; nothing switches.
+- Shows when an account's 5-hour window runs out within the lead (15 min, or the refresh interval when that is longer, so a slow refresh does not miss it) at its current pace and before it resets, and another visible, unbenched, fresh account of the same provider has ≤ 50 % of its 5-hour window used and weekly room. Pace: the readings of this window from the last 45 min when they span ≥ 10 min, else the window's average since it started (needs 30 min).
+- Stays quiet: already shown for this window (`settings.nudge.shown`: account → reset time, pruned after the reset, survives restarts), hidden or benched or stale account, no other account with room, the window resets first, and for hub accounts while hub steering is on and the hub answers (the hub moves on by itself).
+- Text: title "<account> (<provider>) runs out in about N min", body names the fresh account with its % left and this window's reset time. Clicking any tray balloon (also billing reminders) opens the popover (`NIN_BALLOONUSERCLICK`).
+- Code: `subhub-core/src/nudge.rs` (pure, tested), `state.rs` `trail_point` / `check_nudges` after every reading batch; balloons go through `pending_notices`.
 

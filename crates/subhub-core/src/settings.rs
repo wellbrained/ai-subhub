@@ -363,6 +363,8 @@ pub struct Settings {
     pub plans: HashMap<Uuid, String>,
     /// Warm-up: start the chosen accounts' 5-hour windows at a set time (`warmup`).
     pub warmup: crate::warmup::WarmupSettings,
+    /// Run-out nudge: a tray notice before a 5-hour window runs out (`nudge`), off by default.
+    pub nudge: crate::nudge::NudgeSettings,
 }
 
 impl Default for Settings {
@@ -387,6 +389,7 @@ impl Default for Settings {
             dismissed_tips: vec![],
             plans: HashMap::new(),
             warmup: Default::default(),
+            nudge: Default::default(),
         }
     }
 }

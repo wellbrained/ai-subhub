@@ -92,6 +92,8 @@ _Avoid_: Recommendation, which suggests SubHub changes the plan; it never does.
 
 **Work rhythm**: When the user's workday (Monday to Friday) usually starts and how long the first 5-hour window usually lasts before its limit hit.
 
+**Run-out nudge**: The optional tray notice shortly before an account's 5-hour window runs out at its current pace, naming another account of the same provider with a fresh window. Off by default, one per window, quiet for hub accounts while steering is on.
+
 **Warm-up**: Starting an account's 5-hour window early with a tiny prompt, so its reset lands when the user would otherwise run out. The suggested time comes from the work rhythm. SubHub runs it by itself at the chosen time on the chosen days (or right away with "Start a window now"); a **wake task** (a Windows scheduled task) can wake a sleeping PC for it.
 
 **Overview**: The first page of the main window's Insights: a verdict sentence, four numbers, the top tip and one line per topic (Plans, 5-hour windows, Renewals, Where usage goes) that states its answer and opens the topic's own page.
