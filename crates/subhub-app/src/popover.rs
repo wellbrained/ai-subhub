@@ -681,7 +681,7 @@ fn account_card(
             .child(acc.label.clone()),
     );
     if d.show_plan
-        && let Some(plan) = s.plans.get(&acc.id)
+        && let Some(plan) = s.settings.plans.get(&acc.id)
     {
         let (bg, fg): (Hsla, Hsla) = if t.dark {
             (gpui::rgb(0x2b3550).into(), gpui::rgb(0xa9c1ff).into())

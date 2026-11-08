@@ -19,7 +19,7 @@ mod zone;
 
 use std::collections::{BTreeMap, HashMap};
 
-use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use uuid::Uuid;
 
 use crate::billing;
@@ -41,8 +41,9 @@ pub use readings::{
     by_account, cycles, free_at, windows,
 };
 pub use rhythm::{
-    DayStart, FirstWindow, MAX_BEFORE_START_H, RECENT_DAYS, RECENT_HITS, RHYTHM_DAYS, ROUND_MIN,
-    Rhythm, SimDay, Simulation, first_accounts, is_workday, rhythm, simulate, suggest_time,
+    DayStart, ExampleDay, FirstWindow, MAX_BEFORE_START_H, RECENT_DAYS, RECENT_HITS, RHYTHM_DAYS,
+    ROUND_MIN, Rhythm, SimDay, Simulation, Span, example_day, first_accounts, is_workday, rhythm,
+    simulate, suggest_time,
 };
 pub use tips::{
     ENDING_DAYS, EXPIRING_HOURS, EXPIRING_LEFT, TASK_INSIGHT_SHARE, Tip, TipAction, TipKind, TipRow,
@@ -168,7 +169,19 @@ pub struct WarmupSuggestion {
     /// Accounts whose window usually comes first on the hit days, most often first.
     pub accounts: Vec<Uuid>,
     pub simulation: Simulation,
+    /// A past day drawn as it went and with the warm-up.
+    pub example: Option<ExampleDay>,
 }
+
+/// The last 7 days of one account's windows, for the week timeline.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WeekLane {
+    pub account: Uuid,
+    pub spans: Vec<Span>,
+}
+
+/// Days the week timeline shows (today included).
+pub const WEEK_DAYS: i64 = 7;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WindowsReport {
@@ -182,6 +195,11 @@ pub struct WindowsReport {
     pub workdays: usize,
     pub rhythm: Rhythm,
     pub warmup: Option<WarmupSuggestion>,
+    /// Local midnight [`WEEK_DAYS`] - 1 days ago and local now: the week timeline's ends.
+    pub week_from: NaiveDateTime,
+    pub week_to: NaiveDateTime,
+    /// Accounts that count and have 5-hour windows, in settings order.
+    pub week: Vec<WeekLane>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -246,7 +264,7 @@ fn is_benched(a: &Account) -> bool {
 }
 
 /// The latest reading's 5-hour and weekly windows (Codex keys by their label's length).
-fn now_windows(settings: &Settings, id: Uuid) -> (Option<NowWindow>, Option<NowWindow>) {
+pub fn now_windows(settings: &Settings, id: Uuid) -> (Option<NowWindow>, Option<NowWindow>) {
     let Some(r) = settings.readings.get(&id) else {
         return (None, None);
     };
@@ -444,12 +462,17 @@ pub fn analyze(input: &Input) -> Overview {
                     .map(|ws| ws.iter().map(|w| (w.start, w.resets_at)).collect())
                     .unwrap_or_default()
             };
+            let simulation = simulate(at, &r, &of, zone);
+            let ws_of = |id: Uuid| all_windows.get(&id).cloned().unwrap_or_default();
             WarmupSuggestion {
                 at,
                 accounts: first_accounts(&r),
-                simulation: simulate(at, &r, &of, zone),
+                example: example_day(at, &r, &simulation, &ws_of, zone),
+                simulation,
             }
         });
+        let week_from = (today - Duration::days(WEEK_DAYS - 1)).and_time(NaiveTime::MIN);
+        let week = week_lanes(&counting, &all_windows, week_from, zone);
         let hits: usize = counting.iter().map(|a| a.hits).sum();
         let weeks = range_weeks(&counting, &obs, range_start, now);
         Collect::Ready(WindowsReport {
@@ -464,6 +487,9 @@ pub fn analyze(input: &Input) -> Overview {
             workdays: workdays.len(),
             rhythm: r,
             warmup,
+            week_from,
+            week_to: local_now,
+            week,
         })
     } else {
         Collect::Collecting {
@@ -501,6 +527,37 @@ pub fn analyze(input: &Input) -> Overview {
         usage: usage_report,
         tips,
     }
+}
+
+/// Windows that reach into the week timeline, per counting account with 5-hour windows.
+fn week_lanes(
+    counting: &[&AccountInsight],
+    all_windows: &HashMap<Uuid, Vec<SessionWindow>>,
+    from: NaiveDateTime,
+    zone: &Zone,
+) -> Vec<WeekLane> {
+    counting
+        .iter()
+        .filter(|a| a.has_session_window)
+        .map(|a| {
+            let mut spans: Vec<Span> = all_windows[&a.account]
+                .iter()
+                .filter(|w| zone.local(w.resets_at) > from)
+                .map(|w| Span {
+                    start: zone.local(w.start),
+                    reset: zone.local(w.resets_at),
+                    hit: w.hit_at.map(|h| zone.local(h)),
+                    warm: false,
+                    unknown: w.end == WindowEnd::Unknown,
+                })
+                .collect();
+            spans.sort_by_key(|s| s.start);
+            WeekLane {
+                account: a.account,
+                spans,
+            }
+        })
+        .collect()
 }
 
 /// Weeks of history the range covers for these accounts (at least a day).

@@ -15,18 +15,22 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration as StdDuration, Instant};
 
-use chrono::{Duration, NaiveDate, NaiveTime, Utc};
+use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc};
 use gpui::{
     AnyElement, App, Context, Entity, FontWeight, HighlightStyle, Hsla, IntoElement, ParentElement,
     SharedString, Styled, StyledText, div, prelude::*, px, relative,
 };
+use gpui_component::Disableable as _;
+use gpui_component::switch::Switch;
 use subhub_core::insights::{
-    self, AT_LIMIT_HITS, AccountInsight, Collect, FitVerdict, InsightRange, Overview, PlanFit,
-    ProjectKey, Renewal, Tip, TipAction, TipKind, TipRow, WhatIf, WhatIfChange, WindowsReport,
-    Zone,
+    self, AT_LIMIT_HITS, AccountInsight, Collect, ExampleDay, FitVerdict, InsightRange, Overview,
+    PlanFit, ProjectKey, Renewal, Span, Tip, TipAction, TipKind, TipRow, WhatIf, WhatIfChange,
+    WindowsReport, Zone,
 };
 use subhub_core::model::ProviderKind;
+use subhub_core::settings::UsageStyle;
 use subhub_core::stats::TaskKind;
+use subhub_core::warmup::WarmupSettings;
 use uuid::Uuid;
 
 use crate::icons::{Icon, icon};
@@ -73,6 +77,10 @@ pub struct OverviewState {
     /// The tip list under the top tip is expanded.
     pub tips_open: bool,
     pub dim: Dim,
+    /// The warm-up setup dialog is open with this draft.
+    pub warm_dialog: Option<WarmupSettings>,
+    /// Demo only (`--demo-open-row warmup-dialog`): open the dialog once the first result is in.
+    demo_dialog: bool,
 }
 
 impl OverviewState {
@@ -83,6 +91,7 @@ impl OverviewState {
             Some("renewals") => (Some(TipRow::Renewals), false),
             Some("usage") => (Some(TipRow::Usage), false),
             Some("tips") => (None, true),
+            Some("warmup-dialog") => (Some(TipRow::Windows), false),
             _ => (None, false),
         };
         Self {
@@ -92,7 +101,14 @@ impl OverviewState {
             open,
             tips_open,
             dim: Dim::Task,
+            warm_dialog: None,
+            demo_dialog: crate::demo::open_row() == Some("warmup-dialog"),
         }
+    }
+
+    /// The last analysis result, if any.
+    pub fn latest(&self) -> Option<Arc<Overview>> {
+        self.result.as_ref().map(|(_, _, o)| o.clone())
     }
 
     /// The result is old enough to recompute (the window's 30 s timer re-renders then).
@@ -117,9 +133,10 @@ impl OverviewState {
         self.computing = Some(sig);
         let settings = s.settings.clone();
         let scan = s.stats.clone();
-        let plans = s.plans.clone();
+        let plans = s.settings.plans.clone();
         let prices = s.prices.clone();
         let range = self.range;
+        let state = state.clone();
         cx.spawn(async move |this, cx| {
             let overview = cx
                 .background_executor()
@@ -150,7 +167,12 @@ impl OverviewState {
                 if ov.computing == Some(sig) {
                     ov.computing = None;
                 }
-                ov.result = Some((sig, Instant::now(), Arc::new(overview)));
+                let overview = Arc::new(overview);
+                ov.result = Some((sig, Instant::now(), overview.clone()));
+                if ov.demo_dialog {
+                    ov.demo_dialog = false;
+                    ov.warm_dialog = Some(suggested_draft(&overview, state.read(cx)));
+                }
                 cx.notify();
             });
         })
@@ -175,7 +197,7 @@ fn signature(s: &AppState, range: InsightRange) -> u64 {
             .get(&a.id)
             .map(|r| r.fetched_at)
             .hash(&mut h);
-        s.plans.get(&a.id).hash(&mut h);
+        s.settings.plans.get(&a.id).hash(&mut h);
         format!("{:?}", s.settings.billing.get(&a.id)).hash(&mut h);
     }
     for p in &s.settings.projects {
@@ -436,6 +458,7 @@ pub fn tip_text(tip: &Tip, o: &Overview, steering_on: bool) -> TipText {
             },
             TipAction::Steering,
         )),
+        Some(TipAction::SetUpWarmUp) => Some(("Set it up…", TipAction::SetUpWarmUp)),
         None => None,
     };
     match &tip.kind {
@@ -470,7 +493,9 @@ pub fn tip_text(tip: &Tip, o: &Overview, steering_on: bool) -> TipText {
                 msg: Msg::Clock,
                 title: format!("Start your first window at {}.", time_text(*at)),
                 rest,
-                action: row_action("Show me how"),
+                // Opens the setup dialog with the suggestion filled in; nothing runs before the
+                // user confirms it (owner, 2026-11-08).
+                action: Some(("Set it up…", TipAction::SetUpWarmUp)),
             }
         }
         TipKind::SwitchInsteadOfWaiting {
@@ -814,9 +839,11 @@ impl Ctx<'_> {
             }
         });
         let settings = self.open_settings.clone();
+        let setup = open_dialog(self.me.clone(), self.state.clone());
         move |cx: &mut App| match a {
             TipAction::OpenRow(_) => upd(cx),
             TipAction::Steering => settings(SettingsTarget::Hub, cx),
+            TipAction::SetUpWarmUp => setup(cx),
         }
     }
 
@@ -946,12 +973,19 @@ fn kpis(o: &Overview, t: &Tokens) -> gpui::Div {
 fn tips_block(ov: &OverviewState, o: &Overview, cx: &Ctx) -> gpui::Div {
     let t = cx.t;
     let dismissed = &cx.s.settings.dismissed_tips;
-    let visible: Vec<&Tip> = o
+    // The warm-up tip is done once the warm-up is on.
+    let warm_on = cx.s.settings.warmup.enabled;
+    let all: Vec<&Tip> = o
         .tips
         .iter()
+        .filter(|tp| !(warm_on && matches!(tp.kind, TipKind::WarmUp { .. })))
+        .collect();
+    let visible: Vec<&Tip> = all
+        .iter()
+        .copied()
         .filter(|tp| !dismissed.contains(&tp.id))
         .collect();
-    let hidden = o.tips.len() - visible.len();
+    let hidden = all.len() - visible.len();
     let steering_on = cx.s.settings.steering.enabled;
     let restore = {
         let state = cx.state.clone();
@@ -1203,7 +1237,7 @@ fn rows(ov: &OverviewState, o: &Overview, cx: &Ctx) -> gpui::Div {
     };
     let is = |r: TipRow| ov.open == Some(r);
     let (plans_answer, plans_right) = plans_line(o, cx);
-    let (win_answer, win_right) = windows_line(o, t);
+    let (win_answer, win_right) = windows_line(o, &cx.s.settings.warmup, t);
     let (ren_answer, ren_right) = renewals_line(o, t);
     let usage_answer = usage_line(o, cx);
     div()
@@ -1225,7 +1259,7 @@ fn rows(ov: &OverviewState, o: &Overview, cx: &Ctx) -> gpui::Div {
             win_answer,
             win_right,
             is(TipRow::Windows),
-            || windows_content(o, t),
+            || windows_content(o, cx),
             toggle(TipRow::Windows),
             t,
         ))
@@ -1336,7 +1370,18 @@ fn plans_content(o: &Overview, cx: &Ctx) -> AnyElement {
         .gap(px(C_GAP))
         .pb(px(6.0))
         .child(div().w(px(C_NAME)).flex_none())
-        .child(small("Now".into()).w(px(C_NOW)).flex_none())
+        .child(
+            small(
+                if cx.s.settings.display.usage_style == UsageStyle::Remaining {
+                    "Now · left"
+                } else {
+                    "Now · used"
+                }
+                .into(),
+            )
+            .w(px(C_NOW))
+            .flex_none(),
+        )
         .child(
             small(format!("Weekly used · {}", o.range.label()))
                 .w(px(C_WEEK))
@@ -1411,9 +1456,14 @@ fn account_row(a: &AccountInsight, o: &Overview, cx: &Ctx) -> gpui::Div {
                 .child(sub),
         );
 
+    // Follows "Show usage as" like the popover (% left by default).
+    let left = cx.s.settings.display.usage_style == UsageStyle::Remaining;
     let now_bar = |label: &str, w: Option<insights::NowWindow>| {
         let (frac, text, color) = match w {
-            Some(w) => (w.used / 100.0, pct(w.used), t.level(100.0 - w.used)),
+            Some(w) => {
+                let v = if left { 100.0 - w.used } else { w.used };
+                (v / 100.0, pct(v), t.level(100.0 - w.used))
+            }
             None => (0.0, "—".into(), t.accent),
         };
         div()
@@ -1645,12 +1695,32 @@ fn fit_words(a: &AccountInsight, o: &Overview) -> String {
     format!("{line}{unknown}")
 }
 
-// ----- 5-hour windows (this part: the line and the numbers; part 3 adds the explainer) -----
+// ----- 5-hour windows -----
 
-fn windows_line(o: &Overview, t: &Tokens) -> (AnyElement, Option<AnyElement>) {
+fn windows_line(
+    o: &Overview,
+    warm: &WarmupSettings,
+    t: &Tokens,
+) -> (AnyElement, Option<AnyElement>) {
+    // With the warm-up on, the note says so instead of the waited time.
+    let warm_note = warm.enabled.then(|| {
+        div()
+            .flex()
+            .items_center()
+            .gap(px(5.0))
+            .text_size(px(SMALL))
+            .text_color(t.ok)
+            .child(icon(Icon::Clock, 12.0, t.ok))
+            .child(format!(
+                "Warm-up {} {}",
+                time_text(warm.time),
+                warm.days_text()
+            ))
+            .into_any_element()
+    });
     let w: &WindowsReport = match &o.windows {
         Collect::Ready(w) => w,
-        Collect::Collecting { ready_on } => return (plain(collecting_text(*ready_on)), None),
+        Collect::Collecting { ready_on } => return (plain(collecting_text(*ready_on)), warm_note),
     };
     let answer = if w.hits_with_free_account > 0 {
         let n = w.hits_with_free_account;
@@ -1678,12 +1748,14 @@ fn windows_line(o: &Overview, t: &Tokens) -> (AnyElement, Option<AnyElement>) {
     } else {
         plain("No 5-hour limit hits in this range")
     };
-    let right = (w.waited > Duration::zero()).then(|| {
-        div()
-            .text_size(px(SMALL))
-            .text_color(t.faint)
-            .child(format!("{} waited", dur_text(w.waited)))
-            .into_any_element()
+    let right = warm_note.or_else(|| {
+        (w.waited > Duration::zero()).then(|| {
+            div()
+                .text_size(px(SMALL))
+                .text_color(t.faint)
+                .child(format!("{} waited", dur_text(w.waited)))
+                .into_any_element()
+        })
     });
     (answer, right)
 }
@@ -1710,68 +1782,1264 @@ fn stat(value: String, label: &str, first: bool, t: &Tokens) -> gpui::Div {
         )
 }
 
-fn windows_content(o: &Overview, t: &Tokens) -> AnyElement {
+fn windows_content(o: &Overview, cx: &Ctx) -> AnyElement {
+    let t = cx.t;
     let w = match &o.windows {
         Collect::Ready(w) => w,
         Collect::Collecting { ready_on } => {
             return div()
-                .text_size(px(SMALL))
-                .text_color(t.muted)
-                .child(format!(
-                    "The 5-hour analysis needs windows on 5 workdays. {}.",
-                    collecting_text(*ready_on)
-                ))
+                .flex()
+                .gap(px(28.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .child(explainer(t))
+                        .child(
+                            div()
+                                .text_size(px(SMALL))
+                                .text_color(t.muted)
+                                .child(format!(
+                                    "The 5-hour analysis needs windows on 5 workdays. {}.",
+                                    collecting_text(*ready_on)
+                                )),
+                        ),
+                )
+                .child(warmup_column(o, cx))
                 .into_any_element();
         }
     };
-    let mut facts: Vec<String> = vec![];
-    if let (Some(start), Some(hit)) = (w.rhythm.usual_start, w.rhythm.usual_first_hit) {
-        facts.push(format!(
-            "Your workday usually starts around {} and the first window runs out after about {}.",
-            time_text(start),
-            dur_text(hit)
-        ));
-    } else if let Some(start) = w.rhythm.usual_start {
-        facts.push(format!(
-            "Your workday usually starts around {}.",
-            time_text(start)
-        ));
-    }
+
+    // Left: how it works, one day drawn twice, the warm-up result.
+    let mut left = div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .child(explainer(t));
     if let Some(s) = &w.warmup {
-        facts.push(format!(
-            "Starting the first window at {} would have saved about {} over {} workdays.",
-            time_text(s.at),
-            dur_text(s.simulation.saved()),
-            s.simulation.days.len()
-        ));
+        if let Some(e) = &s.example {
+            left = left.child(day_timeline(e, s.at, cx.color(e.account), t).mt(px(14.0)));
+        }
+        let n = s.simulation.days.len();
+        left = left.child(
+            div()
+                .flex()
+                .mt(px(16.0))
+                .child(stat(
+                    dur_text(s.simulation.waited_now),
+                    &format!("waited on the last {n} workdays"),
+                    true,
+                    t,
+                ))
+                .child(
+                    stat(
+                        dur_text(s.simulation.waited_with),
+                        &format!("with a {} warm-up, same work", time_text(s.at)),
+                        false,
+                        t,
+                    )
+                    .text_color(t.ok),
+                )
+                .child(stat(
+                    format!("+{}", s.simulation.runs),
+                    "extra windows, one a day",
+                    false,
+                    t,
+                )),
+        );
     }
+
+    // Choosing the start by hand, in words.
+    left = left.child(
+        div()
+            .mt(px(18.0))
+            .flex()
+            .flex_col()
+            .gap(px(6.0))
+            .child(h4("Set your own start", t))
+            .children(
+                own_start_lines(w, o, &cx.s.settings.warmup)
+                    .into_iter()
+                    .map(|parts| {
+                        div()
+                            .text_size(px(SMALL))
+                            .line_height(relative(1.5))
+                            .text_color(t.muted)
+                            .child(rich(parts, t))
+                    }),
+            ),
+    );
+    let right = warmup_column(o, cx);
+
+    let numbers = div()
+        .flex()
+        .child(stat(w.hits.to_string(), "5-hour limit hits", true, t))
+        .child(stat(num(w.hits_per_week), "hits a week", false, t))
+        .child(stat(dur_text(w.waited), "waited for resets", false, t))
+        .child(stat(
+            format!("{}×", w.hits_with_free_account),
+            "while another account was free",
+            false,
+            t,
+        ));
+
     div()
         .flex()
         .flex_col()
-        .gap(px(14.0))
+        .gap(px(24.0))
+        .child(div().flex().gap(px(28.0)).child(left).child(right))
+        .child(week_timeline(w, o, cx))
         .child(
             div()
                 .flex()
-                .child(stat(w.hits.to_string(), "5-hour limit hits", true, t))
-                .child(stat(num(w.hits_per_week), "hits a week", false, t))
-                .child(stat(dur_text(w.waited), "waited for resets", false, t))
-                .child(stat(
-                    format!("{}×", w.hits_with_free_account),
-                    "while another account was free",
+                .flex_col()
+                .gap(px(8.0))
+                .child(h4(&format!("In the range · {}", o.range.label()), t))
+                .child(numbers),
+        )
+        .into_any_element()
+}
+
+fn h4(text: &str, t: &Tokens) -> gpui::Div {
+    div()
+        .text_size(px(SMALL))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(t.muted)
+        .child(text.to_string())
+}
+
+/// How windows and resets work (owner 2026-11-08: explain it shortly).
+fn explainer(t: &Tokens) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(h4("How the 5-hour window works", t))
+        .child(
+            div()
+                .text_size(px(SMALL))
+                .line_height(relative(1.5))
+                .text_color(t.muted)
+                .child(rich(
+                    vec![
+                        m("Your "),
+                        b("first message starts a window"),
+                        m(", and it resets "),
+                        b("5 hours later"),
+                        m(
+                            ", whether you used all of it or not. The next message after a \
+                           reset starts the next window. So the time of your first message \
+                           decides all resets of the day.",
+                        ),
+                    ],
+                    t,
+                )),
+        )
+}
+
+/// The "Set your own start" text: the user's rhythm and what to do about it.
+fn own_start_lines(
+    w: &WindowsReport,
+    o: &Overview,
+    warm: &WarmupSettings,
+) -> Vec<Vec<(String, bool)>> {
+    let r = &w.rhythm;
+    let mut out = vec![];
+    match (r.usual_start, r.usual_first_hit) {
+        (Some(start), Some(hit)) => out.push(vec![
+            m("You usually start around "),
+            b(time_text(start)),
+            m(" and run out of the first window around "),
+            b(time_text(start + hit)),
+            m("."),
+        ]),
+        (Some(start), None) => out.push(vec![
+            m("You usually start around "),
+            b(time_text(start)),
+            m(" and your first window rarely runs out."),
+        ]),
+        _ => {}
+    }
+    if warm.enabled {
+        out.push(vec![
+            m("The warm-up starts your windows at "),
+            b(time_text(warm.time)),
+            m(format!(
+                " on {}, so the first reset comes at ",
+                warm.days_text()
+            )),
+            b(time_text(warm.time + Duration::hours(5))),
+            m(". To move it, change the time; any message before that starts the window too."),
+        ]);
+        return out;
+    }
+    match &w.warmup {
+        Some(s) => {
+            let who = names(
+                &s.accounts
+                    .iter()
+                    .map(|id| label_of(o, *id))
+                    .collect::<Vec<_>>(),
+            );
+            let mut line = vec![m("Send any short message at "), b(time_text(s.at))];
+            if !who.is_empty() {
+                line.push(m(" with "));
+                line.push(b(who));
+            }
+            line.push(m(". Its window then resets at "));
+            line.push(b(time_text(s.at + Duration::hours(5))));
+            line.push(m(", close to when you run out, and the next one is fresh."));
+            out.push(line);
+            out.push(vec![m(format!(
+                "Over your last {} workdays that would have saved about {} of waiting \
+                 (an estimate from your readings).",
+                s.simulation.days.len(),
+                dur_text(s.simulation.saved())
+            ))]);
+        }
+        None if r.recent_first_hits < insights::RECENT_HITS => out.push(vec![m(
+            "Your first window seldom runs out, so an earlier start would not save time \
+             right now.",
+        )]),
+        None => out.push(vec![m(
+            "An earlier start would not move the first reset closer to when you run out.",
+        )]),
+    }
+    out
+}
+
+/// Where `t` lies between `from` and `to`, 0..1.
+fn frac_of(t: NaiveDateTime, from: NaiveDateTime, to: NaiveDateTime) -> f32 {
+    let all = (to - from).num_seconds().max(1) as f32;
+    ((t - from).num_seconds() as f32 / all).clamp(0.0, 1.0)
+}
+
+/// One lane of windows between `from` and `to` (cut at `now` when given): work in `color`
+/// (solid until a hit, lighter in a window without one), the wait after a hit tinted in the
+/// danger colour, a warm-up window outlined, an unknown end (PC off) on the track colour.
+/// `labels` puts each reset's time above it.
+#[allow(clippy::too_many_arguments)]
+fn lane(
+    spans: &[Span],
+    from: NaiveDateTime,
+    to: NaiveDateTime,
+    now: Option<NaiveDateTime>,
+    color: Hsla,
+    h: f32,
+    labels: bool,
+    t: &Tokens,
+) -> gpui::Div {
+    let top = if labels { 15.0 } else { 0.0 };
+    let mut d = div().relative().w_full().h(px(h + top));
+    let piece = |a: f32, b: f32| {
+        div()
+            .absolute()
+            .top(px(top))
+            .h(px(h))
+            .left(relative(a))
+            .w(relative((b - a).max(0.0)))
+    };
+    // The wait after a hit: a thin line in the danger colour, so it never blends with a red or
+    // pink account colour.
+    let wait = |a: f32, b: f32| {
+        div()
+            .absolute()
+            .top(px(top + h / 2.0 - 1.0))
+            .h(px(2.0))
+            .left(relative(a))
+            .w(relative((b - a).max(0.0)))
+            .bg(t.danger)
+    };
+    for s in spans {
+        let end = now.map_or(s.reset, |n| s.reset.min(n));
+        if end <= from || s.start >= to {
+            continue;
+        }
+        let x0 = frac_of(s.start, from, to);
+        let x1 = frac_of(end, from, to);
+        let hit = s.hit.filter(|h| *h < end).map(|h| frac_of(h, from, to));
+        if s.warm {
+            d = d.child(
+                piece(x0, x1)
+                    .rounded(px(3.0))
+                    .border_1()
+                    .border_color(t.accent.opacity(0.8))
+                    .bg(t.accent.opacity(0.14))
+                    .when(labels, |p| {
+                        p.overflow_hidden().pl(px(6.0)).flex().items_center().child(
+                            div()
+                                .text_size(px(10.5))
+                                .text_color(t.accent_text())
+                                .whitespace_nowrap()
+                                .child(format!("warm-up {}", time_text(s.start.time()))),
+                        )
+                    }),
+            );
+            if let Some(xh) = hit {
+                d = d.child(wait(xh, x1));
+            }
+        } else if s.unknown {
+            d = d.child(piece(x0, x1).rounded(px(3.0)).bg(t.track));
+        } else if let Some(xh) = hit {
+            d = d
+                .child(piece(x0, xh).rounded_l(px(3.0)).bg(color.opacity(0.85)))
+                .child(wait(xh, x1));
+        } else {
+            d = d.child(piece(x0, x1).rounded(px(3.0)).bg(color.opacity(0.35)));
+        }
+        if labels && s.reset < to {
+            let xr = frac_of(s.reset, from, to);
+            d = d
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(top - 3.0))
+                        .h(px(h + 6.0))
+                        .left(relative(xr))
+                        .w(px(1.0))
+                        .bg(t.text.opacity(0.6)),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left(relative(xr))
+                        .ml(px(-18.0))
+                        .w(px(36.0))
+                        .flex()
+                        .justify_center()
+                        .text_size(px(10.5))
+                        .text_color(t.muted)
+                        .child(time_text(s.reset.time())),
+                );
+        }
+    }
+    d
+}
+
+/// Hour labels every 3 hours under a day timeline.
+fn hour_axis(from: NaiveDateTime, to: NaiveDateTime, t: &Tokens) -> gpui::Div {
+    let mut d = div().relative().w_full().h(px(14.0));
+    let mut h = from;
+    while h <= to {
+        let x = frac_of(h, from, to);
+        let (first, last) = (h == from, h == to);
+        d = d.child(
+            div()
+                .absolute()
+                .top_0()
+                .left(relative(x))
+                .ml(px(if last {
+                    -36.0
+                } else if first {
+                    0.0
+                } else {
+                    -18.0
+                }))
+                .w(px(36.0))
+                .flex()
+                .when(last, |d| d.justify_end())
+                .when(!last && !first, |d| d.justify_center())
+                .text_size(px(10.5))
+                .text_color(t.faint)
+                .child(if h.time() == NaiveTime::MIN && h > from {
+                    "24:00".to_string()
+                } else {
+                    time_text(h.time())
+                }),
+        );
+        h += Duration::hours(3);
+    }
+    d
+}
+
+fn legend(color: Hsla, text: &str) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .child(div().w(px(12.0)).h(px(8.0)).rounded(px(2.0)).bg(color))
+        .child(text.to_string())
+}
+
+/// Legend entry for the wait line.
+fn legend_line(color: Hsla, text: &str) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(5.0))
+        .child(div().w(px(12.0)).h(px(2.0)).bg(color))
+        .child(text.to_string())
+}
+
+/// One past day as it went and with the warm-up.
+fn day_timeline(e: &ExampleDay, at: NaiveTime, color: Hsla, t: &Tokens) -> gpui::Div {
+    const LABEL: f32 = 96.0;
+    let first_h = e
+        .with
+        .iter()
+        .chain(&e.real)
+        .map(|s| s.start.time().hour())
+        .min()
+        .unwrap_or(6);
+    let from_h = (first_h / 3) * 3;
+    let from = e.date.and_hms_opt(from_h, 0, 0).unwrap_or_default();
+    let midnight = e.date.and_time(NaiveTime::MIN) + Duration::days(1);
+    let last = e
+        .real
+        .iter()
+        .chain(&e.with)
+        .map(|s| s.reset)
+        .max()
+        .unwrap_or(from)
+        .min(midnight);
+    let mut to = from + Duration::hours(3);
+    while to < last {
+        to += Duration::hours(3);
+    }
+    let row = |name: &str, spans: &[Span]| {
+        div()
+            .flex()
+            .items_end()
+            .child(
+                div()
+                    .w(px(LABEL))
+                    .flex_none()
+                    .pb(px(2.0))
+                    .text_size(px(SMALL))
+                    .text_color(t.muted)
+                    .child(name.to_string()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(lane(spans, from, to, None, color, 18.0, true, t)),
+            )
+    };
+    let start_x = frac_of(e.date.and_time(e.start), from, to);
+    let plot = div()
+        .relative()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        // "You started" marker across both lanes (first, so the lanes paint over it).
+        .child(
+            div()
+                .absolute()
+                .top(px(12.0))
+                .bottom_0()
+                .left(px(LABEL))
+                .right_0()
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(start_x))
+                        .w(px(1.0))
+                        .bg(t.text.opacity(0.4)),
+                ),
+        )
+        .child(row("That day", &e.real))
+        .child(row("With warm-up", &e.with));
+    let label = format!(
+        "{} {}: you started at {}. With a {} warm-up the resets come earlier (estimate).",
+        e.date.format("%A"),
+        date_text(e.date),
+        time_text(e.start),
+        time_text(at)
+    );
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.0))
+        .child(div().text_size(px(TINY)).text_color(t.faint).child(label))
+        .child(plot)
+        .child(div().pl(px(LABEL)).child(hour_axis(from, to, t)))
+        .child(
+            div()
+                .flex()
+                .gap(px(14.0))
+                .pl(px(LABEL))
+                .pt(px(2.0))
+                .text_size(px(TINY))
+                .text_color(t.muted)
+                .child(legend(color.opacity(0.85), "working"))
+                .child(legend_line(t.danger, "waiting for the reset"))
+                .child(legend(color.opacity(0.35), "window without a hit")),
+        )
+}
+
+/// The last 7 days: one lane per account with 5-hour windows.
+fn week_timeline(w: &WindowsReport, o: &Overview, cx: &Ctx) -> gpui::Div {
+    const LABEL: f32 = 130.0;
+    let t = cx.t;
+    let from = w.week_from;
+    let to = from + Duration::days(insights::WEEK_DAYS);
+    let lanes: Vec<&insights::WeekLane> = w.week.iter().filter(|l| !cx.hidden(l.account)).collect();
+    let day_w = 1.0 / insights::WEEK_DAYS as f32;
+    let mut days = div().relative().w_full().h(px(14.0));
+    let mut grid = div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(LABEL))
+        .right_0();
+    for i in 0..insights::WEEK_DAYS {
+        let d0 = from + Duration::days(i);
+        let x = frac_of(d0, from, to);
+        let today = d0.date() == o.today;
+        days = days.child(
+            div()
+                .absolute()
+                .top_0()
+                .left(relative(x))
+                .w(relative(day_w))
+                .flex()
+                .justify_center()
+                .text_size(px(10.5))
+                .text_color(if today { t.text } else { t.faint })
+                .child(if today {
+                    "Today".to_string()
+                } else {
+                    d0.format("%a %-d").to_string()
+                }),
+        );
+        if i > 0 {
+            grid = grid.child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(x))
+                    .w(px(1.0))
+                    .bg(t.border),
+            );
+        }
+    }
+    let mut list = div().relative().flex().flex_col().gap(px(7.0)).child(grid);
+    for l in &lanes {
+        list = list.child(
+            div()
+                .flex()
+                .items_center()
+                .child(
+                    div()
+                        .w(px(LABEL))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(7.0))
+                        .pr(px(8.0))
+                        .child(dot(cx.color(l.account)))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_size(px(SMALL))
+                                .child(label_of(o, l.account)),
+                        ),
+                )
+                .child(div().flex_1().min_w_0().child(lane(
+                    &l.spans,
+                    from,
+                    to,
+                    Some(w.week_to),
+                    cx.color(l.account),
+                    12.0,
                     false,
+                    t,
+                ))),
+        );
+    }
+    let hits = lanes
+        .iter()
+        .flat_map(|l| &l.spans)
+        .filter(|s| s.hit.is_some_and(|h| h >= from))
+        .count();
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(
+            div()
+                .flex()
+                .items_baseline()
+                .gap(px(10.0))
+                .child(h4("Last 7 days, by account", t))
+                .child(
+                    div()
+                        .text_size(px(TINY))
+                        .text_color(t.faint)
+                        .child(match hits {
+                            0 => "no limit hits".to_string(),
+                            1 => "1 limit hit".to_string(),
+                            n => format!("{n} limit hits"),
+                        }),
+                ),
+        )
+        .child(div().pl(px(LABEL)).child(days))
+        .child(if lanes.is_empty() {
+            div()
+                .text_size(px(SMALL))
+                .text_color(t.muted)
+                .child("No account with a 5-hour window.")
+        } else {
+            list
+        })
+        .child(
+            div()
+                .flex()
+                .gap(px(14.0))
+                .pl(px(LABEL))
+                .pt(px(2.0))
+                .text_size(px(TINY))
+                .text_color(t.muted)
+                .child(legend(t.muted.opacity(0.85), "until the limit"))
+                .child(legend_line(t.danger, "waiting"))
+                .child(legend(t.muted.opacity(0.35), "window without a hit"))
+                .child(legend(t.track, "PC off, end unknown")),
+        )
+}
+
+// ----- warm-up controls (build step 4; mockup `warmup.html`) -----
+
+/// A line of the controls column: label (and a small hint) left, the control right.
+fn control_line(label: &str, hint: Option<String>, control: AnyElement, t: &Tokens) -> gpui::Div {
+    div()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap(px(10.0))
+        .py(px(8.0))
+        .border_t_1()
+        .border_color(t.border)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .child(div().text_size(px(BODY)).child(label.to_string()))
+                .children(hint.map(|h| {
+                    div()
+                        .mt(px(1.0))
+                        .text_size(px(TINY))
+                        .text_color(t.faint)
+                        .child(h)
+                })),
+        )
+        .child(control)
+}
+
+/// A small toggle chip.
+fn toggle_chip(
+    id: impl Into<gpui::ElementId>,
+    text: impl Into<SharedString>,
+    on: bool,
+    enabled: bool,
+    t: &Tokens,
+    on_click: impl Fn(&mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id.into())
+        .flex_none()
+        .px(px(7.0))
+        .py(px(2.0))
+        .rounded(px(6.0))
+        .text_size(px(TINY))
+        .border_1()
+        .when(on, |d| {
+            d.bg(t.accent.opacity(if t.dark { 0.2 } else { 0.14 }))
+                .border_color(gpui::transparent_black())
+                .text_color(t.text)
+        })
+        .when(!on, |d| d.border_color(t.border).text_color(t.muted))
+        .when(enabled, |d| {
+            d.cursor_pointer()
+                .hover(|s| s.text_color(t.text))
+                .on_click(move |_, _, cx| on_click(cx))
+        })
+        .when(!enabled, |d| d.opacity(0.5))
+        .child(text.into())
+}
+
+/// A small square button with one character ("−", "+").
+fn step_button(
+    id: &'static str,
+    text: &'static str,
+    t: &Tokens,
+    on_click: impl Fn(&mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .size(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(t.border)
+        .text_size(px(BODY))
+        .text_color(t.muted)
+        .cursor_pointer()
+        .hover(|s| s.text_color(t.text).bg(t.surface_hover))
+        .child(text)
+        .on_click(move |_, _, cx| on_click(cx))
+}
+
+/// "today 7:00", "yesterday 7:02", "Nov 6, 7:00".
+fn when_text(at: chrono::DateTime<Utc>, today: NaiveDate) -> String {
+    let local = at.with_timezone(&chrono::Local).naive_local();
+    let time = time_text(local.time());
+    match (today - local.date()).num_days() {
+        0 => format!("today {time}"),
+        1 => format!("yesterday {time}"),
+        _ => format!("{}, {time}", date_text(local.date())),
+    }
+}
+
+/// The accounts the warm-up can be chosen for: visible ones with a 5-hour window.
+fn warm_candidates<'a>(o: &'a Overview, s: &AppState) -> Vec<&'a AccountInsight> {
+    o.accounts
+        .iter()
+        .filter(|a| a.has_session_window && !s.account(a.account).is_some_and(|x| x.hidden))
+        .collect()
+}
+
+fn can_warm_id(s: &AppState, id: Uuid) -> bool {
+    s.account(id).is_some_and(subhub_core::warmup::can_warm)
+}
+
+/// What the setup dialog opens with: the current settings when the warm-up is on; otherwise
+/// the suggestion (time and accounts) over the last choices, with Wake the PC off. The user
+/// confirms or changes it; nothing runs before (owner, 2026-11-08).
+pub fn suggested_draft(o: &Overview, s: &AppState) -> WarmupSettings {
+    let cur = &s.settings.warmup;
+    if cur.enabled {
+        return cur.clone();
+    }
+    let mut d = cur.clone();
+    d.wake_pc = false;
+    if let Some(x) = o.windows.ready().and_then(|r| r.warmup.as_ref()) {
+        d.time = x.at;
+        let picked: Vec<Uuid> = x
+            .accounts
+            .iter()
+            .copied()
+            .filter(|id| can_warm_id(s, *id))
+            .collect();
+        if !picked.is_empty() {
+            d.accounts = picked;
+        }
+    }
+    d.accounts.retain(|id| can_warm_id(s, *id));
+    if d.days.is_empty() {
+        d.days = subhub_core::warmup::WORKDAYS.to_vec();
+    }
+    d
+}
+
+/// Opens the setup dialog (and the 5-hour row) with [`suggested_draft`].
+fn open_dialog(me: Entity<StatsWindow>, state: Entity<AppState>) -> impl Fn(&mut App) + 'static {
+    move |app: &mut App| {
+        let draft = {
+            let o = me.read(app).overview_ref().latest();
+            o.map(|o| suggested_draft(&o, state.read(app)))
+        };
+        me.update(app, |w, cx| {
+            let ov = w.overview_mut();
+            ov.open = Some(TipRow::Windows);
+            ov.warm_dialog = Some(draft.unwrap_or_default());
+            cx.notify();
+        });
+    }
+}
+
+/// "Personal (Claude), Work (Codex)".
+fn account_names(o: &Overview, ids: &[Uuid]) -> String {
+    names(&ids.iter().map(|id| label_of(o, *id)).collect::<Vec<_>>())
+}
+
+fn small_text(text: impl Into<SharedString>, t: &Tokens) -> gpui::Div {
+    div()
+        .text_size(px(TINY))
+        .line_height(relative(1.5))
+        .text_color(t.faint)
+        .child(text.into())
+}
+
+/// A text button (secondary, or the accent for the main action).
+fn text_button(
+    id: impl Into<gpui::ElementId>,
+    label: impl Into<SharedString>,
+    primary: bool,
+    enabled: bool,
+    t: &Tokens,
+    on_click: impl Fn(&mut App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id.into())
+        .flex_none()
+        .px(px(12.0))
+        .py(px(5.0))
+        .rounded(px(8.0))
+        .text_size(px(12.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .when(primary, |d| d.bg(t.accent).text_color(gpui::white()))
+        .when(!primary, |d| {
+            d.border_1().border_color(t.border).bg(t.surface)
+        })
+        .when(!enabled, |d| d.opacity(0.5))
+        .when(enabled, |d| {
+            d.cursor_pointer()
+                .hover(move |s| {
+                    if primary {
+                        s.opacity(0.9)
+                    } else {
+                        s.bg(t.surface_hover)
+                    }
+                })
+                .on_click(move |_, _, cx| on_click(cx))
+        })
+        .child(label.into())
+}
+
+/// The Warm-up column of the 5-hour row. Off: what is suggested and "Set up warm-up…". On:
+/// the settings in words, the last runs, "Change…", "Turn off" and "Start a window now".
+fn warmup_column(o: &Overview, cx: &Ctx) -> gpui::Div {
+    let t = cx.t;
+    let s = cx.s;
+    let w = &s.settings.warmup;
+    let col = div()
+        .w(px(300.0))
+        .flex_none()
+        .pl(px(28.0))
+        .border_l_1()
+        .border_color(t.border)
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .child(h4("Warm-up", t));
+    let setup = open_dialog(cx.me.clone(), cx.state.clone());
+    let para = |parts: Vec<(String, bool)>| {
+        div()
+            .text_size(px(SMALL))
+            .line_height(relative(1.5))
+            .text_color(t.muted)
+            .child(rich(parts, t))
+    };
+
+    if !w.enabled {
+        let suggestion = o.windows.ready().and_then(|r| r.warmup.as_ref());
+        let mut parts = vec![m(
+            "SubHub can send a one-word prompt at a time you choose, so the first window starts \
+             early. It only runs once you turn it on.",
+        )];
+        if let Some(x) = suggestion {
+            parts = vec![m("Suggested: "), b(time_text(x.at)), m(" on weekdays")];
+            let who: Vec<Uuid> = x
+                .accounts
+                .iter()
+                .copied()
+                .filter(|id| can_warm_id(s, *id))
+                .collect();
+            if !who.is_empty() {
+                parts.push(m(" for "));
+                parts.push(b(account_names(o, &who)));
+            }
+            parts.push(m(". It only runs once you turn it on."));
+        }
+        return col
+            .child(para(parts))
+            .child(div().mt(px(4.0)).flex().child(text_button(
+                "warmup-setup",
+                "Set up warm-up…",
+                true,
+                true,
+                t,
+                setup,
+            )));
+    }
+
+    // On.
+    let chosen: Vec<Uuid> = w
+        .accounts
+        .iter()
+        .copied()
+        .filter(|id| can_warm_id(s, *id))
+        .collect();
+    let mut summary = vec![
+        m("On at "),
+        b(time_text(w.time)),
+        m(format!(" {}", w.days_text())),
+    ];
+    if chosen.is_empty() {
+        summary.push(m(", no account chosen"));
+    } else {
+        summary.push(m(" for "));
+        summary.push(b(account_names(o, &chosen)));
+    }
+    summary.push(m(if w.wake_pc {
+        ". Wakes the PC for it."
+    } else {
+        ". Runs while SubHub is running."
+    }));
+    let runs: Vec<String> = chosen
+        .iter()
+        .filter_map(|id| {
+            let r = s.warmup_log.last.get(id)?;
+            Some(format!(
+                "{} · {} · {}",
+                label_of(o, *id),
+                when_text(r.at, o.today),
+                r.outcome.text()
+            ))
+        })
+        .collect();
+    let running = !s.warmup_running.is_empty();
+    let start_now = {
+        let state = cx.state.clone();
+        let ids = chosen.clone();
+        text_button(
+            "warmup-now",
+            if running {
+                "Starting…"
+            } else if chosen.len() > 1 {
+                "Start windows now"
+            } else {
+                "Start a window now"
+            },
+            false,
+            !chosen.is_empty() && !running,
+            t,
+            move |app| {
+                let ids = ids.clone();
+                state.update(app, |s, cx| s.warmup_now(ids, cx));
+            },
+        )
+    };
+    let turn_off = {
+        let state = cx.state.clone();
+        link("warmup-off", "Turn off", true, t, move |app| {
+            state.update(app, |s, cx| s.set_warmup(|w| w.enabled = false, cx));
+        })
+    };
+    col.child(para(summary))
+        .children(
+            s.warmup_task_error
+                .clone()
+                .map(|e| div().text_size(px(TINY)).text_color(t.danger).child(e)),
+        )
+        .when(w.wake_pc && s.dev_build(), |d| {
+            d.child(small_text(
+                "Dev build: the installed app sets up the wake task.",
+                t,
+            ))
+        })
+        .when(!runs.is_empty(), |d| {
+            d.child(
+                div()
+                    .mt(px(4.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(h4("Last runs", t))
+                    .children(
+                        runs.into_iter()
+                            .map(|r| div().text_size(px(TINY)).text_color(t.muted).child(r)),
+                    ),
+            )
+        })
+        .child(
+            div()
+                .mt(px(6.0))
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .child(start_now)
+                .child(link("warmup-change", "Change…", false, t, setup))
+                .child(turn_off),
+        )
+}
+
+/// The setup dialog over the Statistics window, editing a draft; "Turn on" / "Save" applies it,
+/// Cancel drops it.
+pub fn dialog(ov: &OverviewState, cx: &Ctx) -> Option<AnyElement> {
+    let draft = ov.warm_dialog.as_ref()?;
+    let o = ov.latest()?;
+    let o = o.as_ref();
+    let t = cx.t;
+    let s = cx.s;
+    let editing = s.settings.warmup.enabled;
+    let suggestion = o.windows.ready().and_then(|r| r.warmup.as_ref());
+    let candidates = warm_candidates(o, s);
+    // Every control edits the draft.
+    let edit = |f: Rc<dyn Fn(&mut WarmupSettings)>| {
+        cx.upd(move |ov| {
+            if let Some(d) = ov.warm_dialog.as_mut() {
+                f(d);
+            }
+        })
+    };
+
+    let step = |mins: i64| -> Rc<dyn Fn(&mut WarmupSettings)> {
+        Rc::new(move |w: &mut WarmupSettings| {
+            let m = (w.time.hour() as i64 * 60 + w.time.minute() as i64 + mins).rem_euclid(24 * 60);
+            let m = m - m % 15;
+            w.time = NaiveTime::from_hms_opt((m / 60) as u32, (m % 60) as u32, 0).unwrap_or(w.time);
+        })
+    };
+    let usual = o.windows.ready().and_then(|r| r.rhythm.usual_start);
+    let time_hint = match (suggestion, usual) {
+        (Some(x), Some(start)) if x.at == draft.time => Some(format!(
+            "Suggested from your usual start, {}",
+            time_text(start)
+        )),
+        (Some(x), Some(start)) => Some(format!(
+            "Suggested {} from your usual start, {}",
+            time_text(x.at),
+            time_text(start)
+        )),
+        _ => None,
+    };
+    let use_suggested = suggestion.filter(|x| x.at != draft.time).map(|x| {
+        let at = x.at;
+        link(
+            "warmup-use-suggested",
+            format!("Use {}", time_text(at)),
+            false,
+            t,
+            edit(Rc::new(move |w: &mut WarmupSettings| w.time = at)),
+        )
+    });
+    let time = div()
+        .flex()
+        .items_center()
+        .gap(px(8.0))
+        .children(use_suggested)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(4.0))
+                .child(step_button("warmup-earlier", "−", t, edit(step(-15))))
+                .child(
+                    div()
+                        .w(px(48.0))
+                        .flex()
+                        .justify_center()
+                        .py(px(2.0))
+                        .rounded(px(6.0))
+                        .bg(t.surface)
+                        .text_size(px(BODY))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(time_text(draft.time)),
+                )
+                .child(step_button("warmup-later", "+", t, edit(step(15)))),
+        );
+
+    let mut days = div().flex().gap(px(3.0));
+    for (i, d) in subhub_core::warmup::WEEK.iter().enumerate() {
+        let d = *d;
+        days = days.child(toggle_chip(
+            ("warmup-day", i),
+            subhub_core::warmup::short_day(d),
+            draft.runs_on(d),
+            true,
+            t,
+            edit(Rc::new(move |w: &mut WarmupSettings| {
+                if w.runs_on(d) {
+                    w.days.retain(|x| *x != d);
+                } else {
+                    w.days.push(d);
+                }
+            })),
+        ));
+    }
+
+    let mut accounts = div().flex().flex_wrap().gap(px(4.0));
+    let mut hub_only: Vec<String> = vec![];
+    for (i, a) in candidates.iter().enumerate() {
+        let id = a.account;
+        let ok = can_warm_id(s, id);
+        if !ok {
+            hub_only.push(label_of(o, id));
+        }
+        accounts = accounts.child(toggle_chip(
+            ("warmup-acc", i),
+            label_of(o, id),
+            ok && draft.accounts.contains(&id),
+            ok,
+            t,
+            edit(Rc::new(move |w: &mut WarmupSettings| {
+                if w.accounts.contains(&id) {
+                    w.accounts.retain(|x| *x != id);
+                } else {
+                    w.accounts.push(id);
+                }
+            })),
+        ));
+    }
+
+    let wake = {
+        let toggle = edit(Rc::new(|w: &mut WarmupSettings| w.wake_pc = !w.wake_pc));
+        Switch::new("warmup-wake")
+            .checked(draft.wake_pc)
+            .disabled(crate::demo::on())
+            .on_click(move |_, _, app| toggle(app))
+    };
+    let wake_hint = if crate::demo::on() {
+        "Not in demo mode".to_string()
+    } else {
+        "A Windows task wakes the PC from sleep or hibernation (not when shut down)".to_string()
+    };
+
+    let valid = !draft.days.is_empty() && draft.accounts.iter().any(|id| can_warm_id(s, *id));
+    let apply = {
+        let state = cx.state.clone();
+        let d = draft.clone();
+        let close = cx.upd(|ov| ov.warm_dialog = None);
+        move |app: &mut App| {
+            let d = d.clone();
+            state.update(app, |s, cx| {
+                s.set_warmup(
+                    |w| {
+                        *w = d;
+                        w.enabled = true;
+                    },
+                    cx,
+                )
+            });
+            close(app);
+        }
+    };
+    let cancel = cx.upd(|ov| ov.warm_dialog = None);
+
+    let reset = draft.time + Duration::hours(5);
+    let panel = div()
+        .id("warmup-dialog")
+        .w(px(460.0))
+        .flex()
+        .flex_col()
+        .p(px(22.0))
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(t.border)
+        .bg(t.bg)
+        .shadow_lg()
+        // Clicks inside never reach the backdrop.
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .text_size(px(16.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(if editing {
+                    "Warm-up"
+                } else {
+                    "Set up warm-up"
+                }),
+        )
+        .child(
+            div()
+                .mt(px(6.0))
+                .mb(px(8.0))
+                .text_size(px(SMALL))
+                .line_height(relative(1.5))
+                .text_color(t.muted)
+                .child(rich(
+                    vec![
+                        m("At "),
+                        b(time_text(draft.time)),
+                        m(" SubHub sends the one-word prompt \"ok\" with the smallest model to each \
+                           chosen account. Its 5-hour window then resets at "),
+                        b(time_text(reset)),
+                        m(". Accounts whose window is already running are skipped."),
+                    ],
+                    t,
+                )),
+        )
+        .child(control_line("Time", time_hint, time.into_any_element(), t))
+        .child(control_line("Days", None, days.into_any_element(), t))
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(6.0))
+                .py(px(8.0))
+                .border_t_1()
+                .border_color(t.border)
+                .child(div().text_size(px(BODY)).child("Accounts"))
+                .child(if candidates.is_empty() {
+                    small_text("No account with a 5-hour window.", t)
+                } else {
+                    accounts
+                })
+                .when(!hub_only.is_empty(), |d| {
+                    d.child(small_text(
+                        format!(
+                            "{} {} a CLI profile on this PC.",
+                            names(&hub_only),
+                            if hub_only.len() == 1 { "needs" } else { "need" }
+                        ),
+                        t,
+                    ))
+                }),
+        )
+        .child(control_line(
+            "Wake the PC",
+            Some(wake_hint),
+            wake.into_any_element(),
+            t,
+        ))
+        .child(
+            div()
+                .pt(px(8.0))
+                .border_t_1()
+                .border_color(t.border)
+                .child(small_text(
+                    "Costs well under 1% of a window. Runs while SubHub is running; with Wake \
+                     the PC also from sleep (wake timers must be allowed in the power options). \
+                     A missed time still runs within an hour. You can turn it off any time.",
                     t,
                 )),
         )
         .child(
             div()
+                .mt(px(16.0))
                 .flex()
-                .flex_col()
-                .gap(px(4.0))
-                .text_size(px(SMALL))
-                .text_color(t.muted)
-                .children(facts.into_iter().map(|f| div().child(f))),
-        )
-        .into_any_element()
+                .justify_end()
+                .gap(px(8.0))
+                .child(text_button("warmup-cancel", "Cancel", false, true, t, cancel))
+                .child(text_button(
+                    "warmup-apply",
+                    if editing { "Save" } else { "Turn on" },
+                    true,
+                    valid,
+                    t,
+                    apply,
+                )),
+        );
+    let backdrop_close = cx.upd(|ov| ov.warm_dialog = None);
+    Some(
+        div()
+            .id("warmup-backdrop")
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(gpui::black().opacity(if t.dark { 0.45 } else { 0.25 }))
+            .on_click(move |_, _, cx| backdrop_close(cx))
+            .child(panel)
+            .into_any_element(),
+    )
 }
 
 // ----- Renewals -----
@@ -2407,5 +3675,13 @@ mod tests {
             assert!(!w.title.is_empty(), "{tip:?}");
             assert!(w.title.ends_with('.'), "{}", w.title);
         }
+        // The 5-hour row: a warm-up with an example day, a week lane per account with windows.
+        let w = o.windows.ready().expect("demo has 5 workdays of windows");
+        let warm = w.warmup.as_ref().expect("demo suggests a warm-up");
+        let e = warm.example.as_ref().expect("example day");
+        assert!(e.with[0].warm && !e.real.is_empty());
+        assert!(w.week.iter().any(|l| !l.spans.is_empty()));
+        let off = WarmupSettings::default();
+        assert!(own_start_lines(w, &o, &off).len() >= 2);
     }
 }

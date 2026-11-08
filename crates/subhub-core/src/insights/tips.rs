@@ -36,6 +36,8 @@ pub enum TipAction {
     OpenRow(TipRow),
     /// Hub steering (the account card's menu / Settings -> Hub).
     Steering,
+    /// The warm-up setup dialog, filled in with the suggestion.
+    SetUpWarmUp,
 }
 
 #[derive(Debug, Clone, PartialEq)]

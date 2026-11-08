@@ -80,6 +80,8 @@ type Upd = Rc<dyn Fn(Box<dyn FnOnce(&mut DisplaySettings)>, &mut gpui::App)>;
 
 pub struct SettingsWindow {
     state: Entity<AppState>,
+    /// Opens the Statistics window (on `AppState::pending_overview_row`).
+    on_stats: Rc<dyn Fn(&mut gpui::App)>,
     page: Page,
     /// Account page whose remove button is waiting for the second click.
     confirm_remove: Option<Uuid>,
@@ -132,7 +134,12 @@ pub struct SettingsWindow {
 }
 
 impl SettingsWindow {
-    pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        state: Entity<AppState>,
+        on_stats: Rc<dyn Fn(&mut gpui::App)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let initial_saves = state.read(cx).user_saves;
         let url = state.read(cx).settings.hub.base_url.clone();
         let path_text = |p: Option<&std::path::PathBuf>| {
@@ -266,6 +273,7 @@ impl SettingsWindow {
         ];
         let mut this = Self {
             state,
+            on_stats,
             page: start_page,
             detected: vec![],
             picked: HashSet::new(),
@@ -1061,6 +1069,61 @@ impl SettingsWindow {
                 }),
                 t,
             ))
+            .child({
+                // Warm-up is set up next to its explanation (Statistics → 5-hour windows); here
+                // only its state and the way there.
+                let s = self.state.read(cx);
+                let w = &s.settings.warmup;
+                let hint = if w.enabled {
+                    let names: Vec<String> = w
+                        .accounts
+                        .iter()
+                        .filter_map(|id| s.account(*id))
+                        .map(|a| {
+                            // Same name on both providers: say which.
+                            let twin = s.settings.accounts.iter().any(|b| {
+                                b.id != a.id && b.label.trim().eq_ignore_ascii_case(a.label.trim())
+                            });
+                            if twin {
+                                format!("{} ({})", a.label, crate::state::provider_name(a.provider))
+                            } else {
+                                a.label.clone()
+                            }
+                        })
+                        .collect();
+                    format!(
+                        "On · {} {}{}{}",
+                        w.time.format("%-H:%M"),
+                        w.days_text(),
+                        if names.is_empty() {
+                            " · no account chosen".to_string()
+                        } else {
+                            format!(" · {}", names.join(", "))
+                        },
+                        if w.wake_pc { " · wakes the PC" } else { "" }
+                    )
+                } else {
+                    "Off. Starts your 5-hour windows early, so they reset when you usually run out."
+                        .to_string()
+                };
+                let state = self.state.clone();
+                let on_stats = self.on_stats.clone();
+                row(
+                    "Warm-up",
+                    Some(&hint),
+                    button("warmup-setup", "Set up in Statistics…", t, false).on_click(
+                        move |_, _, cx| {
+                            state.update(cx, |s, _| {
+                                s.pending_overview_row =
+                                    Some(subhub_core::insights::TipRow::Windows)
+                            });
+                            on_stats(cx);
+                        },
+                    ),
+                    t,
+                )
+                .into_any_element()
+            })
             .child(row(
                 "Close button",
                 Some("What ✕ on the popover and this window's close button do. Quit is always in the tray icon's menu."),
@@ -1614,7 +1677,7 @@ impl SettingsWindow {
             return div().child("Account not found.").into_any_element();
         };
         let (tag_text, tag_color) = account_tag(s, &acc);
-        let plan = s.plans.get(&id).cloned();
+        let plan = s.settings.plans.get(&id).cloned();
         let favorite = s.display().taskbar_favorites.contains(&id);
         let preferred = s.settings.steering.preferred == Some(id);
         let groups = s.settings.groups.clone();

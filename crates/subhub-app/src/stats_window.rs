@@ -74,7 +74,15 @@ impl StatsWindow {
         on_settings: Rc<dyn Fn(&mut gpui::App)>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let sub = cx.observe(&state, |_, _, cx| cx.notify());
+        // A row asked for from elsewhere (Settings → General → Warm-up) opens on the Overview.
+        let sub = cx.observe(&state, |this: &mut Self, state, cx| {
+            if let Some(row) = state.update(cx, |s, _| s.pending_overview_row.take()) {
+                this.tab = Tab::Overview;
+                this.overview.open = Some(row);
+            }
+            cx.notify()
+        });
+        let pending_row = state.update(cx, |s, _| s.pending_overview_row.take());
         // The Limits countdowns tick: re-render twice a minute while that tab is open; the
         // Overview re-renders only when its analysis is old enough to run again. Ends with the
         // window.
@@ -114,10 +122,20 @@ impl StatsWindow {
             copied: None,
             prices_open: false,
             summary: None,
-            overview: OverviewState::new(),
+            overview: {
+                let mut o = OverviewState::new();
+                if pending_row.is_some() {
+                    o.open = pending_row;
+                }
+                o
+            },
             on_settings,
             _sub: sub,
         }
+    }
+
+    pub(crate) fn overview_ref(&self) -> &OverviewState {
+        &self.overview
     }
 
     pub(crate) fn overview_mut(&mut self) -> &mut OverviewState {
@@ -643,6 +661,7 @@ impl Render for StatsWindow {
                 None => "API estimate: tokens priced with the built-in price table (LiteLLM list not fetched yet). Models without a public price are Unpriced.".to_string(),
             }
         };
+        let mut overlay: Option<AnyElement> = None;
         let body: AnyElement = if on_overview {
             let open_settings: overview::OpenSettings = {
                 let state = self.state.clone();
@@ -655,16 +674,16 @@ impl Render for StatsWindow {
                     on_settings(cx);
                 })
             };
-            overview::body(
-                &self.overview,
-                &overview::Ctx {
-                    t: &t,
-                    s: self.state.read(cx),
-                    me: me.clone(),
-                    state: self.state.clone(),
-                    open_settings,
-                },
-            )
+            let ctx = overview::Ctx {
+                t: &t,
+                s: self.state.read(cx),
+                me: me.clone(),
+                state: self.state.clone(),
+                open_settings,
+            };
+            // The warm-up setup dialog sits over the page, outside the scroll area.
+            overlay = overview::dialog(&self.overview, &ctx);
+            overview::body(&self.overview, &ctx)
         } else if on_limits {
             crate::limits_board::board(self.state.read(cx), Utc::now(), &t)
         } else if let Some((_, summary)) = self.summary.as_ref().filter(|_| has_scan) {
@@ -738,7 +757,8 @@ impl Render for StatsWindow {
                                     .child(body),
                             ),
                     )
-                    .vertical_scrollbar(&self.scroll),
+                    .vertical_scrollbar(&self.scroll)
+                    .children(overlay),
             )
     }
 }

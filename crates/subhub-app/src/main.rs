@@ -21,6 +21,7 @@ mod theme;
 mod title_bar;
 mod tray;
 mod updater;
+mod warmup_run;
 mod window_style;
 
 use std::cell::RefCell;
@@ -81,6 +82,14 @@ fn main() {
         stats_dump(args.get(i + 1));
         return;
     }
+    // The wake task ("AI SubHub warm-up"): run the due warm-ups and exit. No UI, no tray, no
+    // instance check (the warm-up lock prevents double runs). Never in demo mode.
+    if args.iter().any(|a| a == "--warm-up") {
+        if !demo::on() {
+            warmup_run::headless();
+        }
+        return;
+    }
     // Started by an update: the old process still owns the tray and the instance mutex, so wait
     // for it to end first (at most 30 s), before either is touched.
     let start = subhub_core::update::parse_start_args(&args);
@@ -123,7 +132,7 @@ fn main() {
                 if demo::on() {
                     for a in &s.settings.accounts {
                         if let Some(plan) = subhub_core::demo::plan(a.id) {
-                            s.plans.insert(a.id, plan.to_string());
+                            s.settings.plans.insert(a.id, plan.to_string());
                         }
                     }
                 }
@@ -232,6 +241,12 @@ fn main() {
             state.update(cx, |s, _| {
                 s.prepare_whats_new(updated_from.as_deref(), show_notes)
             });
+            // The wake task follows the settings (an update moves the exe it starts).
+            state.update(cx, |s, cx| {
+                if s.settings.warmup.enabled && s.settings.warmup.wake_pc {
+                    s.sync_wake_task(cx);
+                }
+            });
 
             // First start without accounts: open Settings on Accounts → Add accounts, which lists
             // the CLI profiles found on this PC (and points to the hub setup).
@@ -275,7 +290,10 @@ fn spawn_updater(shell: ShellRef, cx: &mut App) {
             cx.update(|cx| {
                 let busy = busy_now(&shell, cx);
                 let state = shell.borrow().state.clone();
-                state.update(cx, |s, cx| s.update_tick(busy, cx));
+                state.update(cx, |s, cx| {
+                    s.update_tick(busy, cx);
+                    s.warmup_tick(cx);
+                });
             });
         }
     })
@@ -638,6 +656,11 @@ fn open_settings(shell: &ShellRef, cx: &mut App) {
         ..Default::default()
     };
     let quit_state = state.clone();
+    // General → Warm-up "Set up…" opens Statistics on the 5-hour windows row.
+    let on_stats: Rc<dyn Fn(&mut App)> = {
+        let shell = shell.clone();
+        Rc::new(move |cx: &mut App| open_stats(&shell, cx))
+    };
     if let Ok(h) = cx.open_window(options, |window, cx| {
         // The window's close button follows General → Close button: only the window closes
         // (SubHub keeps running in the tray), or SubHub quits completely.
@@ -647,7 +670,7 @@ fn open_settings(shell: &ShellRef, cx: &mut App) {
             }
             true
         });
-        let view = cx.new(|cx| SettingsWindow::new(state, window, cx));
+        let view = cx.new(|cx| SettingsWindow::new(state, on_stats, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     }) {
         let _ = h.update(cx, |_, window, cx| {

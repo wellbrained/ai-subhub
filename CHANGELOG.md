@@ -5,6 +5,9 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 ## Unreleased
 
 - Statistics opens on a new Overview: one sentence on how much of your plans you use, four key numbers, the most useful tip, and short answers for Plans, 5-hour windows, Renewals and Where usage goes that open for details.
+- The 5-hour windows section explains how windows and resets work, draws one of your days as it went and with an earlier first window, and shows the last 7 days of windows per account.
+- Warm-up: SubHub can start your 5-hour windows at a set time on chosen days with a one-word prompt, so the first reset comes when you usually run out. Off until you turn it on: "Set it up…" opens a dialog filled in with the suggested time and accounts, which you confirm or change. It skips accounts whose window is already running, can wake a sleeping PC for it (your choice), and "Start a window now" does it right away.
+- Plans are remembered across restarts, and the Overview's "Now" bars follow "Show usage as".
 - Tips you don't want can be hidden with "Not for me" (and brought back with "Show hidden tips"). The former tabs are now "Limits now" and "Tokens & cost".
 - Demo mode: start with `--demo` to try SubHub (or take screenshots) on made-up accounts and usage; it runs next to your real SubHub and never touches your accounts, hub, settings or startup.
 - Choose where new hub threads go from the ⋯ menu on each account card (Use for new hub threads / Back to Auto); the Hub badge now only shows the state. The menu also opens the account's settings.

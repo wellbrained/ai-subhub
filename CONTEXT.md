@@ -92,7 +92,7 @@ _Avoid_: Recommendation, which suggests SubHub changes the plan; it never does.
 
 **Work rhythm**: When the user's workday (Monday to Friday) usually starts and how long the first 5-hour window usually lasts before its limit hit.
 
-**Warm-up**: Starting an account's 5-hour window early with a tiny prompt, so its reset lands when the user would otherwise run out. The suggested time comes from the work rhythm.
+**Warm-up**: Starting an account's 5-hour window early with a tiny prompt, so its reset lands when the user would otherwise run out. The suggested time comes from the work rhythm. SubHub runs it by itself at the chosen time on the chosen days (or right away with "Start a window now"); a **wake task** (a Windows scheduled task) can wake a sleeping PC for it.
 
 **Overview**: The first tab of the Statistics window: a verdict sentence, four numbers, the top tip and one row per topic (Plans, 5-hour windows, Renewals, Where usage goes) that states its answer and opens for details.
 

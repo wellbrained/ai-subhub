@@ -71,7 +71,6 @@ pub struct AppState {
     pub settings: Settings,
     path: PathBuf,
     pub status: HashMap<Uuid, AccountStatus>,
-    pub plans: HashMap<Uuid, String>,
     pub hub: HubStatus,
     pub refreshing: bool,
     pub last_refresh: Option<DateTime<Utc>>,
@@ -125,6 +124,13 @@ pub struct AppState {
     /// Patch notes waiting for the popover's next opening (shown as a dialog over it until the
     /// user closes it). Not saved; recomputed at every start.
     pub pending_notes: Option<PendingNotes>,
+    /// The Overview row the Statistics window should open (Settings -> General "Set up…").
+    pub pending_overview_row: Option<subhub_core::insights::TipRow>,
+    /// Warm-up: the shared run log (re-read before each tick), what is running now, and the
+    /// last wake-task error.
+    pub warmup_log: subhub_core::warmup::RunLog,
+    pub warmup_running: HashSet<Uuid>,
+    pub warmup_task_error: Option<String>,
 }
 
 /// The "Updated to vX.Y.Z" dialog's content.
@@ -156,7 +162,6 @@ impl AppState {
             settings,
             path,
             status: HashMap::new(),
-            plans: HashMap::new(),
             hub,
             refreshing: false,
             last_refresh: None,
@@ -185,7 +190,145 @@ impl AppState {
             update: crate::updater::UpdateState::new(),
             popover_dragging: false,
             pending_notes: None,
+            pending_overview_row: None,
+            warmup_log: subhub_core::warmup::load_log(&subhub_core::warmup::log_path(
+                &settings::default_path(),
+            )),
+            warmup_running: HashSet::new(),
+            warmup_task_error: None,
         }
+    }
+
+    // ---- warm-up (docs/features/overview.md, "Warm-up") ----
+
+    /// Once a minute: runs the scheduled warm-ups that are due (catch-up included).
+    pub fn warmup_tick(&mut self, cx: &mut Context<Self>) {
+        if !self.warmup_running.is_empty() || !self.settings.warmup.enabled {
+            return;
+        }
+        let log_path = subhub_core::warmup::log_path(&self.path);
+        self.warmup_log = subhub_core::warmup::load_log(&log_path);
+        let due = subhub_core::warmup::due(
+            &self.settings.warmup,
+            &self.settings.accounts,
+            &self.warmup_log,
+            Utc::now(),
+            &subhub_core::insights::Zone::Local,
+        );
+        if due.is_empty() {
+            return;
+        }
+        let ids = due.iter().map(|d| d.account).collect();
+        self.start_warmup(crate::warmup_run::Job::Scheduled, ids, cx);
+    }
+
+    /// "Start a window now" for the chosen accounts.
+    pub fn warmup_now(&mut self, ids: Vec<Uuid>, cx: &mut Context<Self>) {
+        if !self.warmup_running.is_empty() || ids.is_empty() {
+            return;
+        }
+        let set = ids.iter().copied().collect();
+        self.start_warmup(crate::warmup_run::Job::Now(ids), set, cx);
+    }
+
+    fn start_warmup(
+        &mut self,
+        job: crate::warmup_run::Job,
+        ids: HashSet<Uuid>,
+        cx: &mut Context<Self>,
+    ) {
+        self.warmup_running = ids;
+        cx.notify();
+        let settings = self.settings.clone();
+        let path = self.path.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let runs = cx
+                .background_executor()
+                .spawn(async move {
+                    if crate::demo::on() {
+                        Some(crate::warmup_run::pretend(&settings, &path, &job))
+                    } else {
+                        crate::warmup_run::execute(&settings, &path, &job)
+                    }
+                })
+                .await;
+            let started: Vec<Uuid> = runs
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(_, r)| r.outcome == subhub_core::warmup::Outcome::Started)
+                .map(|(id, _)| id)
+                .collect();
+            let _ = this.update(cx, |s, cx| {
+                s.warmup_running.clear();
+                s.warmup_log =
+                    subhub_core::warmup::load_log(&subhub_core::warmup::log_path(&s.path));
+                cx.notify();
+            });
+            if started.is_empty() {
+                return;
+            }
+            // Read the accounts again once the provider has counted the prompt.
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(
+                    subhub_core::warmup::REFRESH_AFTER_SECS,
+                ))
+                .await;
+            for id in started {
+                let _ = this.update(cx, |s, cx| s.refresh_account(id, cx));
+            }
+        })
+        .detach();
+    }
+
+    /// Changes the warm-up settings, saves, and brings the wake task in line.
+    pub fn set_warmup(
+        &mut self,
+        f: impl FnOnce(&mut subhub_core::warmup::WarmupSettings),
+        cx: &mut Context<Self>,
+    ) {
+        f(&mut self.settings.warmup);
+        self.save_user();
+        self.sync_wake_task(cx);
+        cx.notify();
+    }
+
+    /// Creates, updates or removes the wake task to match the settings (in the background).
+    /// Never in demo mode, and never from a dev build (the task would point at the build's exe):
+    /// the installed app owns it.
+    pub fn sync_wake_task(&mut self, cx: &mut Context<Self>) {
+        if crate::demo::on() || self.dev_build() {
+            return;
+        }
+        let w = self.settings.warmup.clone();
+        let want = w.enabled && w.wake_pc && !w.days.is_empty();
+        cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    if want {
+                        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+                        let today = chrono::Local::now().date_naive();
+                        subhub_core::warmup::install_task(&exe, &w, today)
+                    } else {
+                        subhub_core::warmup::remove_task()
+                    }
+                })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.warmup_task_error = result
+                    .err()
+                    .map(|e| format!("The wake task could not be changed: {e}"));
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Running from cargo's target folder.
+    pub fn dev_build(&self) -> bool {
+        std::env::current_exe()
+            .map(|p| subhub_core::update::is_dev_build(&p))
+            .unwrap_or(false)
     }
 
     /// At start: decides whether patch notes are waiting (nothing opens by itself; the popover
@@ -724,7 +867,7 @@ impl AppState {
                 acc.email = result.email.clone();
             }
             if let Some(plan) = &result.plan {
-                self.plans.insert(id, plan.clone());
+                self.settings.plans.insert(id, plan.clone());
             }
             if result.state == UsageState::Ready {
                 self.account_notes.remove(&id);
@@ -758,8 +901,8 @@ impl AppState {
             if let Some(st) = self.status.remove(&removed) {
                 self.status.entry(kept).or_insert(st);
             }
-            if let Some(p) = self.plans.remove(&removed) {
-                self.plans.entry(kept).or_insert(p);
+            if let Some(p) = self.settings.plans.remove(&removed) {
+                self.settings.plans.entry(kept).or_insert(p);
             }
             if let Some(until) = self.hub_cooldown.remove(&removed) {
                 self.hub_cooldown.entry(kept).or_insert(until);
@@ -891,6 +1034,7 @@ impl AppState {
         self.settings.schedules.remove(&id);
         self.settings.billing.remove(&id);
         self.settings.billing_reminders.remove(&id);
+        self.settings.plans.remove(&id);
         self.account_notes.remove(&id);
         self.status.remove(&id);
         self.save_user();

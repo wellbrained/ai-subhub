@@ -358,6 +358,11 @@ pub struct Settings {
     pub stats: StatsSettings,
     /// Overview tips the user hid with "Not for me" (stable tip ids, `insights::Tip::id`).
     pub dismissed_tips: Vec<String>,
+    /// Last plan label the provider reported per account ("Max 20x"), kept across restarts so
+    /// plan fit and badges work before the first refresh.
+    pub plans: HashMap<Uuid, String>,
+    /// Warm-up: start the chosen accounts' 5-hour windows at a set time (`warmup`).
+    pub warmup: crate::warmup::WarmupSettings,
 }
 
 impl Default for Settings {
@@ -380,6 +385,8 @@ impl Default for Settings {
             updates: UpdateSettings::default(),
             stats: StatsSettings::default(),
             dismissed_tips: vec![],
+            plans: HashMap::new(),
+            warmup: Default::default(),
         }
     }
 }

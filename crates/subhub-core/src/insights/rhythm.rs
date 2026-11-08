@@ -6,10 +6,12 @@
 //! not shape the suggestion.
 use std::collections::{BTreeMap, HashMap};
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, NaiveTime, Timelike, Utc, Weekday};
+use chrono::{
+    DateTime, Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, Timelike, Utc, Weekday,
+};
 use uuid::Uuid;
 
-use super::readings::{SESSION_LEN_H, SessionWindow};
+use super::readings::{SESSION_LEN_H, SessionWindow, WindowEnd};
 use super::zone::Zone;
 
 /// Workdays the usual start and first hit are taken over.
@@ -258,10 +260,101 @@ pub fn simulate(
     }
 }
 
+/// One window on a timeline, in local wall time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Span {
+    pub start: NaiveDateTime,
+    pub reset: NaiveDateTime,
+    /// When it ran out (then the rest until the reset is waiting).
+    pub hit: Option<NaiveDateTime>,
+    /// Started by the warm-up (no work in it before the day starts).
+    pub warm: bool,
+    /// No reading in its last hours (PC off): drawn faint, never as a hit.
+    pub unknown: bool,
+}
+
+/// One past workday drawn twice: as it went, and with the warm-up (an estimate).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExampleDay {
+    pub date: NaiveDate,
+    pub account: Uuid,
+    /// When work started that day (local).
+    pub start: NaiveTime,
+    /// The account's windows that started that day.
+    pub real: Vec<Span>,
+    /// The warm-up window, then back-to-back windows while work went on; the first one's wait
+    /// comes from the real first hit, later hits are not guessed.
+    pub with: Vec<Span>,
+    pub waited_now: Duration,
+    pub waited_with: Duration,
+}
+
+/// The day the timeline shows: the latest simulated workday the warm-up helped most recently
+/// (it ran and saved time), else the latest one it ran on.
+pub fn example_day(
+    at: NaiveTime,
+    r: &Rhythm,
+    sim: &Simulation,
+    windows: &dyn Fn(Uuid) -> Vec<SessionWindow>,
+    zone: &Zone,
+) -> Option<ExampleDay> {
+    let pick = sim
+        .days
+        .iter()
+        .rev()
+        .find(|d| d.ran && d.waited_with < d.waited_now)
+        .or_else(|| sim.days.iter().rev().find(|d| d.ran))?;
+    let day = r.days.iter().find(|d| d.date == pick.date)?;
+    let first = day.first.as_ref()?;
+    let local = |t: DateTime<Utc>| zone.local(t);
+    let mut real: Vec<Span> = windows(first.account)
+        .into_iter()
+        .filter(|w| zone.local(w.start).date() == pick.date)
+        .map(|w| Span {
+            start: local(w.start),
+            reset: local(w.resets_at),
+            hit: w.hit_at.map(local),
+            warm: false,
+            unknown: w.end == WindowEnd::Unknown,
+        })
+        .collect();
+    real.sort_by_key(|s| s.start);
+    let last_reset = real.iter().map(|s| s.reset).max()?;
+    let t = zone.utc_of(pick.date.and_time(at));
+    let first_reset = t + Duration::hours(SESSION_LEN_H);
+    let mut with = vec![Span {
+        start: local(t),
+        reset: local(first_reset),
+        hit: first.hit_at.filter(|h| *h < first_reset).map(local),
+        warm: true,
+        unknown: false,
+    }];
+    let mut start = first_reset;
+    while local(start) < last_reset {
+        let reset = start + Duration::hours(SESSION_LEN_H);
+        with.push(Span {
+            start: local(start),
+            reset: local(reset),
+            hit: None,
+            warm: false,
+            unknown: false,
+        });
+        start = reset;
+    }
+    Some(ExampleDay {
+        date: pick.date,
+        account: first.account,
+        start: day.start,
+        real,
+        with,
+        waited_now: pick.waited_now,
+        waited_with: pick.waited_with,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::insights::readings::WindowEnd;
     use crate::insights::zone::tests::spring;
 
     fn win(account: u128, start: &str, hit_after_min: Option<i64>) -> SessionWindow {
@@ -388,5 +481,48 @@ mod tests {
         // Both days: warm-up reset at 11:00 local = the hit, nothing left to wait.
         assert!(s.days.iter().all(|d| d.waited_with == Duration::zero()));
         assert_eq!(s.saved(), Duration::hours(4));
+    }
+
+    #[test]
+    fn example_day_draws_the_real_day_and_the_warm_up_chain() {
+        // Mon: start 09:00, hit 12:30 (waits 1:30), then 14:00-19:00; Tue: no hit.
+        let ws = vec![
+            win(1, "2026-11-02T09:00:00Z", Some(210)),
+            win(1, "2026-11-02T14:00:00Z", None),
+            win(1, "2026-11-03T09:00:00Z", None),
+        ];
+        let firsts: Vec<&SessionWindow> = vec![&ws[0], &ws[2]];
+        let r = rhythm(&firsts, &BTreeMap::new(), &Zone::utc(), date("2026-11-04"));
+        let at = NaiveTime::from_hms_opt(7, 0, 0).unwrap();
+        let of = |a: Uuid| {
+            ws.iter()
+                .filter(|w| w.account == a)
+                .map(|w| (w.start, w.resets_at))
+                .collect()
+        };
+        let sim = simulate(at, &r, &of, &Zone::utc());
+        let all = |_: Uuid| ws.clone();
+        let e = example_day(at, &r, &sim, &all, &Zone::utc()).unwrap();
+        // Monday: the warm-up saved time there (Tuesday ran but saved nothing).
+        assert_eq!(e.date, date("2026-11-02"));
+        assert_eq!(e.real.len(), 2);
+        assert!(e.real[0].hit.is_some() && !e.real[0].warm);
+        let hm = |s: &str| date("2026-11-02").and_time(s.parse().unwrap());
+        // Warm-up 07:00-12:00 resets before the 12:30 hit: no wait, then 12:00-17:00, 17:00-22:00
+        // while the real day went on until 19:00.
+        let spans: Vec<_> = e.with.iter().map(|s| (s.start, s.reset, s.warm)).collect();
+        assert_eq!(
+            spans,
+            vec![
+                (hm("07:00:00"), hm("12:00:00"), true),
+                (hm("12:00:00"), hm("17:00:00"), false),
+                (hm("17:00:00"), hm("22:00:00"), false),
+            ]
+        );
+        assert_eq!(e.with[0].hit, None);
+        assert_eq!(
+            (e.waited_now, e.waited_with),
+            (Duration::minutes(90), Duration::zero())
+        );
     }
 }
