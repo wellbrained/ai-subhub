@@ -137,7 +137,8 @@ fn account_id_of(entry: &Value) -> Option<String> {
 }
 
 /// Parses the `auth-files` body:`{"files": [...]}` (or a bare array). Claude and Codex logins
-/// only. File-name field is unverified, so `name`, `id`, `file`, `filename`, `path` are tried.
+/// only. The file name is `name` (CLIProxyAPI always sends it: the auth file's name, else its
+/// id; checked against its `buildAuthFileEntry` source, 2026-11-08), with `path` as fallback.
 pub(crate) fn parse_auth_files(body: &Value) -> Vec<HubAccount> {
     let files = body
         .get("files")
@@ -149,7 +150,7 @@ pub(crate) fn parse_auth_files(body: &Value) -> Vec<HubAccount> {
         .filter(|f| f.is_object())
         .filter_map(|f| {
             let provider = provider_of(f)?;
-            let file_name = first_str(f, &["name", "id", "file", "filename", "path"])
+            let file_name = first_str(f, &["name", "path"])
                 .map(|n| n.rsplit(['/', '\\']).next().unwrap_or(n).to_string())
                 .unwrap_or_default();
             let email = first_str(f, &["email"])

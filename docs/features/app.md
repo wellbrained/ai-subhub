@@ -28,7 +28,7 @@ Crate `crates/subhub-app` (GPUI). Domain logic lives in `crates/subhub-core`; th
 
 ## Tray icon
 
-- Own `Shell_NotifyIconW` module (`tray.rs`, `NOTIFYICON_VERSION_4`). Left click (`NIN_SELECT`) toggles the popover; right click (`WM_CONTEXTMENU`) opens Open / Refresh usage / Settings / Quit. Only one of each click pair is handled (a click also sends `WM_LBUTTONUP`; handling both opened and closed the popover at once).
+- Own `Shell_NotifyIconW` module (`tray.rs`, `NOTIFYICON_VERSION_4`). Left click (`NIN_SELECT`) toggles the popover; right click (`WM_CONTEXTMENU`, point from wParam) opens the app's own menu (`tray_menu.rs`, owner 2026-11-08: Windows' menu ignored the theme and font): Open AI SubHub / Refresh usage / Statistics / Settings / Quit with icons, a pop-up window at the pointer (above it, below on a top taskbar, inside the work area; `tray_menu::origin`, tested), closed by losing focus, Esc or a pick; Up / Down / Enter work. If the window cannot be opened, Windows' menu shows instead (`Tray::native_menu`). Demo: `--demo-page traymenu`. Only one of each click pair is handled (a click also sends `WM_LBUTTONUP`; handling both opened and closed the popover at once).
 - Icon: the static logo. Tooltip: just "AI SubHub", Windows' plain tooltip like other tray apps (owner, 2026-11-07: the usage is one click away in the popover; the earlier usage text and the tray hover card were removed).
 
 ## Hover cards (2026-11-07)

@@ -22,6 +22,7 @@ mod taskbar;
 mod theme;
 mod title_bar;
 mod tray;
+mod tray_menu;
 mod updater;
 mod warmup_run;
 mod window_style;
@@ -60,6 +61,8 @@ struct Shell {
         subhub_core::settings::TaskbarMode,
     )>,
     closed_at: Option<Instant>,
+    /// The tray icon's right-click menu while it is open (tray_menu.rs).
+    menu: Option<gpui::AnyWindowHandle>,
     state: Entity<AppState>,
 }
 
@@ -164,6 +167,7 @@ fn main() {
                 main_view: None,
                 taskbar: Vec::new(),
                 closed_at: None,
+                menu: None,
                 state: state.clone(),
             }));
             // No hover card while the popover is open.
@@ -211,24 +215,7 @@ fn main() {
                 cx.spawn(async move |cx| {
                     while let Some(ev) = rx.next().await {
                         let shell = shell.clone();
-                        cx.update(|cx| match ev {
-                            TrayEvent::Toggle => toggle_popover(&shell, Anchor::Tray, cx),
-                            TrayEvent::Open => {
-                                if shell.borrow().popover.is_none() {
-                                    toggle_popover(&shell, Anchor::Tray, cx)
-                                }
-                            }
-                            TrayEvent::Refresh => {
-                                let st = shell.borrow().state.clone();
-                                st.update(cx, |s, cx| s.refresh(true, cx));
-                            }
-                            TrayEvent::Settings => open_settings(&shell, cx),
-                            TrayEvent::Statistics => open_stats(&shell, cx),
-                            TrayEvent::Quit => cx.quit(),
-                            // The tray icon shows Windows' text tooltip, no hover card.
-                            TrayEvent::HoverOpen | TrayEvent::HoverMove | TrayEvent::HoverClose => {
-                            }
-                        });
+                        cx.update(|cx| handle_tray(&shell, ev, cx));
                     }
                 })
                 .detach();
@@ -283,6 +270,8 @@ fn main() {
                     open_stats(&shell, cx);
                 } else if page == "popover" {
                     toggle_popover(&shell, Anchor::Tray, cx);
+                } else if page == "traymenu" && demo::hidden() {
+                    open_tray_menu(&shell, 0, 0, cx);
                 } else if (page == "taskbar" || page == "traycard") && demo::hidden() {
                     // README picture of the taskbar display and a hover card (showcase.rs);
                     // "traycard": the tray icon's card instead of a badge's.
@@ -439,6 +428,76 @@ enum Anchor {
     Tray,
     /// The taskbar display that was clicked (physical screen px).
     TaskbarDisplay(subhub_core::placement::Rect),
+}
+
+/// A tray icon event, or a pick from the tray menu.
+fn handle_tray(shell: &ShellRef, ev: TrayEvent, cx: &mut App) {
+    match ev {
+        TrayEvent::Toggle => toggle_popover(shell, Anchor::Tray, cx),
+        TrayEvent::Open => {
+            if shell.borrow().popover.is_none() {
+                toggle_popover(shell, Anchor::Tray, cx)
+            }
+        }
+        TrayEvent::Refresh => {
+            let st = shell.borrow().state.clone();
+            st.update(cx, |s, cx| s.refresh(true, cx));
+        }
+        TrayEvent::Settings => open_settings(shell, cx),
+        TrayEvent::Statistics => open_stats(shell, cx),
+        TrayEvent::Quit => cx.quit(),
+        TrayEvent::Menu(x, y) => open_tray_menu(shell, x, y, cx),
+        // The tray icon shows Windows' text tooltip, no hover card.
+        TrayEvent::HoverOpen | TrayEvent::HoverMove | TrayEvent::HoverClose => {}
+    }
+}
+
+/// Opens the tray menu at the physical point `(x, y)` (a second right click replaces it). Falls
+/// back to Windows' menu when the window cannot be opened.
+fn open_tray_menu(shell: &ShellRef, x: i32, y: i32, cx: &mut App) {
+    hover_card::hide(cx);
+    if let Some(old) = shell.borrow_mut().menu.take() {
+        let _ = old.update(cx, |_, window, _| window.remove_window());
+    }
+    let (display, scale, work) = match monitors::at_point(x, y) {
+        Some((d, s, r)) => (Some(d), s, (r.left, r.top, r.right, r.bottom)),
+        None => (None, 1.0, (x - 400, y - 400, x + 400, y + 400)),
+    };
+    let (w, h) = (tray_menu::WIDTH, tray_menu::height());
+    let (ox, oy) = tray_menu::origin((x, y), work, scale, w, h);
+    let state = shell.borrow().state.clone();
+    let border = border_color(&state, cx);
+    let options = WindowOptions {
+        display_id: display,
+        window_bounds: Some(WindowBounds::Windowed(Bounds {
+            origin: point(px(ox), px(oy)),
+            size: size(px(w), px(h)),
+        })),
+        titlebar: None,
+        kind: WindowKind::PopUp,
+        focus: !demo::hidden(),
+        show: !demo::hidden(),
+        is_movable: false,
+        is_resizable: false,
+        is_minimizable: false,
+        window_background: WindowBackgroundAppearance::Opaque,
+        ..Default::default()
+    };
+    let pick_shell = shell.clone();
+    let on_pick: tray_menu::OnPick = Rc::new(move |ev, cx| handle_tray(&pick_shell, ev, cx));
+    let result = cx.open_window(options, move |window, cx| {
+        cx.new(|cx| tray_menu::TrayMenu::new(state, on_pick, window, cx))
+    });
+    match result {
+        Ok(handle) => {
+            let _ = handle.update(cx, |_, window, cx| {
+                window_style::round(window, border);
+                present(window, cx, w, h);
+            });
+            shell.borrow_mut().menu = Some(handle.into());
+        }
+        Err(_) => shell.borrow().tray.native_menu(),
+    }
 }
 
 fn toggle_popover(shell: &ShellRef, anchor: Anchor, cx: &mut App) {

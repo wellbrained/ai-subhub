@@ -45,6 +45,7 @@ pub enum Icon {
     CircleCheck,
     Bell,
     BellOff,
+    Power,
     Provider(ProviderKind),
 }
 
@@ -91,6 +92,7 @@ impl Icon {
             Icon::CircleCheck => "icons/circle-check.svg",
             Icon::Bell => "icons/bell.svg",
             Icon::BellOff => "icons/bell-off.svg",
+            Icon::Power => "icons/power.svg",
             Icon::Provider(ProviderKind::Claude) => "icons/provider-claude.svg",
             Icon::Provider(ProviderKind::Codex) => "icons/provider-openai.svg",
         }

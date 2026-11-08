@@ -10,10 +10,18 @@ pub(crate) fn label(value: &str) -> Option<String> {
         "plus" => "Plus",
         "max" => "Max",
         "team" => "Team",
-        "business" => "Business",
         "enterprise" => "Enterprise",
         "edu" => "Edu",
         "go" => "Go",
+        // Codex plan ids (Codex CLI `KnownPlan`, 2026-11-08); no prices for these, so no plan fit.
+        "prolite" => "Pro Lite",
+        "promax" => "Pro Max",
+        "business" | "self_serve_business_prolite" | "self_serve_business_usage_based" => {
+            "Business"
+        }
+        "ent26" | "enterprise_cbp_automation" | "enterprise_cbp_usage_based" => "Enterprise",
+        "edu_plus" => "Edu Plus",
+        "edu_pro" => "Edu Pro",
         _ => return None,
     };
     Some(l.to_string())
@@ -52,4 +60,22 @@ pub(crate) fn claude_plan(v: &Value) -> Option<String> {
         text(oauth, "subscriptionType")?,
         text(oauth, "rateLimitTier"),
     )
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::label;
+
+    #[test]
+    fn codex_plan_ids_get_labels() {
+        assert_eq!(label("prolite").as_deref(), Some("Pro Lite"));
+        assert_eq!(label("promax").as_deref(), Some("Pro Max"));
+        assert_eq!(
+            label("self_serve_business_usage_based").as_deref(),
+            Some("Business")
+        );
+        assert_eq!(label("ent26").as_deref(), Some("Enterprise"));
+        assert_eq!(label("PRO").as_deref(), Some("Pro"));
+        assert_eq!(label("guest"), None);
+    }
 }

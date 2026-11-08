@@ -2,10 +2,17 @@
 
 Patch notes shown after an update (embedded in the exe). Each release gets `## X.Y.Z – date` and 3-6 short bullets. Work in progress goes under `## Unreleased` and is renamed when a version is released (`scripts/release.ps1` refuses a version without a section).
 
+## Unreleased
+
+- The tray icon's right-click menu now matches SubHub: dark or light theme, the app's font and icons, and arrow keys to move.
+- Hub accounts on Codex also show extra Codex limits, like local CLI logins already did, and newer Codex plans (Pro Lite, Pro Max and others) get their name on the card.
+- Smaller download: the app is now about 23 MB instead of 31 MB, with no noticeable change in speed.
+- Fixed the 0.1.6 notes: the new font is on the taskbar badges' hover cards; the tray icon keeps Windows' own tooltip.
+
 ## 0.1.6 – 2026-11-08
 
 - New font: SubHub now uses Geist, built into the app, so it looks the same on every PC. The taskbar badges keep Windows' own font.
-- Hovering the tray icon shows its card in the same font as the rest of the app.
+- The hover cards on the taskbar badges use the same font as the rest of the app.
 - The README screenshots show the new font.
 
 ## 0.1.5 – 2026-11-08

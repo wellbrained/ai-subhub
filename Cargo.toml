@@ -17,7 +17,11 @@ uuid = { version = "1", features = ["v4", "serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 keyring = { version = "3", features = ["windows-native"] }
 
+# Size over raw speed (2026-11-08, measured in docs/comparison.md): 32.3 MB -> 23.2 MB; memory the
+# same and CPU within run-to-run noise in demo runs. panic = "abort" would save 8 MB more but a
+# panic in a background task would then close the whole app (owner: keep unwinding).
 [profile.release]
-lto = "thin"
+lto = "fat"
+opt-level = "s"
 strip = true
 codegen-units = 1

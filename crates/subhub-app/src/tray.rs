@@ -44,6 +44,8 @@ pub enum TrayEvent {
     HoverClose,
     /// The pointer moved over the icon (fallback when no NIN_POPUPOPEN comes).
     HoverMove,
+    /// Right click (or the menu key): open the menu at this point (physical px).
+    Menu(i32, i32),
 }
 
 static SENDER: OnceLock<UnboundedSender<TrayEvent>> = OnceLock::new();
@@ -167,6 +169,11 @@ impl Tray {
             nid.dwInfoFlags = NIIF_INFO;
             let _ = Shell_NotifyIconW(NIM_MODIFY, &nid);
         }
+    }
+
+    /// Windows' own tray menu (fallback when the app's menu window cannot be opened).
+    pub fn native_menu(&self) {
+        unsafe { show_menu(self.hwnd) }
     }
 
     /// Where the icon really is, also inside the overflow flyout (hover cards anchor here: the
@@ -313,7 +320,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             NIN_POPUPOPEN => send(TrayEvent::HoverOpen),
             NIN_POPUPCLOSE => send(TrayEvent::HoverClose),
             WM_MOUSEMOVE => send(TrayEvent::HoverMove),
-            WM_CONTEXTMENU => unsafe { show_menu(hwnd) },
+            WM_CONTEXTMENU => {
+                // NOTIFYICON_VERSION_4: wParam holds the point (signed 16-bit x, y); the app draws
+                // its own menu there (tray_menu.rs).
+                let x = (wparam.0 & 0xffff) as u16 as i16 as i32;
+                let y = ((wparam.0 >> 16) & 0xffff) as u16 as i16 as i32;
+                send(TrayEvent::Menu(x, y));
+            }
             _ => {}
         }
         return LRESULT(0);

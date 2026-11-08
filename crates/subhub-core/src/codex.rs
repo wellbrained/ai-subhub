@@ -115,9 +115,11 @@ fn parse_wham_window(window: &Value, slot: &str, now: DateTime<Utc>) -> Option<A
     })
 }
 
-/// Parses the `wham/usage` body returned through the hub. The shape is unverified: only
-/// `rate_limit.primary_window` / `secondary_window` with a valid `used_percent` count; anything
-/// else gives no windows.
+/// Parses the `wham/usage` body returned through the hub (shape checked against the Codex CLI's
+/// `RateLimitStatusPayload`, 2026-11-08): `rate_limit.primary_window` / `secondary_window` with
+/// a valid `used_percent`, then each `additional_rate_limits` entry as a named limit, keyed and
+/// labelled like the app-server read (`<metered_feature>:primary`, "<limit_name> · 5-hour").
+/// Anything else gives no windows.
 pub fn parse_wham(body: &Value) -> Vec<AllowanceWindow> {
     parse_wham_at(body, Utc::now())
 }
@@ -127,13 +129,42 @@ pub fn parse_wham_at(body: &Value, now: DateTime<Utc>) -> Vec<AllowanceWindow> {
     let Some(limit) = body.get("rate_limit").filter(|l| l.is_object()) else {
         return vec![];
     };
-    [
-        ("primary_window", "primary"),
-        ("secondary_window", "secondary"),
-    ]
-    .into_iter()
-    .filter_map(|(field, slot)| parse_wham_window(limit.get(field)?, slot, now))
-    .collect()
+    let slots = |limit: &Value| -> Vec<AllowanceWindow> {
+        [
+            ("primary_window", "primary"),
+            ("secondary_window", "secondary"),
+        ]
+        .into_iter()
+        .filter_map(|(field, slot)| parse_wham_window(limit.get(field)?, slot, now))
+        .collect()
+    };
+    let mut out = slots(limit);
+    let extra = body
+        .get("additional_rate_limits")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    for e in extra {
+        let Some(id) = util::text(e, "metered_feature").filter(|s| !s.trim().is_empty()) else {
+            continue;
+        };
+        let Some(limit) = e.get("rate_limit").filter(|l| l.is_object()) else {
+            continue;
+        };
+        if id.eq_ignore_ascii_case("codex") {
+            continue;
+        }
+        let name = util::text(e, "limit_name")
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or(id);
+        for mut w in slots(limit) {
+            let slot = w.key.rsplit(':').next().unwrap_or("primary").to_string();
+            w.key = format!("{id}:{slot}");
+            w.label = format!("{name} · {}", w.label);
+            out.push(w);
+        }
+    }
+    out
 }
 
 /// Plan from a `wham/usage` body (`plan_type`), known values only.
@@ -586,6 +617,38 @@ mod tests {
             Some(now() + chrono::Duration::seconds(3600))
         );
         assert_eq!(parse_wham_plan(&body).as_deref(), Some("Plus"));
+    }
+
+    #[test]
+    fn wham_reads_additional_limits_like_the_app_server() {
+        let body = json!({
+            "plan_type": "pro",
+            "rate_limit": {"primary_window": {"used_percent": 10, "limit_window_seconds": 18000, "reset_after_seconds": 60, "reset_at": 1_900_000_000}},
+            "additional_rate_limits": [
+                {"limit_name": "Spark", "metered_feature": "codex_spark", "rate_limit": {
+                    "primary_window": {"used_percent": 40, "limit_window_seconds": 604800, "reset_after_seconds": 60, "reset_at": 1_900_000_000}}},
+                {"limit_name": "", "metered_feature": "codex_x", "rate_limit": {
+                    "secondary_window": {"used_percent": 5, "limit_window_seconds": 18000, "reset_after_seconds": 60, "reset_at": 1_900_000_000}}},
+                {"limit_name": "dup", "metered_feature": "codex", "rate_limit": {
+                    "primary_window": {"used_percent": 99, "limit_window_seconds": 18000, "reset_after_seconds": 60, "reset_at": 1_900_000_000}}},
+                {"limit_name": "No id", "rate_limit": {}}
+            ]
+        });
+        let w = parse_wham_at(&body, now());
+        let got: Vec<(&str, &str)> = w
+            .iter()
+            .map(|w| (w.key.as_str(), w.label.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("codex:primary", "5-hour"),
+                ("codex_spark:primary", "Spark · Weekly"),
+                ("codex_x:secondary", "codex_x · 5-hour"),
+            ]
+        );
+        // Named limits are neither the 5-hour nor the weekly window of the account.
+        assert!(!w[1].is_weekly() && !w[2].is_session());
     }
 
     #[test]
