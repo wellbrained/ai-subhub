@@ -40,15 +40,15 @@ fn candidate(
         return None;
     }
     let reading = readings.get(&account.id)?;
-    let find = |f: fn(&str) -> bool| -> Option<&AllowanceWindow> {
-        reading.windows.iter().find(|w| f(&w.key))
+    let find = |f: fn(&AllowanceWindow) -> bool| -> Option<&AllowanceWindow> {
+        reading.windows.iter().find(|w| f(w))
     };
-    let session_left = match find(is_session_window) {
+    let session_left = match find(AllowanceWindow::is_session) {
         Some(w) if w.remaining_percent() < MIN_SESSION_LEFT => return None,
         Some(w) => w.remaining_percent(),
         None => 100.0,
     };
-    let weekly = find(is_weekly_window)?;
+    let weekly = find(AllowanceWindow::is_weekly)?;
     let left = weekly.remaining_percent();
     if left <= 0.0 {
         return None;
@@ -241,6 +241,26 @@ mod tests {
         assert!(!is_session_window("seven_day"));
         assert!(is_weekly_window("seven_day") && is_weekly_window("weekly_all"));
         assert!(!is_weekly_window("seven_day_opus") && !is_weekly_window("weekly_scoped:X"));
+    }
+
+    #[test]
+    fn codex_windows_are_known_by_their_length() {
+        let w = |key: &str, label: &str| AllowanceWindow {
+            key: key.into(),
+            label: label.into(),
+            used_percent: 0.0,
+            resets_at: None,
+        };
+        assert!(w("codex:primary", "5-hour").is_session());
+        assert!(w("codex:secondary", "Weekly").is_weekly());
+        // A plan whose primary window is weekly, or one with a 30-day window.
+        assert!(w("codex:primary", "Weekly").is_weekly());
+        assert!(!w("codex:primary", "30-day").is_session());
+        assert!(!w("codex:secondary", "30-day").is_weekly());
+        // Named Codex limits and unknown lengths stay out.
+        assert!(!w("spark:primary", "Spark · 5-hour").is_session());
+        assert!(!w("codex:primary", "primary").is_session());
+        assert!(w("five_hour", "Session").is_session() && w("weekly_all", "Weekly").is_weekly());
     }
 
     #[test]

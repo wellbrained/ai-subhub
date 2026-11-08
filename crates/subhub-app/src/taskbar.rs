@@ -236,6 +236,28 @@ impl TaskbarDisplay {
     }
 }
 
+impl TaskbarDisplay {
+    /// Demo showcase (`showcase.rs`): the same view inside an ordinary window. It never places
+    /// itself on a taskbar and clicks do nothing.
+    pub fn showcase(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let subs = vec![cx.observe(&state, |_, _, cx| cx.notify())];
+        Self {
+            state,
+            monitor: "showcase".into(),
+            on_click: std::rc::Rc::new(|_, _| {}),
+            drag: None,
+            drag_bar: None,
+            areas: Default::default(),
+            _subs: subs,
+        }
+    }
+}
+
+/// The accounts the display shows, in its order (demo showcase).
+pub fn shown_ids(s: &AppState) -> Vec<uuid::Uuid> {
+    shown(s).iter().map(|a| a.id).collect()
+}
+
 /// The 5-hour and weekly windows of an account (first match each).
 fn session_and_week(
     s: &AppState,
@@ -249,13 +271,13 @@ fn session_and_week(
         .windows
         .iter()
         .filter(vis)
-        .find(|w| subhub_core::steer::is_session_window(&w.key))
+        .find(|w| w.is_session())
         .cloned();
     let week = r
         .windows
         .iter()
         .filter(vis)
-        .find(|w| subhub_core::steer::is_weekly_window(&w.key))
+        .find(|w| w.is_weekly())
         .cloned();
     (session, week)
 }

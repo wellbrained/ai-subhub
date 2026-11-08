@@ -38,6 +38,29 @@ impl AllowanceWindow {
     pub fn remaining_percent(&self) -> f64 {
         (100.0 - self.used_percent).clamp(0.0, 100.0)
     }
+
+    /// The 5-hour session window: Claude's `five_hour` / `session` key, or Codex's main limit
+    /// (`codex:primary` / `codex:secondary`) when its length is 5 hours. Codex names its windows
+    /// by slot, not length, so a plan's primary window may be 5-hour, weekly or 30-day.
+    pub fn is_session(&self) -> bool {
+        crate::steer::is_session_window(&self.key)
+            || self.codex_length() == Some(chrono::Duration::hours(5))
+    }
+
+    /// The all-models weekly window: Claude's `seven_day` / `weekly_all` key, or Codex's main
+    /// limit when its length is 7 days.
+    pub fn is_weekly(&self) -> bool {
+        crate::steer::is_weekly_window(&self.key)
+            || self.codex_length() == Some(chrono::Duration::days(7))
+    }
+
+    /// Length of a window of Codex's main limit, from its label ("5-hour", "Weekly").
+    fn codex_length(&self) -> Option<chrono::Duration> {
+        if self.key != "codex:primary" && self.key != "codex:secondary" {
+            return None;
+        }
+        crate::limits::window_duration(&self.label)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::model::{Account, AllowanceWindow, Reading};
-use crate::steer::{is_session_window, is_weekly_window};
 
 /// How long before running out the notice comes (at least; see `lead`).
 pub const LEAD_MINUTES: i64 = 15;
@@ -57,11 +56,11 @@ pub fn lead(refresh_minutes: u32) -> i64 {
 }
 
 fn session(r: &Reading) -> Option<&AllowanceWindow> {
-    r.windows.iter().find(|w| is_session_window(&w.key))
+    r.windows.iter().find(|w| w.is_session())
 }
 
 fn weekly(r: &Reading) -> Option<&AllowanceWindow> {
-    r.windows.iter().find(|w| is_weekly_window(&w.key))
+    r.windows.iter().find(|w| w.is_weekly())
 }
 
 fn same_window(a: Option<DateTime<Utc>>, b: DateTime<Utc>) -> bool {

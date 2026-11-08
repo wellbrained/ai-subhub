@@ -605,9 +605,16 @@ impl Render for SettingsWindow {
                             .flex()
                             .flex_col()
                             .gap_6()
-                            .p_8()
+                            // Same column as the Insights pages (owner, 2026-11-08: Settings
+                            // kept the old window's 680 px): 1000 px board plus gutter, centred,
+                            // with the Overview's insets (20 + 28 left, 32 + 28 right).
+                            .w_full()
+                            .max_w(px(1012.0))
+                            .mx_auto()
+                            .pl(px(48.0))
+                            .pr(px(60.0))
+                            .pt_8()
                             .pb(px(72.0))
-                            .max_w(px(680.0))
                             .child(content),
                     ),
             )
@@ -762,7 +769,14 @@ fn row(label: &str, hint: Option<&str>, control: impl IntoElement, t: &Tokens) -
                 .gap(px(2.0))
                 .child(div().text_sm().child(SharedString::from(label.to_string())))
                 .when_some(hint.map(|h| h.to_string()), |d, h| {
-                    d.child(div().text_xs().text_color(t.muted).child(h))
+                    // Lines stay readable now that the column is wider.
+                    d.child(
+                        div()
+                            .max_w(px(640.0))
+                            .text_xs()
+                            .text_color(t.muted)
+                            .child(h),
+                    )
                 }),
         )
         .child(div().flex_none().ml_auto().child(control))

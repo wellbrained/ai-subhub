@@ -5,7 +5,6 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::model::{Account, ProviderKind, Reading, UsageState};
-use crate::steer::{is_session_window, is_weekly_window};
 
 /// The steering role of an account (hub steering, ADR 0001).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +81,8 @@ pub struct CardAccount {
     pub health: Health,
     pub steering: Steering,
     pub fetched_at: Option<DateTime<Utc>>,
-    /// 5-hour then weekly (as on the badges); other windows only when neither exists.
+    /// 5-hour then weekly (as on the badges), then the account's other windows (a model's own
+    /// weekly limit such as "Fable", owner 2026-11-08) by their short name.
     pub windows: Vec<CardWindow>,
 }
 
@@ -130,18 +130,25 @@ pub fn card_account(v: &AccountView) -> CardAccount {
         resets_at: w.resets_at,
     };
     let mut windows: Vec<CardWindow> = Vec::new();
-    if let Some(w) = visible.iter().find(|w| is_session_window(&w.key)) {
+    if let Some(w) = visible.iter().find(|w| w.is_session()) {
         windows.push(window(w, "5h"));
     }
-    if let Some(w) = visible.iter().find(|w| is_weekly_window(&w.key)) {
+    if let Some(w) = visible.iter().find(|w| w.is_weekly()) {
         windows.push(window(w, "W"));
     }
+    let main = |w: &&&crate::model::AllowanceWindow| w.is_session() || w.is_weekly();
     if windows.is_empty() {
         windows = visible
             .iter()
             .take(2)
             .map(|w| window(w, &w.label))
             .collect();
+    } else {
+        // Other windows after 5h and W: "Weekly · Fable" shows as "Fable".
+        for w in visible.iter().filter(|w| !main(w)) {
+            let short = w.label.rsplit(" · ").next().unwrap_or(&w.label);
+            windows.push(window(w, short));
+        }
     }
     CardAccount {
         id: a.id,
@@ -267,9 +274,28 @@ mod tests {
             .iter()
             .map(|w| (w.label.as_str(), w.remaining_percent))
             .collect();
-        assert_eq!(got, [("5h", 37.0), ("W", 64.0)]);
-        a.hidden_windows = vec!["five_hour".into()];
+        // 5h and W first, then the model window (Opus) after them.
+        assert_eq!(got[..2], [("5h", 37.0), ("W", 64.0)]);
+        assert_eq!(got.len(), 3);
+        assert_eq!(got[2].1, 90.0);
+        a.hidden_windows = vec!["five_hour".into(), "seven_day_opus".into()];
         assert_eq!(card_account(&view(&a, Some(&r))).windows.len(), 1);
+    }
+
+    #[test]
+    fn model_windows_follow_session_and_weekly() {
+        let a = account("X");
+        let mut r = reading(&[("session", 10.0), ("weekly_all", 20.0)]);
+        r.windows.push(AllowanceWindow {
+            key: "weekly_scoped:Fable".into(),
+            label: "Weekly · Fable".into(),
+            used_percent: 30.0,
+            resets_at: None,
+        });
+        let c = card_account(&view(&a, Some(&r)));
+        let labels: Vec<&str> = c.windows.iter().map(|w| w.label.as_str()).collect();
+        assert_eq!(labels, ["5h", "W", "Fable"]);
+        assert_eq!(c.windows[2].remaining_percent, 70.0);
     }
 
     #[test]

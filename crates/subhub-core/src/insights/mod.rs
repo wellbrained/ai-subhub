@@ -11,7 +11,7 @@
 //! tiers, prices, what-if), `rhythm` (work rhythm, warm-up suggestion and simulation), `usage`
 //! (task kind / project / thread / model shares), `tips`.
 mod fit;
-mod readings;
+pub(crate) mod readings;
 mod rhythm;
 mod tips;
 mod usage;
@@ -24,11 +24,9 @@ use uuid::Uuid;
 
 use crate::billing;
 use crate::history::HistoryLine;
-use crate::limits::{window_duration, window_title};
 use crate::model::{Account, ProviderKind};
 use crate::settings::Settings;
 use crate::stats::{PriceBook, Scan, day_index, hour_date, hour_index, hour_of_day};
-use crate::steer::{is_session_window, is_weekly_window};
 
 pub use fit::{
     AT_LIMIT_HITS, AT_LIMIT_PEAK, DOWNGRADE_HITS, DOWNGRADE_PEAK, FIT_MIN_CYCLES, FitVerdict,
@@ -270,19 +268,14 @@ pub fn now_windows(settings: &Settings, id: Uuid) -> (Option<NowWindow>, Option<
     };
     let (mut s, mut w) = (None, None);
     for x in &r.windows {
-        let len = window_duration(&window_title(&x.label));
-        let codex = x.key.starts_with("codex:");
         let nw = NowWindow {
             used: x.used_percent.clamp(0.0, 100.0),
             resets_at: x.resets_at,
             fetched_at: r.fetched_at,
         };
-        if s.is_none() && (is_session_window(&x.key) || (codex && len == Some(Duration::hours(5))))
-        {
+        if s.is_none() && x.is_session() {
             s = Some(nw);
-        } else if w.is_none()
-            && (is_weekly_window(&x.key) || (codex && len == Some(Duration::days(7))))
-        {
+        } else if w.is_none() && x.is_weekly() {
             w = Some(nw);
         }
     }

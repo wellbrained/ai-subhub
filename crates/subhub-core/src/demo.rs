@@ -71,7 +71,8 @@ const SPECS: &[Spec] = &[
         windows: &[
             ("five_hour", "Session", 38.0, 133),
             ("seven_day", "Weekly", 46.0, 4560),
-            ("seven_day_opus", "Weekly · Opus", 22.0, 4560),
+            // A model's own weekly limit, as Claude reports it today (`limits` array).
+            ("weekly_scoped:Fable", "Weekly · Fable", 22.0, 4560),
         ],
         fetched_mins_ago: 2,
         failing: false,
@@ -319,7 +320,7 @@ pub fn settings(home: &Path, now: DateTime<Utc>, version: &str) -> Settings {
         );
         s.account_tags.insert(sp.id, sp.tag.into());
     }
-    s.display.taskbar_favorites = vec![CLAUDE_WORK];
+    s.display.taskbar_favorites = vec![CLAUDE_WORK, CLAUDE_PERSONAL, CODEX_WORK];
     // By the widgets, so it never sits on the installed app's display next to the tray (owner,
     // 2026-11-07: the two were drawn over each other).
     s.display.taskbar_position = settings::TaskbarPosition::Left;
@@ -1115,7 +1116,10 @@ mod tests {
         assert!(acc(CLAUDE_PERSONAL).hub.is_none() && acc(CLAUDE_PERSONAL).profile_dir.is_some());
         assert!(now() - s.readings[&CODEX_PERSONAL].fetched_at > Duration::hours(2));
         // Favourite, hub + Auto steering with a target, renewal ahead, projects, no patch notes.
-        assert_eq!(s.display.taskbar_favorites, vec![CLAUDE_WORK]);
+        assert_eq!(
+            s.display.taskbar_favorites,
+            vec![CLAUDE_WORK, CLAUDE_PERSONAL, CODEX_WORK]
+        );
         assert_eq!(s.display.taskbar_position, settings::TaskbarPosition::Left);
         assert!(s.hub.enabled && s.steering.enabled && s.steering.preferred.is_none());
         assert_eq!(s.steering.current, Some(CLAUDE_WORK));

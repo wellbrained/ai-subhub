@@ -13,6 +13,7 @@ mod monitors;
 mod overview;
 mod popover;
 mod settings_window;
+mod showcase;
 mod startup;
 mod state;
 mod stats_window;
@@ -279,6 +280,9 @@ fn main() {
                     open_stats(&shell, cx);
                 } else if page == "popover" {
                     toggle_popover(&shell, Anchor::Tray, cx);
+                } else if page == "taskbar" && demo::hidden() {
+                    // README picture of the taskbar display and a hover card (showcase.rs).
+                    showcase::open(state.clone(), cx);
                 }
             }
         });

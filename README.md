@@ -10,12 +10,18 @@ AI SubHub shows the usage limits of all your **Claude Code** and **Codex** accou
   <img src="docs/images/demo-popover.png" width="420" alt="The AI SubHub popover: Claude accounts with plan badges, session and weekly bars, % left and reset times">
 </p>
 
+**Right on the taskbar, next to the tray.** Your favourite accounts sit as small badges beside the clock, with their 5-hour and weekly bars always in view. Hover one for the details, including model limits such as Claude's weekly Fable limit; click it to open the popover.
+
+<p align="center">
+  <img src="docs/images/demo-taskbar.png" width="680" alt="AI SubHub on the Windows taskbar: three account badges with 5-hour and weekly bars next to the tray, and a hover card with the 5h, weekly and Fable limits of one account">
+</p>
+
 *All screenshots use demo mode's made-up accounts and usage.*
 
 ## What it does
 
 - **All limits in one popover.** Click the tray icon for one card per account, with a bar per window, % left (or % used) and the reset time. Stale readings, cooldowns and sign-in problems are shown, not hidden.
-- **Usage on the taskbar.** Optional small badges next to the tray show your favourite accounts at all times. Hover one for details.
+- **Usage on the taskbar.** Small badges next to the tray show up to five accounts at all times (favourites, the one in focus, or automatic), on the main or every taskbar. Hover one for all its limits; drag it to move it. You can switch it off in Appearance.
 - **Several accounts per provider.** Each CLI profile is its own account, with a name, a coloured tag, a plan badge and an optional group. SubHub finds the profiles on your PC and offers to add them.
 - **Launch by account and project.** The rocket on a card opens a project folder in Windows Terminal, PowerShell, VS Code or the provider's desktop app, signed in as that account.
 - **Insights.** Whether your plans fit how you work (too big, at the limit, unused), how often you waited for a 5-hour reset while another account was free, upcoming renewals, and where your usage goes by task, project and model.

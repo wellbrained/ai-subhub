@@ -190,26 +190,34 @@ pub struct AccountSeries {
 }
 
 /// Builds the series from history lines, keeping `since <= fetched_at <= until`. Lines that do not
-/// parse and windows other than the weekly / 5-hour ones (`steer::is_weekly_window` /
-/// `is_session_window`) are ignored. Accounts come out in id order, points in time order.
+/// parse and windows other than the weekly / 5-hour ones (`insights::readings::kind_of`) are
+/// ignored. Accounts come out in id order, points in time order.
 pub fn build_series<'a>(
     lines: impl IntoIterator<Item = &'a str>,
     since: DateTime<Utc>,
     until: DateTime<Utc>,
 ) -> Vec<AccountSeries> {
-    use crate::steer::{is_session_window, is_weekly_window};
+    let kept: Vec<HistoryLine> = lines
+        .into_iter()
+        .filter_map(|line| serde_json::from_str::<HistoryLine>(line).ok())
+        .filter(|l| l.fetched_at >= since && l.fetched_at <= until && l.used_percent.is_finite())
+        .collect();
+    // Kind per account and window key (Codex keys get theirs from how far ahead they reset).
+    let mut grouped: std::collections::BTreeMap<(Uuid, &str), Vec<&HistoryLine>> =
+        Default::default();
+    for l in &kept {
+        grouped.entry((l.account, &l.window)).or_default().push(l);
+    }
+    let kinds: std::collections::HashMap<(Uuid, &str), bool> = grouped
+        .iter()
+        .filter_map(|(k, ls)| Some((*k, crate::insights::readings::kind_of(k.1, ls)?)))
+        .collect();
     let mut map: std::collections::BTreeMap<Uuid, AccountSeries> = Default::default();
-    for line in lines {
-        let Ok(l) = serde_json::from_str::<HistoryLine>(line) else {
+    for l in &kept {
+        let Some(&session) = kinds.get(&(l.account, l.window.as_str())) else {
             continue;
         };
-        if l.fetched_at < since || l.fetched_at > until || !l.used_percent.is_finite() {
-            continue;
-        }
-        let weekly = is_weekly_window(&l.window);
-        if !weekly && !is_session_window(&l.window) {
-            continue;
-        }
+        let weekly = !session;
         let s = map.entry(l.account).or_insert_with(|| AccountSeries {
             account: l.account,
             weekly: Vec::new(),
@@ -318,6 +326,31 @@ mod tests {
         assert_eq!(s[1].account, b);
         assert_eq!(s[1].weekly.len(), 1);
         assert!(s[1].five_hour.is_empty());
+    }
+
+    #[test]
+    fn codex_series_by_how_far_ahead_they_reset() {
+        let a = Uuid::from_u128(1);
+        let at = |t: &str, window: &str, ahead_h: i64| {
+            let fetched: DateTime<Utc> = t.parse().unwrap();
+            serde_json::to_string(&HistoryLine {
+                account: a,
+                fetched_at: fetched,
+                window: window.into(),
+                used_percent: 30.0,
+                resets_at: Some(fetched + chrono::Duration::hours(ahead_h)),
+            })
+            .unwrap()
+        };
+        let lines = [
+            at("2026-11-07T09:00:00Z", "codex:primary", 4),
+            at("2026-11-07T09:00:00Z", "codex:secondary", 100),
+            at("2026-11-07T10:00:00Z", "codex:primary", 3),
+        ];
+        let since = "2026-11-07T00:00:00Z".parse().unwrap();
+        let until = "2026-11-07T23:00:00Z".parse().unwrap();
+        let s = build_series(lines.iter().map(String::as_str), since, until);
+        assert_eq!((s[0].five_hour.len(), s[0].weekly.len()), (2, 1));
     }
 
     #[test]

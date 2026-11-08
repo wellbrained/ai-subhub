@@ -894,11 +894,7 @@ impl AppState {
 
     /// Keeps the last hour of 5-hour readings per account for the run-out nudge's pace.
     fn trail_point(&mut self, id: Uuid, reading: &subhub_core::model::Reading) {
-        let Some(w) = reading
-            .windows
-            .iter()
-            .find(|w| subhub_core::steer::is_session_window(&w.key))
-        else {
+        let Some(w) = reading.windows.iter().find(|w| w.is_session()) else {
             return;
         };
         let trail = self.nudge_trails.entry(id).or_default();

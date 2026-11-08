@@ -54,7 +54,7 @@ pub struct AccountObs {
 /// (`codex:primary` / `codex:secondary`) carry no length, so it is read from how far ahead their
 /// resets lie: at most 5 h (+10 min) is a 5-hour window, a day or more is weekly; a Codex plan
 /// whose primary window is weekly thus has no 5-hour window.
-fn kind_of(key: &str, lines: &[&HistoryLine]) -> Option<bool> {
+pub(crate) fn kind_of(key: &str, lines: &[&HistoryLine]) -> Option<bool> {
     if is_session_window(key) {
         return Some(true);
     }
