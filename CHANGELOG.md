@@ -2,7 +2,7 @@
 
 Patch notes shown after an update (embedded in the exe). Each release gets `## X.Y.Z – date` and 3-6 short bullets. Work in progress goes under `## Unreleased` and is renamed when a version is released (`scripts/release.ps1` refuses a version without a section).
 
-## Unreleased
+## 0.1.7 – 2026-11-08
 
 - The tray icon's right-click menu now matches SubHub: dark or light theme, the app's font and icons, and arrow keys to move.
 - Hub accounts on Codex also show extra Codex limits, like local CLI logins already did, and newer Codex plans (Pro Lite, Pro Max and others) get their name on the card.
