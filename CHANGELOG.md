@@ -2,7 +2,7 @@
 
 Patch notes shown after an update (embedded in the exe). Each release gets `## X.Y.Z – date` and 3-6 short bullets. Work in progress goes under `## Unreleased` and is renamed when a version is released (`scripts/release.ps1` refuses a version without a section).
 
-## Unreleased
+## 0.1.5 – 2026-11-08
 
 - Settings pages use the full width of the main window, lined up with the Insights pages.
 - The taskbar hover card also shows model limits such as Claude's weekly Fable limit, after the 5-hour and weekly rows.
