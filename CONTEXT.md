@@ -96,9 +96,9 @@ _Avoid_: Recommendation, which suggests SubHub changes the plan; it never does.
 
 **Warm-up**: Starting an account's 5-hour window early with a tiny prompt, so its reset lands when the user would otherwise run out. The suggested time comes from the work rhythm. SubHub runs it by itself at the chosen time on the chosen days (or right away with "Start a window now"); a **wake task** (a Windows scheduled task) can wake a sleeping PC for it.
 
-**Overview**: The first page of the main window's Insights: a verdict sentence, four numbers, the top tip and one line per topic (Plans, 5-hour windows, Renewals, Where usage goes) that states its answer and opens the topic's own page.
+**Overview**: The first page of the main window's Insights: a verdict sentence, four numbers, the top tip and one line per topic (Plans, 5-hour windows, Renewals, Where usage goes) that states its answer and opens its page: Plans & renewals (Plans, Renewals) or Usage patterns (5-hour windows, Where usage goes).
 
-**Main window**: The one window for everything outside the popover (owner, 2026-11-08): a sidebar with Insights (Overview and the topic pages), Data (Limits now, Tokens & cost) and Settings. "Statistics" opens it on Overview, "Settings" on General or the page asked for.
+**Main window**: The one window for everything outside the popover (owner, 2026-11-08): a sidebar with Insights (Overview, Plans & renewals, Usage patterns), Data (Limits now, Tokens & cost) and Settings. "Statistics" opens it on Overview, "Settings" on General or the page asked for.
 
 **Tip**: A concrete suggestion on the Overview (warm-up, switch instead of waiting, downgrade, upgrade, ending plan, unused plan, task insight, expiring weekly room) with a stable id. "Not for me" hides it for good; "Show hidden tips" brings hidden ones back.
 _Avoid_: Recommendation (see Plan fit).

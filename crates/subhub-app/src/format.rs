@@ -78,3 +78,48 @@ mod tests {
         assert_eq!(duration_until(now - Duration::minutes(1), now), "reset due");
     }
 }
+
+/// Text that may not fit: cut off with "…", the full text in a tooltip on hover (owner,
+/// 2026-11-08: names that are cut off show in full on hover). `key` keeps the element id
+/// unique next to other clipped texts.
+pub trait Clip: gpui::Styled + gpui::InteractiveElement + gpui::ParentElement + Sized {
+    fn clip(self, key: &'static str, text: impl Into<gpui::SharedString>) -> gpui::Stateful<Self>;
+}
+
+impl Clip for gpui::Div {
+    fn clip(self, key: &'static str, text: impl Into<gpui::SharedString>) -> gpui::Stateful<Self> {
+        use gpui::{
+            InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+            Styled as _,
+        };
+        let text: gpui::SharedString = text.into();
+        let tip = text.clone();
+        self.id(gpui::SharedString::from(format!("clip-{key}-{text}")))
+            .truncate()
+            .child(text)
+            .tooltip(move |window, cx| {
+                gpui_component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+            })
+    }
+}
+
+/// Lists that can grow without end (one row per account, project, model…) show about this many
+/// rows and scroll the rest (owner, 2026-11-08).
+pub const VISIBLE_ROWS: usize = 5;
+
+/// `list` as is up to `VISIBLE_ROWS` rows; beyond that in a scroll area about that many rows
+/// high (`row_h`: a typical row with its gap). `key` keeps the scroll area's id unique.
+pub fn capped(key: &str, count: usize, row_h: f32, list: gpui::Div) -> gpui::AnyElement {
+    use gpui::{InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _};
+    use gpui_component::scroll::ScrollableElement as _;
+    if count <= VISIBLE_ROWS {
+        return list.into_any_element();
+    }
+    gpui::div()
+        .id(gpui::SharedString::from(format!("capped-{key}")))
+        .max_h(gpui::px(row_h * VISIBLE_ROWS as f32))
+        .overflow_y_scrollbar()
+        // Room for the overlay scrollbar.
+        .child(list.pr(gpui::px(14.0)))
+        .into_any_element()
+}

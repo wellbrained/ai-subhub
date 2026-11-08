@@ -2,6 +2,7 @@
 //! T3 Code's limits board. One section per provider, one card per window kind (5-hour, Weekly,
 //! model-scoped weekly), one bar per account in the settings order. The math is in
 //! `subhub_core::limits`; this file only reads `AppState` and draws.
+use crate::format::Clip as _;
 use chrono::{DateTime, Utc};
 use gpui::{
     AnyElement, FontWeight, Hsla, IntoElement, ParentElement, SharedString, Styled, div,
@@ -176,8 +177,7 @@ fn card(title: &str, cols: &[Col], now: DateTime<Utc>, t: &Tokens) -> impl IntoE
             div()
                 .text_sm()
                 .font_weight(FontWeight::SEMIBOLD)
-                .truncate()
-                .child(SharedString::from(title.to_string())),
+                .clip("row-title", SharedString::from(title.to_string())),
         )
         .child(
             div()
@@ -341,8 +341,7 @@ fn bar(
                 .child(
                     div()
                         .min_w_0()
-                        .truncate()
-                        .child(SharedString::from(col.name.clone())),
+                        .clip("col", SharedString::from(col.name.clone())),
                 )
                 .child(
                     div()

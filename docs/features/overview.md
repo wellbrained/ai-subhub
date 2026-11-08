@@ -156,3 +156,15 @@ Mockups `nudge.html` and `nudge-q.html`. The owner chose the plain tray balloon 
 - Text: title "<account> (<provider>) runs out in about N min", body names the fresh account with its % left and this window's reset time. Clicking any tray balloon (also billing reminders) opens the popover (`NIN_BALLOONUSERCLICK`).
 - Code: `subhub-core/src/nudge.rs` (pure, tested), `state.rs` `trail_point` / `check_nudges` after every reading batch; balloons go through `pending_notices`.
 
+## Two topics per page (owner, 2026-11-08)
+
+Five Insights entries were too many. The sidebar now has Overview, **Plans & renewals** (Plans, then Renewals: what you pay for) and **Usage patterns** (5-hour windows, then Where usage goes: how you use it). Each page shows the page title, then per topic its name, the answer line with its note and the details. The Overview keeps one line per topic; each opens the page its topic is on. A page's badge is the first of its topics' badges (Plans before Renewals). Code: `overview::page_name`, `page_topics`, `page_badge`; `ov.open` still holds the topic.
+
+## Cut-off text (owner, 2026-11-08)
+
+Names and paths that can be cut off with "…" show the full text in a tooltip on hover: `format::Clip` (`div().clip(key, text)`), used for account, project, model and thread names, emails, paths and billing lines.
+
+## Lists that grow (owner, 2026-11-08)
+
+Lists that can grow without end show about 5 rows and scroll the rest inside a scroll area with its own scrollbar (headers stay outside): `format::capped(key, count, row_h, list)`, `VISIBLE_ROWS = 5`. Used for the Plans table, Renewals, the 7-day lanes, the model lists in Tokens & cost, and in Settings the accounts per provider, the found CLI profiles, the hub accounts and Projects. Lists that are already cut to a top N (task bars 10, threads 4) need none.
+

@@ -4,6 +4,7 @@
 //! sidebar with Insights (Overview and its topic pages), Data (Limits now, Tokens & cost) and
 //! Settings (the settings pages, drawn by the embedded `SettingsWindow`). Data:
 //! `subhub_core::stats` (local session logs) and `subhub_core::insights`.
+use crate::format::Clip as _;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -528,7 +529,7 @@ impl Render for StatsWindow {
                 Tab::Overview => self
                     .overview
                     .open
-                    .map_or("Overview", overview::topic_name)
+                    .map_or("Overview", overview::page_name)
                     .to_string(),
                 Tab::Limits => "Limits now".into(),
                 Tab::Usage => "Tokens & cost".into(),
@@ -808,17 +809,14 @@ impl StatsWindow {
             .border_r_1()
             .border_color(t.border)
             .child(group("INSIGHTS", true));
-        let pages: [Option<TipRow>; 5] = [
-            None,
-            Some(TipRow::Plans),
-            Some(TipRow::Windows),
-            Some(TipRow::Renewals),
-            Some(TipRow::Usage),
-        ];
+        // Two topics per page (owner, 2026-11-08): Plans & renewals, Usage patterns.
+        let pages: [Option<TipRow>; 3] = [None, Some(TipRow::Plans), Some(TipRow::Windows)];
         for (i, page) in pages.into_iter().enumerate() {
-            let active = stats && self.tab == Tab::Overview && self.overview.open == page;
-            let label = page.map_or("Overview", overview::topic_name).to_string();
-            let badge = page.and_then(|r| overview::nav_badge(&self.overview, r, t));
+            let on_page = self.overview.open.map(overview::page_name);
+            let active =
+                stats && self.tab == Tab::Overview && on_page == page.map(overview::page_name);
+            let label = page.map_or("Overview", overview::page_name).to_string();
+            let badge = page.and_then(|r| overview::page_badge(&self.overview, r, t));
             let me = me.clone();
             nav = nav.child(
                 item(format!("nav-ins-{i}").into(), label, active, badge).on_click(
@@ -1321,8 +1319,7 @@ fn prices_card(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .truncate()
-                        .child(SharedString::from(m.clone())),
+                        .clip("model", SharedString::from(m.clone())),
                 );
                 let (src, color) = match book.lookup(m) {
                     Some((price, src)) => {
@@ -1411,10 +1408,9 @@ fn prices_card(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .truncate()
                         .text_xs()
                         .text_color(t.muted)
-                        .child(SharedString::from(status)),
+                        .clip("prices", SharedString::from(status)),
                 )
                 .child(update)
                 .child(close_button),
@@ -1847,8 +1843,7 @@ fn model_table(s: &Summary, metric: StatsMetric, t: &Tokens) -> AnyElement {
                             .child(
                                 div()
                                     .min_w_0()
-                                    .truncate()
-                                    .child(SharedString::from(m.model.clone())),
+                                    .clip("model-legend", SharedString::from(m.model.clone())),
                             ),
                     )
                     .child(
@@ -1932,7 +1927,7 @@ fn providers_view(s: &Summary, metric: StatsMetric, t: &Tokens) -> AnyElement {
         };
         let models = models_of(s, p, metric);
         let own_total: f64 = models.iter().map(|m| model_value(m, metric)).sum();
-        let mut list = div().flex().flex_col().mt(px(12.0));
+        let mut list = div().flex().flex_col();
         if models.is_empty() {
             list = list.child(
                 div()
@@ -1955,8 +1950,7 @@ fn providers_view(s: &Summary, metric: StatsMetric, t: &Tokens) -> AnyElement {
                         div()
                             .flex_1()
                             .min_w_0()
-                            .truncate()
-                            .child(SharedString::from(m.model.clone())),
+                            .clip("model-row", SharedString::from(m.model.clone())),
                     )
                     .child(
                         div()
@@ -2018,7 +2012,12 @@ fn providers_view(s: &Summary, metric: StatsMetric, t: &Tokens) -> AnyElement {
                         .child(kpi(share_label, share_text(share))),
                 )
                 .child(mini_chart(&s.points, p, metric, color, t))
-                .child(list),
+                .child(div().mt(px(12.0)).child(crate::format::capped(
+                    &format!("models-{p:?}"),
+                    models.len(),
+                    34.0,
+                    list,
+                ))),
         );
     }
     cols.into_any_element()

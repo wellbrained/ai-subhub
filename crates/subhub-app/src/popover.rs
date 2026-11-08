@@ -1,5 +1,6 @@
 //! The tray popover, layout "A · Classic, refined" (ADR 0001 refinements): header with status and
 //! actions, provider headings, one card per account with source tags and one bar row per window.
+use crate::format::Clip as _;
 use chrono::Utc;
 use gpui::{
     App, Context, Entity, FontWeight, Hsla, IntoElement, ParentElement, Render, SharedString,
@@ -677,8 +678,7 @@ fn account_card(
             .min_w_0()
             .text_sm()
             .font_weight(FontWeight::SEMIBOLD)
-            .truncate()
-            .child(acc.label.clone()),
+            .clip("card-label", acc.label.clone()),
     );
     if d.show_plan
         && let Some(plan) = s.settings.plans.get(&acc.id)
@@ -779,10 +779,9 @@ fn account_card(
                 div()
                     .w_full()
                     .min_w_0()
-                    .truncate()
                     .text_xs()
                     .text_color(t.faint)
-                    .child(e),
+                    .clip("card-email", e),
             )
         });
 
@@ -1307,10 +1306,9 @@ fn billing_footer(acc: &Account, s: &AppState, t: &Tokens) -> Option<gpui::Div> 
                 div()
                     .flex_1()
                     .min_w_0()
-                    .truncate()
                     .text_xs()
                     .text_color(if soon { t.accent } else { t.faint })
-                    .child(billing::description(b, today)),
+                    .clip("billing", billing::description(b, today)),
             )
             .child(
                 small_button(
@@ -1361,8 +1359,7 @@ fn window_row(
                 .w(px(104.0))
                 .text_sm()
                 .text_color(t.muted)
-                .truncate()
-                .child(SharedString::from(w.label.clone())),
+                .clip("window", SharedString::from(w.label.clone())),
         )
         .child(
             div().flex_1().h(px(6.0)).rounded_full().bg(t.track).child(

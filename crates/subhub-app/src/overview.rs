@@ -9,6 +9,7 @@
 //! The analysis (`subhub_core::insights::analyze`) runs on the background executor whenever its
 //! inputs change (readings, history, scan, settings, range) or the result is 10 minutes old; the
 //! page shows the last result meanwhile and a quiet line before the first one.
+use crate::format::Clip as _;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -972,48 +973,88 @@ fn topic_line(r: TipRow, o: &Overview, cx: &Ctx) -> (AnyElement, Option<AnyEleme
     }
 }
 
-/// One topic as its own page (owner, 2026-11-08: no accordion): title, the answer, the details.
+/// The sidebar page a topic lives on (owner, 2026-11-08: two topics per page). Plans and
+/// Renewals are about what you pay for; 5-hour windows and Where usage goes about how you use it.
+pub fn page_name(r: TipRow) -> &'static str {
+    match r {
+        TipRow::Plans | TipRow::Renewals => "Plans & renewals",
+        TipRow::Windows | TipRow::Usage => "Usage patterns",
+    }
+}
+
+/// The topics of the page `r` is on, in page order.
+fn page_topics(r: TipRow) -> [TipRow; 2] {
+    match r {
+        TipRow::Plans | TipRow::Renewals => [TipRow::Plans, TipRow::Renewals],
+        TipRow::Windows | TipRow::Usage => [TipRow::Windows, TipRow::Usage],
+    }
+}
+
+/// The sidebar badge of the page `r` is on: the first of its topics that has one.
+pub fn page_badge(ov: &OverviewState, r: TipRow, t: &Tokens) -> Option<AnyElement> {
+    page_topics(r)
+        .into_iter()
+        .find_map(|topic| nav_badge(ov, topic, t))
+}
+
+/// One sidebar page (owner, 2026-11-08: no accordion; two topics per page): the page title,
+/// then per topic its name, the answer and the details.
 fn topic_page(r: TipRow, ov: &OverviewState, o: &Overview, cx: &Ctx) -> AnyElement {
     let t = cx.t;
-    let (answer, right) = topic_line(r, o, cx);
-    let content = match r {
-        TipRow::Plans => plans_content(o, cx),
-        TipRow::Windows => windows_content(o, cx),
-        TipRow::Renewals => renewals_content(o, cx),
-        TipRow::Usage => usage_content(ov, o, cx),
-    };
-    div()
+    let mut page = div()
         .flex()
         .flex_col()
         .px(px(SIDE))
         .pt(px(12.0))
+        .pb(px(24.0))
         .child(
             div()
                 .text_size(px(20.0))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(topic_name(r)),
-        )
-        .child(
+                .child(page_name(r)),
+        );
+    for (i, topic) in page_topics(r).into_iter().enumerate() {
+        let (answer, right) = topic_line(topic, o, cx);
+        let content = match topic {
+            TipRow::Plans => plans_content(o, cx),
+            TipRow::Windows => windows_content(o, cx),
+            TipRow::Renewals => renewals_content(o, cx),
+            TipRow::Usage => usage_content(ov, o, cx),
+        };
+        page = page.child(
             div()
-                .mt(px(4.0))
-                .pb(px(16.0))
                 .flex()
-                .items_center()
-                .gap(px(16.0))
-                .border_b_1()
-                .border_color(t.border)
+                .flex_col()
+                .mt(px(if i == 0 { 18.0 } else { 40.0 }))
                 .child(
                     div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_size(px(BODY))
-                        .text_color(t.muted)
-                        .child(answer),
+                        .text_size(px(15.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(topic_name(topic)),
                 )
-                .children(right),
-        )
-        .child(div().pt(px(20.0)).child(content))
-        .into_any_element()
+                .child(
+                    div()
+                        .mt(px(4.0))
+                        .pb(px(14.0))
+                        .flex()
+                        .items_center()
+                        .gap(px(16.0))
+                        .border_b_1()
+                        .border_color(t.border)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_size(px(BODY))
+                                .text_color(t.muted)
+                                .child(answer),
+                        )
+                        .children(right),
+                )
+                .child(div().pt(px(18.0)).child(content)),
+        );
+    }
+    page.into_any_element()
 }
 
 fn kpi(value: String, unit: &str, label: &str, t: &Tokens) -> gpui::Div {
@@ -1440,11 +1481,18 @@ fn plans_content(o: &Overview, cx: &Ctx) -> AnyElement {
         )
         .child(small("5-h hits".into()).w(px(C_HITS)).flex_none())
         .child(small("Plan fit".into()).flex_1());
-    let mut list = div().flex().flex_col().child(header);
+    let mut rows = div().flex().flex_col();
+    let mut n = 0;
     for a in o.accounts.iter().filter(|a| !cx.hidden(a.account)) {
-        list = list.child(account_row(a, o, cx));
+        rows = rows.child(account_row(a, o, cx));
+        n += 1;
     }
-    list.into_any_element()
+    div()
+        .flex()
+        .flex_col()
+        .child(header)
+        .child(crate::format::capped("plans", n, 100.0, rows))
+        .into_any_element()
 }
 
 fn renewal_of(o: &Overview, id: Uuid) -> Option<&Renewal> {
@@ -1481,10 +1529,9 @@ fn account_row(a: &AccountInsight, o: &Overview, cx: &Ctx) -> gpui::Div {
                 .child(
                     div()
                         .min_w_0()
-                        .truncate()
                         .text_size(px(BODY))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(label_of(o, a.account)),
+                        .clip("acct", label_of(o, a.account)),
                 )
                 .children(a.plan.clone().map(|p| {
                     div()
@@ -2391,9 +2438,8 @@ fn week_timeline(w: &WindowsReport, o: &Overview, cx: &Ctx) -> gpui::Div {
                         .child(
                             div()
                                 .min_w_0()
-                                .truncate()
                                 .text_size(px(SMALL))
-                                .child(label_of(o, l.account)),
+                                .clip("lane", label_of(o, l.account)),
                         ),
                 )
                 .child(div().flex_1().min_w_0().child(lane(
@@ -2441,7 +2487,7 @@ fn week_timeline(w: &WindowsReport, o: &Overview, cx: &Ctx) -> gpui::Div {
                 .text_color(t.muted)
                 .child("No account with a 5-hour window.")
         } else {
-            list
+            div().child(crate::format::capped("lanes", lanes.len(), 26.0, list))
         })
         .child(
             div()
@@ -3122,7 +3168,8 @@ fn renewals_line(o: &Overview, t: &Tokens) -> (AnyElement, Option<AnyElement>) {
 
 fn renewals_content(o: &Overview, cx: &Ctx) -> AnyElement {
     let t = cx.t;
-    let mut list = div().flex().flex_col();
+    let mut rows = div().flex().flex_col();
+    let mut n = 0;
     for r in o.renewals.iter().filter(|r| !cx.hidden(r.account)) {
         let id = r.account;
         let what = match (r.auto_renew, r.days >= 0) {
@@ -3134,7 +3181,8 @@ fn renewals_content(o: &Overview, cx: &Ctx) -> AnyElement {
             let f = cx.open_settings.clone();
             move |cx: &mut App| f(SettingsTarget::Account(id), cx)
         };
-        list = list.child(
+        n += 1;
+        rows = rows.child(
             div()
                 .flex()
                 .items_center()
@@ -3154,8 +3202,7 @@ fn renewals_content(o: &Overview, cx: &Ctx) -> AnyElement {
                         .child(
                             div()
                                 .font_weight(FontWeight::SEMIBOLD)
-                                .truncate()
-                                .child(label_of(o, id)),
+                                .clip("acct-head", label_of(o, id)),
                         ),
                 )
                 .child(
@@ -3210,6 +3257,10 @@ fn renewals_content(o: &Overview, cx: &Ctx) -> AnyElement {
                 )),
         );
     }
+    let mut list = div()
+        .flex()
+        .flex_col()
+        .child(crate::format::capped("renewals", n, 40.0, rows));
     let missing: Vec<String> = o
         .accounts
         .iter()
@@ -3295,13 +3346,12 @@ fn share_row(
                 .flex_none()
                 .flex()
                 .flex_col()
-                .child(div().text_size(px(BODY)).truncate().child(label))
+                .child(div().text_size(px(BODY)).clip("bar", label))
                 .children(sub.map(|s| {
                     div()
                         .text_size(px(TINY))
                         .text_color(t.faint)
-                        .truncate()
-                        .child(s)
+                        .clip("bar-sub", s)
                 })),
         )
         .child(
@@ -3540,16 +3590,14 @@ fn usage_content(ov: &OverviewState, o: &Overview, cx: &Ctx) -> AnyElement {
                         .child(
                             div()
                                 .text_size(px(12.5))
-                                .truncate()
                                 .when(faint, |d| d.text_color(t.faint))
-                                .child(title),
+                                .clip("entry", title),
                         )
                         .children(sub.map(|s| {
                             div()
                                 .text_size(px(TINY))
                                 .text_color(t.faint)
-                                .truncate()
-                                .child(s)
+                                .clip("entry-sub", s)
                         })),
                 )
                 .child(

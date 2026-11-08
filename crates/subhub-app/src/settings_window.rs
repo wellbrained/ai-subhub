@@ -2,6 +2,7 @@
 //! Six fixed menu items (owner, 2026-11-07, "Settings distilled"): General, Appearance,
 //! Accounts, Hub, Projects, About & updates. Accounts is a list; a row drills into that
 //! account's page and "+ Add accounts" opens detection / import with a manual folder form.
+use crate::format::Clip as _;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -984,10 +985,9 @@ fn disclosure(
             d.child(
                 div()
                     .min_w_0()
-                    .truncate()
                     .text_xs()
                     .text_color(t.muted)
-                    .child(SharedString::from(summary.to_string())),
+                    .clip("summary", SharedString::from(summary.to_string())),
             )
         })
 }
@@ -1584,6 +1584,8 @@ impl SettingsWindow {
                         .child("No accounts"),
                 );
             }
+            let count = rows.len();
+            let mut g = div().flex().flex_col();
             for r in rows {
                 let id = r.id;
                 let (status, status_color) = match r.health {
@@ -1593,7 +1595,7 @@ impl SettingsWindow {
                     }
                     h => (h.label().unwrap_or_default(), t.warn),
                 };
-                list = list.child(
+                g = g.child(
                     div()
                         .id(("acc-row", n))
                         .flex()
@@ -1618,10 +1620,9 @@ impl SettingsWindow {
                                 .child(
                                     div()
                                         .min_w_0()
-                                        .truncate()
                                         .text_sm()
                                         .font_weight(FontWeight::MEDIUM)
-                                        .child(SharedString::from(r.label)),
+                                        .clip("acct-row", SharedString::from(r.label)),
                                 )
                                 .child(
                                     div()
@@ -1640,6 +1641,12 @@ impl SettingsWindow {
                 );
                 n += 1;
             }
+            list = list.child(crate::format::capped(
+                &format!("accounts-{p:?}"),
+                count,
+                52.0,
+                g,
+            ));
         }
 
         div()
@@ -1700,8 +1707,7 @@ impl SettingsWindow {
                         div()
                             .text_lg()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .truncate()
-                            .child(acc.label.clone()),
+                            .clip("acct-title", acc.label.clone()),
                     ),
             )
             .child(
@@ -2207,10 +2213,9 @@ impl SettingsWindow {
                     .child(
                         div()
                             .min_w_0()
-                            .truncate()
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(SharedString::from(p.label.clone())),
+                            .clip("project", SharedString::from(p.label.clone())),
                     )
                     .when(p.hidden, |d| d.child(tag("Hidden", t.muted, t)))
                     .when(missing, |d| d.child(tag("Folder missing", t.warn, t)))
@@ -2245,16 +2250,10 @@ impl SettingsWindow {
                             .gap(px(2.0))
                             .when(hidden, |d| d.opacity(0.6))
                             .child(title)
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_xs()
-                                    .text_color(t.muted)
-                                    .child(SharedString::from(crate::demo::show_path(
-                                        &p.directory,
-                                    ))),
-                            ),
+                            .child(div().min_w_0().text_xs().text_color(t.muted).clip(
+                                "project-path",
+                                SharedString::from(crate::demo::show_path(&p.directory)),
+                            )),
                     )
                     .child(
                         div()
@@ -2362,7 +2361,7 @@ impl SettingsWindow {
                             .on_click(cx.listener(|this, _, _, cx| this.pick_project_folders(cx))),
                     )
             )
-            .child(rows)
+            .child(crate::format::capped("projects", list.len(), 52.0, rows))
     }
 
     /// About & updates: what SubHub is, then update mode, version, last check, Check now, the
@@ -2810,9 +2809,17 @@ impl SettingsWindow {
                         .child("No profiles found"),
                 );
             }
+            let count = rows.len();
+            let mut g = div().flex().flex_col();
             for (i, d) in rows {
-                list = list.child(self.detect_row(i, d, t, cx));
+                g = g.child(self.detect_row(i, d, t, cx));
             }
+            list = list.child(crate::format::capped(
+                &format!("detected-{p:?}"),
+                count,
+                56.0,
+                g,
+            ));
         }
 
         let tab = self.detect_tab;
@@ -2947,18 +2954,16 @@ impl SettingsWindow {
                     .child(
                         div()
                             .min_w_0()
-                            .truncate()
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
-                            .child(SharedString::from(title)),
+                            .clip("item-title", SharedString::from(title)),
                     )
                     .child(
                         div()
                             .min_w_0()
-                            .truncate()
                             .text_xs()
                             .text_color(t.muted)
-                            .child(SharedString::from(path)),
+                            .clip("item-path", SharedString::from(path)),
                     ),
             )
             .child(
@@ -3029,27 +3034,28 @@ impl SettingsWindow {
                 )
             })
             .collect();
+        let hub_count = hub_accounts.len();
         let mut rows = div().flex().flex_col();
         for (p, label, email, status, benched) in hub_accounts {
-            rows =
-                rows.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .py_2()
-                        .border_b_1()
-                        .border_color(t.border)
-                        .child(icon(Icon::Provider(p), 12.0, provider_color(p, t.muted)))
-                        .child(div().flex_1().min_w_0().truncate().text_sm().child(
-                            SharedString::from(match email {
-                                Some(e) => format!("{label} · {e}"),
-                                None => label,
-                            }),
-                        ))
-                        .when(benched, |r| r.child(tag("Benched", t.warn, t)))
-                        .child(tag(&status, t.muted, t)),
-                );
+            rows = rows.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .py_2()
+                    .border_b_1()
+                    .border_color(t.border)
+                    .child(icon(Icon::Provider(p), 12.0, provider_color(p, t.muted)))
+                    .child(div().flex_1().min_w_0().text_sm().clip(
+                        "found",
+                        SharedString::from(match email {
+                            Some(e) => format!("{label} · {e}"),
+                            None => label,
+                        }),
+                    ))
+                    .when(benched, |r| r.child(tag("Benched", t.warn, t)))
+                    .child(tag(&status, t.muted, t)),
+            );
         }
         let source = format!("Source: CLIProxyAPI hub at {}", s.settings.hub.base_url);
         div()
@@ -3081,7 +3087,7 @@ impl SettingsWindow {
                         ))
                     }),
             )
-            .child(rows)
+            .child(crate::format::capped("hub-accounts", hub_count, 40.0, rows))
     }
 
     fn hub(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {

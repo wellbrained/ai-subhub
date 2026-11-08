@@ -4,8 +4,9 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 
 ## Unreleased
 
-- Statistics and Settings are now one window with a sidebar: Insights (Overview and a page per topic), Data (Limits now, Tokens & cost) and Settings. Statistics opens it on the Overview, Settings on its pages.
-- Statistics opens on a new Overview: one sentence on how much of your plans you use, four key numbers, the most useful tip, and short answers for Plans, 5-hour windows, Renewals and Where usage goes, each with its own page.
+- Statistics and Settings are now one window with a sidebar: Insights (Overview, Plans & renewals, Usage patterns), Data (Limits now, Tokens & cost) and Settings. Statistics opens it on the Overview, Settings on its pages.
+- Statistics opens on a new Overview: one sentence on how much of your plans you use, four key numbers, the most useful tip, and short answers for Plans, 5-hour windows, Renewals and Where usage goes, which open their page.
+- Names that are cut off (accounts, projects, models, threads, paths) show in full on hover, and long lists (plans, renewals, accounts, projects, models) show 5 rows and scroll the rest.
 - The 5-hour windows section explains how windows and resets work, draws one of your days as it went and with an earlier first window, and shows the last 7 days of windows per account.
 - Warm-up: SubHub can start your 5-hour windows at a set time on chosen days with a one-word prompt, so the first reset comes when you usually run out. Off until you turn it on: "Set it up…" opens a dialog filled in with the suggested time and accounts, which you confirm or change. It skips accounts whose window is already running, can wake a sleeping PC for it (your choice), and "Start a window now" does it right away.
 - Optional heads-up (Settings → General, off by default): a notification about 15 minutes before an account's 5-hour window runs out, when another account of the same provider still has a fresh one. Clicking it opens SubHub. It stays quiet for hub accounts while hub steering is on.
