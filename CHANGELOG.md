@@ -2,9 +2,11 @@
 
 Patch notes shown after an update (embedded in the exe). Each release gets `## X.Y.Z – date` and 3-6 short bullets. Work in progress goes under `## Unreleased` and is renamed when a version is released (`scripts/release.ps1` refuses a version without a section).
 
-## Unreleased
+## 0.1.4 – 2026-11-08
 
-- New logo: a ring of three accounts around one hub. The tray icon follows a dark or light taskbar, the title bar and popover header show it too.
+- New logo: a ring of three accounts around one hub. The tray icon follows a dark or light taskbar, and the logo now also sits in the popover header.
+- Opening Renewals or Where usage goes from the Overview jumps straight to that part of the page; other pages start at the top.
+- Fixed tooltips of threads with the same name, and the README now shows the new main window.
 
 ## 0.1.3 – 2026-11-08
 

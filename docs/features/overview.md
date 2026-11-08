@@ -168,3 +168,5 @@ Names and paths that can be cut off with "…" show the full text in a tooltip o
 
 Lists that can grow without end show about 5 rows and scroll the rest inside a scroll area with its own scrollbar (headers stay outside): `format::capped(key, count, row_h, list)`, `VISIBLE_ROWS = 5`. Used for the Plans table, Renewals, the 7-day lanes, the model lists in Tokens & cost, and in Settings the accounts per provider, the found CLI profiles, the hub accounts and Projects. Lists that are already cut to a top N (task bars 10, threads 4) need none.
 
+Opening the second topic of a page (Renewals, Where usage goes; from the Overview line, a tip or the sidebar) scrolls its section to the top once it is laid out; switching to another page starts at the top (`stats_window` `seen_open` / `focus`, `overview::Ctx::focus`). Clipped thread names get an index in their tooltip id, so two "Untitled thread" do not share one.
+
