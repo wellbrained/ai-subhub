@@ -57,6 +57,12 @@ Open **Statistics** or **Settings** from the tray menu or the popover. Both open
 | --- | --- |
 | ![Limits now: a live board of every account's windows](docs/images/demo-statistics-limits.png) | ![Tokens & cost: work tokens, API estimate, cost by type and a daily chart per provider](docs/images/demo-statistics-usage.png) |
 
+**Export** (the download button in the title bar):
+
+- **Usage report (PDF):** the Overview as a 2-3 page report for the chosen range: the verdict, key numbers, every account's plan fit, renewals, tips, and where usage goes by model, project and kind of work. Good to keep or to share.
+- **Tokens & cost (CSV):** tokens and the API estimate per day, provider and model.
+- **Limit history (CSV):** every reading SubHub saved: time, account, window, % used and reset time.
+
 **Settings**
 
 - **General:** refresh interval, Warm-up status, the run-out heads-up, what the close button does, Start with Windows, and (under Advanced) the sign-in terminal and CLI paths.

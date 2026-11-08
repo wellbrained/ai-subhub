@@ -32,6 +32,14 @@ static STATS_HEIGHT: OnceLock<f32> = OnceLock::new();
 static HIDDEN: OnceLock<bool> = OnceLock::new();
 static FONT: OnceLock<String> = OnceLock::new();
 static FONT_FILE: OnceLock<String> = OnceLock::new();
+static EXPORT: OnceLock<String> = OnceLock::new();
+
+/// `--demo-export report|tokens|limits=PATH`: the main window exports there once its data is
+/// ready, without the save dialog (hidden test runs).
+pub fn export_target() -> Option<(crate::export_ui::Kind, std::path::PathBuf)> {
+    let (kind, path) = EXPORT.get()?.split_once('=')?;
+    Some((crate::export_ui::Kind::from_flag(kind)?, path.into()))
+}
 
 /// `--demo-font NAME`: font family for the popover and hover cards (font comparison shots).
 pub fn font() -> Option<&'static str> {
@@ -66,6 +74,9 @@ pub fn read_flags(args: &[String]) {
     let _ = HIDDEN.set(args.iter().any(|a| a == "--demo-hidden"));
     if let Some(f) = value("--demo-font") {
         let _ = FONT.set(f);
+    }
+    if let Some(e) = value("--demo-export") {
+        let _ = EXPORT.set(e);
     }
     if let Some(f) = value("--demo-font-file") {
         let _ = FONT_FILE.set(f);

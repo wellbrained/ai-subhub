@@ -42,6 +42,11 @@ pub struct History {
 }
 
 impl History {
+    /// The history file (exports read it).
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
     pub fn open(path: PathBuf) -> Self {
         Self::with_cap(path, DEFAULT_CAP)
     }

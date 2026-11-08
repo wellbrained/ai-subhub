@@ -56,6 +56,13 @@ pub struct StatsWindow {
     days_scroll: gpui::ScrollHandle,
     /// Result of the last "Copy as image" and when (true = copied).
     copied: Option<(Instant, bool)>,
+    /// The Export menu is open; when it last closed by a press outside (that press must not
+    /// reopen it); the last export's note and when.
+    export_open: bool,
+    export_closed: Option<Instant>,
+    export_note: Option<(Instant, String)>,
+    /// Demo `--demo-export kind=PATH`: export once the data is ready, without a dialog.
+    demo_export: Option<(crate::export_ui::Kind, std::path::PathBuf)>,
     /// The price table under the tiles is shown (ⓘ on "API estimate").
     prices_open: bool,
     /// The summary for (range, state.stats_rev); recomputed only when either changes.
@@ -133,6 +140,11 @@ impl StatsWindow {
             focus: Default::default(),
             days_scroll: gpui::ScrollHandle::new(),
             copied: None,
+            // Demo `--demo-open-row export`: the menu open (screenshot).
+            export_open: crate::demo::open_row() == Some("export"),
+            export_closed: None,
+            export_note: None,
+            demo_export: crate::demo::export_target(),
             prices_open: false,
             summary: None,
             overview: {
@@ -173,6 +185,27 @@ impl StatsWindow {
     }
 
     /// Re-renders after each delay (ms): the fit follows layouts that happen after a resize.
+    /// The Overview's last analysis (the PDF report is built from it).
+    pub fn overview_latest(&self) -> Option<std::sync::Arc<subhub_core::insights::Overview>> {
+        self.overview.latest()
+    }
+
+    /// Shows an export result in the title bar for a few seconds.
+    pub fn set_export_note(&mut self, msg: String, cx: &mut Context<Self>) {
+        self.export_note = Some((Instant::now(), msg));
+        cx.notify();
+        self.renotify(cx, &[4100]);
+    }
+
+    /// Days an export covers: the Tokens & cost page's range there, else the Overview's.
+    fn export_days(&self, kind: crate::export_ui::Kind) -> i64 {
+        if kind == crate::export_ui::Kind::Tokens && self.tab == Tab::Usage {
+            self.range.days().max(1)
+        } else {
+            self.overview.range.days()
+        }
+    }
+
     fn renotify(&self, cx: &mut Context<Self>, delays: &[u64]) {
         for ms in delays {
             let ms = *ms;
@@ -190,7 +223,7 @@ impl StatsWindow {
 // ---------- formatting ----------
 
 /// 3 significant digits with K / M / B, like the usage board ("15.9B", "4.30B", "912M", "10B").
-fn tokens_text(n: f64) -> String {
+pub(crate) fn tokens_text(n: f64) -> String {
     let (v, suffix) = if n >= 1e9 {
         (n / 1e9, "B")
     } else if n >= 1e6 {
@@ -549,7 +582,7 @@ impl Render for StatsWindow {
             .text_color(t.muted)
             .child(format!("· {page_name}"))
             .into_any_element();
-        let status = |text: &'static str| {
+        let status = |text: SharedString| {
             div()
                 .text_xs()
                 .text_color(t.muted)
@@ -568,10 +601,15 @@ impl Render for StatsWindow {
             });
         let mut trailing: Vec<AnyElement> = vec![];
         if scanning && has_scan {
-            trailing.push(status("Scanning…"));
+            trailing.push(status("Scanning…".into()));
         }
         if let Some(note) = copy_note {
-            trailing.push(status(note));
+            trailing.push(status(note.into()));
+        }
+        if let Some((at, note)) = &self.export_note
+            && at.elapsed() < Duration::from_secs(4)
+        {
+            trailing.push(status(note.clone().into()));
         }
         if on_overview {
             trailing.push(overview::range_switch(&self.overview, me.clone(), &t));
@@ -586,6 +624,80 @@ impl Render for StatsWindow {
                     })
                 }
             }));
+        }
+        // Demo: export once the needed data is there (no dialog; hidden screenshot runs).
+        if let Some((kind, path)) = self.demo_export.clone() {
+            let ready = match kind {
+                // After the log scan, and the analysis that includes it.
+                crate::export_ui::Kind::Report => {
+                    has_scan
+                        && !scanning
+                        && self.overview.latest().is_some()
+                        && !self.overview.is_computing()
+                }
+                crate::export_ui::Kind::Tokens => has_scan,
+                crate::export_ui::Kind::Limits => true,
+            };
+            if ready {
+                self.demo_export = None;
+                let state = self.state.clone();
+                let days = self.export_days(kind);
+                crate::export_ui::run(self, kind, days, Some(path), &state, cx);
+            }
+        }
+        {
+            let me2 = me.clone();
+            let open = self.export_open;
+            let button = icon_button("stats-export", Icon::Download, &t)
+                .when(open, |d| d.bg(t.accent.opacity(0.18)))
+                .when(!open, |d| {
+                    d.tooltip(|window, cx| Tooltip::new("Export").build(window, cx))
+                })
+                .on_click(cx.listener(|this, _, _, cx| {
+                    let just_closed = this
+                        .export_closed
+                        .is_some_and(|at| at.elapsed() < Duration::from_millis(400));
+                    this.export_open = !this.export_open && !just_closed;
+                    cx.notify();
+                }));
+            let mut wrap = div().relative().flex_none().child(button);
+            if open {
+                let state = self.state.clone();
+                let pick = move |kind: crate::export_ui::Kind, cx: &mut gpui::App| {
+                    let state = state.clone();
+                    me2.update(cx, |this, cx| {
+                        this.export_open = false;
+                        let days = this.export_days(kind);
+                        crate::export_ui::run(this, kind, days, None, &state, cx);
+                    });
+                };
+                let me3 = me.clone();
+                wrap = wrap.child(
+                    div().absolute().top(px(32.0)).right_0().child(
+                        gpui::deferred(
+                            gpui::anchored()
+                                .anchor(gpui::Anchor::TopRight)
+                                .snap_to_window_with_margin(px(8.0))
+                                .child(
+                                    crate::export_ui::menu(&t, pick)
+                                        .id("export-menu")
+                                        .occlude()
+                                        .on_mouse_down_out(move |_, _, cx| {
+                                            me3.update(cx, |this, cx| {
+                                                if this.export_open {
+                                                    this.export_open = false;
+                                                    this.export_closed = Some(Instant::now());
+                                                    cx.notify();
+                                                }
+                                            })
+                                        }),
+                                ),
+                        )
+                        .with_priority(1),
+                    ),
+                );
+            }
+            trailing.push(wrap.into_any_element());
         }
         trailing.push(
             icon_button("stats-copy", Icon::Copy, &t)

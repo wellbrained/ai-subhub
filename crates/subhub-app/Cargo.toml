@@ -46,6 +46,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 gpui-kit-assets = "=0.9.0"
 # Same version GPUI already builds: renders the app icon SVG for the window and exe icons.
 resvg = { version = "0.45", default-features = false }
+# PDF usage report (export, 2026-11-08): layout, wrapping, tables, page breaks.
+genpdf = "0.2"
 
 [build-dependencies]
 embed-resource = "3"

@@ -46,6 +46,9 @@ pub enum Icon {
     Bell,
     BellOff,
     Power,
+    Download,
+    FileText,
+    Sheet,
     Provider(ProviderKind),
 }
 
@@ -93,6 +96,9 @@ impl Icon {
             Icon::Bell => "icons/bell.svg",
             Icon::BellOff => "icons/bell-off.svg",
             Icon::Power => "icons/power.svg",
+            Icon::Download => "icons/download.svg",
+            Icon::FileText => "icons/file-text.svg",
+            Icon::Sheet => "icons/sheet.svg",
             Icon::Provider(ProviderKind::Claude) => "icons/provider-claude.svg",
             Icon::Provider(ProviderKind::Codex) => "icons/provider-openai.svg",
         }

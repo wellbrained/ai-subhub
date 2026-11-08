@@ -107,6 +107,11 @@ impl OverviewState {
         }
     }
 
+    /// A background analysis is running.
+    pub fn is_computing(&self) -> bool {
+        self.computing.is_some()
+    }
+
     /// The last analysis result, if any.
     pub fn latest(&self) -> Option<Arc<Overview>> {
         self.result.as_ref().map(|(_, _, o)| o.clone())
@@ -213,6 +218,7 @@ fn signature(s: &AppState, range: InsightRange) -> u64 {
 mod parts;
 mod plans;
 mod renewals;
+pub mod report;
 #[cfg(test)]
 mod tests;
 mod usage;

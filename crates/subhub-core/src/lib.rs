@@ -6,6 +6,7 @@ pub mod claude;
 pub mod codex;
 pub mod demo;
 pub mod detect;
+pub mod export;
 pub mod history;
 pub mod hover;
 pub mod hub;

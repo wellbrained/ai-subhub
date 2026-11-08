@@ -4,6 +4,7 @@
 
 mod assets;
 mod demo;
+mod export_ui;
 mod fonts;
 mod foreground;
 mod format;
@@ -14,6 +15,7 @@ mod logo;
 mod monitors;
 mod overview;
 mod popover;
+mod report_pdf;
 mod settings_window;
 mod showcase;
 mod startup;

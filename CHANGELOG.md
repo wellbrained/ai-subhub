@@ -4,7 +4,9 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 
 ## Unreleased
 
+- Export from the main window: a PDF usage report, tokens and cost as CSV, and the limit history as CSV.
 - The taskbar badges no longer flicker on Alt+Tab or when switching windows. They step aside only for a fullscreen app such as a video or game, and only on that monitor.
+- The taskbar badges sit right next to the tray and clock on every monitor, measured instead of guessed, also when placed on the left.
 
 ## 0.1.7 – 2026-11-08
 
