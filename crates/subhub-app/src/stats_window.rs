@@ -49,6 +49,9 @@ pub struct StatsWindow {
     range: Range,
     tab: Tab,
     scroll: gpui::ScrollHandle,
+    /// The Overview page last shown, and the topic to scroll to (see `overview::Ctx::focus`).
+    seen_open: Option<Option<TipRow>>,
+    focus: std::rc::Rc<std::cell::Cell<Option<TipRow>>>,
     /// The Days table's own scroll area (7 rows visible).
     days_scroll: gpui::ScrollHandle,
     /// Result of the last "Copy as image" and when (true = copied).
@@ -126,6 +129,8 @@ impl StatsWindow {
             range: Range::Quarter,
             tab,
             scroll: gpui::ScrollHandle::new(),
+            seen_open: None,
+            focus: Default::default(),
             days_scroll: gpui::ScrollHandle::new(),
             copied: None,
             prices_open: false,
@@ -645,7 +650,15 @@ impl Render for StatsWindow {
                     me.update(cx, |this, cx| this.show_settings(cx));
                 })
             };
+            // Another Overview page: start at the top, or at the topic that was opened.
+            if self.seen_open != Some(self.overview.open) {
+                self.seen_open = Some(self.overview.open);
+                self.scroll.set_offset(gpui::point(px(0.0), px(0.0)));
+                self.focus.set(self.overview.open);
+            }
             let ctx = overview::Ctx {
+                scroll: self.scroll.clone(),
+                focus: self.focus.clone(),
                 t: &t,
                 s: self.state.read(cx),
                 me: me.clone(),

@@ -814,6 +814,10 @@ pub type OpenSettings = Rc<dyn Fn(SettingsTarget, &mut App)>;
 
 /// Handlers and data the page needs.
 pub struct Ctx<'a> {
+    /// The main window's scroll area and the topic it should scroll to once its section is laid
+    /// out (opening Renewals or Where usage goes shows that section, not the page top).
+    pub scroll: gpui::ScrollHandle,
+    pub focus: std::rc::Rc<std::cell::Cell<Option<TipRow>>>,
     pub t: &'a Tokens,
     pub s: &'a AppState,
     pub me: Entity<StatsWindow>,
@@ -1021,7 +1025,24 @@ fn topic_page(r: TipRow, ov: &OverviewState, o: &Overview, cx: &Ctx) -> AnyEleme
             TipRow::Renewals => renewals_content(o, cx),
             TipRow::Usage => usage_content(ov, o, cx),
         };
-        page = page.child(
+        // The topic that was opened: once laid out, scroll its section to the top of the view.
+        let anchor = (i > 0 && cx.focus.get() == Some(topic)).then(|| {
+            let (handle, focus) = (cx.scroll.clone(), cx.focus.clone());
+            gpui::canvas(
+                move |b, window, _| {
+                    let view = handle.bounds();
+                    let off = handle.offset();
+                    let y = off.y - (b.origin.y - view.origin.y) + px(12.0);
+                    handle.set_offset(gpui::point(off.x, y.min(px(0.0))));
+                    focus.set(None);
+                    window.refresh();
+                },
+                |_, _, _, _| {},
+            )
+            .w_full()
+            .h(px(0.0))
+        });
+        page = page.children(anchor).child(
             div()
                 .flex()
                 .flex_col()
@@ -3573,7 +3594,12 @@ fn usage_content(ov: &OverviewState, o: &Overview, cx: &Ctx) -> AnyElement {
         let top: Vec<&insights::ThreadShare> = u.threads.iter().take(4).collect();
         let shown: f64 = top.iter().map(|x| x.share).sum();
         let others = u.thread_count.saturating_sub(top.len());
-        let entry = |title: String, sub: Option<String>, share: f64, first: bool, faint: bool| {
+        let entry = |key: String,
+                     title: String,
+                     sub: Option<String>,
+                     share: f64,
+                     first: bool,
+                     faint: bool| {
             div()
                 .flex()
                 .gap(px(8.0))
@@ -3591,13 +3617,13 @@ fn usage_content(ov: &OverviewState, o: &Overview, cx: &Ctx) -> AnyElement {
                             div()
                                 .text_size(px(12.5))
                                 .when(faint, |d| d.text_color(t.faint))
-                                .clip("entry", title),
+                                .clip(format!("entry-{key}"), title),
                         )
                         .children(sub.map(|s| {
                             div()
                                 .text_size(px(TINY))
                                 .text_color(t.faint)
-                                .clip("entry-sub", s)
+                                .clip(format!("entry-sub-{key}"), s)
                         })),
                 )
                 .child(
@@ -3620,10 +3646,18 @@ fn usage_content(ov: &OverviewState, o: &Overview, cx: &Ctx) -> AnyElement {
         );
         for (i, th) in top.iter().enumerate() {
             let sub = thread_sub(th, o, false);
-            col = col.child(entry(thread_title(th), Some(sub), th.share, i == 0, false));
+            col = col.child(entry(
+                i.to_string(),
+                thread_title(th),
+                Some(sub),
+                th.share,
+                i == 0,
+                false,
+            ));
         }
         if others > 0 {
             col = col.child(entry(
+                "others".into(),
                 format!(
                     "{others} other thread{}",
                     if others == 1 { "" } else { "s" }

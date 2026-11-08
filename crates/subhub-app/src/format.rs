@@ -66,13 +66,21 @@ pub fn ago(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 
 /// Text that may not fit: cut off with "…", the full text in a tooltip on hover (owner,
 /// 2026-11-08: names that are cut off show in full on hover). `key` keeps the element id
-/// unique next to other clipped texts.
+/// unique next to other clipped texts (pass an index where the same text can repeat).
 pub trait Clip: gpui::Styled + gpui::InteractiveElement + gpui::ParentElement + Sized {
-    fn clip(self, key: &'static str, text: impl Into<gpui::SharedString>) -> gpui::Stateful<Self>;
+    fn clip(
+        self,
+        key: impl std::fmt::Display,
+        text: impl Into<gpui::SharedString>,
+    ) -> gpui::Stateful<Self>;
 }
 
 impl Clip for gpui::Div {
-    fn clip(self, key: &'static str, text: impl Into<gpui::SharedString>) -> gpui::Stateful<Self> {
+    fn clip(
+        self,
+        key: impl std::fmt::Display,
+        text: impl Into<gpui::SharedString>,
+    ) -> gpui::Stateful<Self> {
         use gpui::{
             InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
             Styled as _,

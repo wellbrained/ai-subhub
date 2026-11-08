@@ -18,27 +18,42 @@ AI SubHub shows the usage limits of all your **Claude Code** and **Codex** accou
 - **Usage on the taskbar.** Optional small badges next to the tray show your favourite accounts at all times. Hover one for details.
 - **Several accounts per provider.** Each CLI profile is its own account, with a name, a coloured tag, a plan badge and an optional group. SubHub finds the profiles on your PC and offers to add them.
 - **Launch by account and project.** The rocket on a card opens a project folder in Windows Terminal, PowerShell, VS Code or the provider's desktop app, signed in as that account.
+- **Insights.** Whether your plans fit how you work (too big, at the limit, unused), how often you waited for a 5-hour reset while another account was free, upcoming renewals, and where your usage goes by task, project and model.
+- **Warm-up (optional).** Start your 5-hour windows early at a time you choose, so the first reset comes when you usually run out. SubHub suggests a time from your own days; nothing runs until you set it up.
+- **Heads-up before you run out (optional).** A notification about 15 minutes before an account's 5-hour window runs out, when another account still has a fresh one.
 - **Usage statistics.** Tokens and an API cost estimate per day, model and provider, read from the CLIs' local session logs, plus a live board of all limits.
 - **Renewal reminders.** Optionally enter an account's monthly renewal or access end date to get a reminder 7 and 3 days before.
 - **Hub support (optional).** If you run a [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) hub, SubHub lists its logins by itself and can steer new hub threads to the account whose weekly limit expires soonest, or to one you pick.
 - **Updates itself** from GitHub Releases, automatically or when you say so, and shows short patch notes afterwards.
 
-## Statistics
+## The main window
 
-Open **Statistics** from the tray menu or the popover. Everything is read from the session logs Claude Code and Codex write on your PC, so it works without the hub and sends nothing anywhere.
+Open **Statistics** or **Settings** from the tray menu or the popover. Both open the same window, with a sidebar of three groups. Everything in Insights and Data is read from the session logs Claude Code and Codex write on your PC and from SubHub's own readings, so it works without the hub and sends nothing anywhere.
 
-- **Usage tab:** work tokens (input and output) and an API cost estimate for the past 24 hours or 7, 30 or 90 days. It shows the cost split into input, output and cache, and a daily chart per provider with a table per model. The estimate uses public list prices and shows what the same work would cost on the API, not what you pay for your plan.
-- **Limits tab:** a live board of every account's session and weekly windows, with % left, reset countdowns and pace. It is useful for picking the account with the most room before a long task.
+**Insights**
 
-![Statistics, Usage tab: work tokens, API estimate, cost by type and a daily chart per provider](docs/images/demo-statistics-usage.png)
+- **Overview:** one sentence on how much of your plans you use, four key numbers, the most useful tip, and a short answer per topic that opens its page.
+- **Plans & renewals:** per account the plan, current and weekly usage, 5-hour limit hits and whether the plan fits (with what a smaller or bigger plan would mean), then upcoming renewals and end dates.
+- **Usage patterns:** how 5-hour windows and resets work, one of your days as it went and with an earlier start, the last 7 days of windows per account, the Warm-up setup, and where your usage goes by task (main threads and subagents), project, thread and model.
 
-![Statistics, Limits tab: a live board of every account's windows](docs/images/demo-statistics-limits.png)
+![The Overview: a verdict, key numbers, the top tip and one line per topic](docs/images/demo-overview.png)
 
-## Settings
+![Usage patterns: how the 5-hour window works, an example day with and without warm-up, and the last 7 days per account](docs/images/demo-usage-patterns.png)
 
-Settings has a menu of pages on the left:
+![Plans & renewals: plan fit per account and the renewals below](docs/images/demo-plans.png)
 
-- **General:** refresh interval, what the close button does, Start with Windows, and (under Advanced) the sign-in terminal and CLI paths.
+**Data**
+
+- **Limits now:** a live board of every account's session and weekly windows, with % left, reset countdowns and pace. It is useful for picking the account with the most room before a long task.
+- **Tokens & cost:** work tokens (input and output) and an API cost estimate for the past 24 hours or 7, 30 or 90 days, split into input, output and cache, with a daily chart per provider and a table per model. The estimate uses public list prices and shows what the same work would cost on the API, not what you pay for your plan.
+
+| | |
+| --- | --- |
+| ![Limits now: a live board of every account's windows](docs/images/demo-statistics-limits.png) | ![Tokens & cost: work tokens, API estimate, cost by type and a daily chart per provider](docs/images/demo-statistics-usage.png) |
+
+**Settings**
+
+- **General:** refresh interval, Warm-up status, the run-out heads-up, what the close button does, Start with Windows, and (under Advanced) the sign-in terminal and CLI paths.
 - **Appearance:** theme, accent colour, % left or % used, plan badges, emails, and the taskbar badges (which accounts, left or right).
 - **Accounts:** all accounts by provider with their source and status. Open an account to rename it, change its tag colour and group, show it on the taskbar, set its renewal date, or sign in again. **Add accounts** lists the CLI profiles found on your PC.
 - **Hub:** connect a CLIProxyAPI hub and turn steering for new threads on or off.
@@ -47,8 +62,8 @@ Settings has a menu of pages on the left:
 
 | | |
 | --- | --- |
-| ![Settings, Accounts: accounts per provider with source and status](docs/images/demo-settings-accounts.png) | ![Settings, Appearance: theme, accent colour, usage display and taskbar badges](docs/images/demo-settings-appearance.png) |
-| ![Settings, Hub: connection status, steering and the hub address](docs/images/demo-settings-hub.png) | ![Settings, Projects: project folders for the Launch menus](docs/images/demo-settings-projects.png) |
+| ![Settings, General: refresh, warm-up, the run-out heads-up and the close button](docs/images/demo-settings-general.png) | ![Settings, Accounts: accounts per provider with source and status](docs/images/demo-settings-accounts.png) |
+| ![Settings, Appearance: theme, accent colour, usage display and taskbar badges](docs/images/demo-settings-appearance.png) | ![Settings, Hub: connection status, steering and the hub address](docs/images/demo-settings-hub.png) |
 
 ## Get started
 
@@ -56,7 +71,7 @@ Requires **Windows 11** (x64); Windows 10 may work but is untested. macOS and Li
 
 1. Download `ai-subhub.exe` from the [latest release](https://github.com/wellbrained/ai-subhub/releases/latest) and put it in a folder you keep, for example `%LOCALAPPDATA%\Programs\AI SubHub`. There is no installer, and updates replace the exe in place.
 2. Start it. The exe is not code-signed, so Windows SmartScreen may warn you the first time: **More info → Run anyway**.
-3. On the first start, Settings opens on **Add accounts** with the Claude Code and Codex profiles found on your PC (`~\.claude*`, `~\.codex*`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`). Tick the ones you want. A profile in another place can be added with **Choose a folder manually**.
+3. On the first start, the window opens on **Add accounts** with the Claude Code and Codex profiles found on your PC (`~\.claude*`, `~\.codex*`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`). Tick the ones you want. A profile in another place can be added with **Choose a folder manually**.
 4. Click the tray icon. If an account says *Sign in needed*, use **Sign in** on its card or settings page; the CLI login opens in a terminal, and the account refreshes when it is done.
 
 **Start with Windows** is opt-in (Settings → General). Closing a window keeps SubHub in the tray; quit it from the tray menu.
