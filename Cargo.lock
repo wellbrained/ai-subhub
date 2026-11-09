@@ -6125,7 +6125,7 @@ dependencies = [
 
 [[package]]
 name = "subhub-app"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6147,7 +6147,7 @@ dependencies = [
 
 [[package]]
 name = "subhub-core"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "anyhow",
  "chrono",
