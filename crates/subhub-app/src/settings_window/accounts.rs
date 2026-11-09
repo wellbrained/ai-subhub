@@ -25,7 +25,7 @@ impl SettingsWindow {
         let groups: Vec<(ProviderKind, Vec<RowData>)> = {
             let s = self.state.read(cx);
             let views = crate::hover_card::account_views(s);
-            [ProviderKind::Claude, ProviderKind::Codex]
+            ProviderKind::ALL
                 .into_iter()
                 .map(|p| {
                     let rows = views
@@ -447,7 +447,13 @@ impl SettingsWindow {
             subhub_core::settings::Terminal::WindowsTerminal => "Windows Terminal",
             subhub_core::settings::Terminal::PowerShell => "PowerShell",
         };
-        let hint = if acc.profile_dir.is_some() {
+        let cli = acc.provider.is_cli_profile();
+        let hint = if !cli {
+            format!(
+                "{} Retry checks usage now.",
+                subhub_core::launch::app_sign_in_hint(acc.provider)
+            )
+        } else if acc.profile_dir.is_some() {
             format!(
                 "Sign in opens the {} login for this profile in {terminal} (change it in General → Advanced). Usage refreshes when it ends. Retry skips failure backoff, never a provider cooldown.",
                 provider_name(acc.provider)
@@ -457,7 +463,7 @@ impl SettingsWindow {
         };
         let (st_in, st_retry) = (self.state.clone(), self.state.clone());
         let mut actions = div().flex().flex_wrap().items_center().gap_2();
-        if acc.profile_dir.is_some() {
+        if acc.profile_dir.is_some() && cli {
             actions = actions.child(
                 icon_button(
                     "sign-in",
@@ -617,6 +623,13 @@ pub(super) fn accounts_sig(s: &AppState) -> u64 {
 }
 
 pub(super) fn source_label(a: &Account) -> &'static str {
+    if !a.provider.is_cli_profile() {
+        return if a.profile_dir.is_some() {
+            "App login on this PC"
+        } else {
+            "Not connected"
+        };
+    }
     match (&a.profile_dir, &a.hub) {
         (_, Some(h)) if h.benched => "Benched",
         (Some(_), Some(_)) => "Hub + CLI profile",
@@ -628,6 +641,13 @@ pub(super) fn source_label(a: &Account) -> &'static str {
 
 /// The short source hint on an account row, in the popover's words (Hub, Local only).
 pub(super) fn source_hint(a: &Account) -> &'static str {
+    if !a.provider.is_cli_profile() {
+        return if a.profile_dir.is_some() {
+            "App login"
+        } else {
+            "Not connected"
+        };
+    }
     match (&a.profile_dir, &a.hub) {
         (Some(_), Some(_)) => "Hub + profile",
         (None, Some(_)) => "Hub",

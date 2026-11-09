@@ -119,7 +119,8 @@ pub fn short_day(d: Weekday) -> &'static str {
 /// Whether an account can be warmed up: it needs a local CLI profile (hub-only logins cannot
 /// in v1).
 pub fn can_warm(a: &Account) -> bool {
-    a.profile_dir.is_some()
+    // Copilot, Cursor and Antigravity have no 5-hour CLI window to start.
+    a.profile_dir.is_some() && a.provider.is_cli_profile()
 }
 
 // ---------- the run log ----------
@@ -291,14 +292,13 @@ pub fn args(provider: ProviderKind) -> Vec<&'static str> {
     match provider {
         ProviderKind::Claude => vec!["-p", PROMPT, "--model", "haiku"],
         ProviderKind::Codex => vec!["exec", "--skip-git-repo-check", PROMPT],
+        // No warm-up for app logins (`can_warm`).
+        _ => vec![],
     }
 }
 
 fn provider_name(p: ProviderKind) -> &'static str {
-    match p {
-        ProviderKind::Claude => "Claude",
-        ProviderKind::Codex => "Codex",
-    }
+    p.name()
 }
 
 /// Runs the CLI hidden for the profile (billing / API-key variables cleared, as for Launch) in

@@ -28,6 +28,9 @@ pub const CLAUDE_TEAM: Uuid = Uuid::from_u128(0x00000000_0000_4000_8000_0000000d
 pub const CLAUDE_SIDE: Uuid = Uuid::from_u128(0x00000000_0000_4000_8000_0000000de004);
 pub const CODEX_WORK: Uuid = Uuid::from_u128(0x00000000_0000_4000_8000_0000000de005);
 pub const CODEX_PERSONAL: Uuid = Uuid::from_u128(0x00000000_0000_4000_8000_0000000de006);
+pub const COPILOT: Uuid = Uuid::from_u128(0x00000000_0000_4000_8000_0000000de007);
+pub const CURSOR: Uuid = Uuid::from_u128(0x00000000_0000_4000_8000_0000000de008);
+pub const ANTIGRAVITY: Uuid = Uuid::from_u128(0x00000000_0000_4000_8000_0000000de009);
 
 /// The message the stale account's checks fail with.
 pub const STALE_MESSAGE: &str = "The provider did not answer. Showing the last reading.";
@@ -162,6 +165,61 @@ const SPECS: &[Spec] = &[
         fetched_mins_ago: 185,
         failing: true,
     },
+    // App logins (owner, 2026-11-09: no real accounts to test with, so the demo shows them):
+    // Copilot's monthly AI credits, Cursor's weekly plan with its Auto/API pools, Antigravity's
+    // two groups with 5-hour and weekly quotas each.
+    Spec {
+        id: COPILOT,
+        provider: ProviderKind::Copilot,
+        label: "Copilot",
+        // Copilot shows the GitHub login, not an email.
+        email: "demo-dev",
+        profile: Some(".copilot"),
+        hub: None,
+        group: "Work",
+        tag: "GH",
+        plan: "Pro",
+        windows: &[("copilot:premium", "Monthly · AI credits", 62.0, 30_240)],
+        fetched_mins_ago: 3,
+        failing: false,
+    },
+    Spec {
+        id: CURSOR,
+        provider: ProviderKind::Cursor,
+        label: "Cursor",
+        email: "cursor@example.com",
+        profile: Some("AppData/Roaming/Cursor"),
+        hub: None,
+        group: "Personal",
+        tag: "CUR",
+        plan: "Pro+",
+        windows: &[
+            ("cursor:plan", "Weekly", 41.0, 4320),
+            ("cursor:auto", "Weekly · Auto", 35.0, 4320),
+            ("cursor:api", "Weekly · API", 12.0, 4320),
+        ],
+        fetched_mins_ago: 4,
+        failing: false,
+    },
+    Spec {
+        id: ANTIGRAVITY,
+        provider: ProviderKind::Antigravity,
+        label: "Antigravity",
+        email: "ag@example.com",
+        profile: Some(".gemini/antigravity-cli"),
+        hub: None,
+        group: "Personal",
+        tag: "AG",
+        plan: "Ultra",
+        windows: &[
+            ("agy:5h", "5-hour", 30.0, 180),
+            ("agy:weekly", "Weekly", 55.0, 6500),
+            ("agy:claude-gpt:5h", "5-hour · Claude & GPT", 10.0, 120),
+            ("agy:claude-gpt:weekly", "Weekly · Claude & GPT", 20.0, 6500),
+        ],
+        fetched_mins_ago: 2,
+        failing: false,
+    },
 ];
 
 /// Saved project folders (in the sandbox home's `Projects` folder): id, folder, label.
@@ -262,8 +320,10 @@ pub fn display_path(path: &Path, root: &Path) -> Option<String> {
 }
 
 fn window_len(key: &str) -> Duration {
-    if key == "five_hour" || key == "codex:primary" {
+    if key == "five_hour" || key == "codex:primary" || key.ends_with("5h") {
         Duration::hours(5)
+    } else if key.starts_with("copilot:") {
+        Duration::days(30)
     } else {
         Duration::days(7)
     }
@@ -448,7 +508,7 @@ fn day_factor(now: DateTime<Utc>, day: i64) -> f64 {
 /// Login metadata of the fake CLI profiles (relative to the sandbox home): Claude's
 /// `.claude.json` with the email only. No credentials, no tokens.
 pub fn profile_files() -> Vec<(PathBuf, String)> {
-    SPECS
+    let mut out: Vec<(PathBuf, String)> = SPECS
         .iter()
         .filter(|s| s.provider == ProviderKind::Claude)
         .filter_map(|s| {
@@ -459,7 +519,24 @@ pub fn profile_files() -> Vec<(PathBuf, String)> {
             });
             Some((Path::new(dir).join(".claude.json"), body.to_string()))
         })
-        .collect()
+        .collect();
+    // The app logins' folders, so Add accounts finds them (no tokens in any of them).
+    out.push((Path::new(".copilot").join("config.json"), "{}".into()));
+    out.push((
+        Path::new("AppData")
+            .join("Roaming")
+            .join("Cursor")
+            .join("User")
+            .join("settings.json"),
+        "{}".into(),
+    ));
+    out.push((
+        Path::new(".gemini")
+            .join("antigravity-cli")
+            .join("settings.json"),
+        "{}".into(),
+    ));
+    out
 }
 
 /// Made-up thread titles (Claude `custom-title` lines).
@@ -1101,12 +1178,17 @@ mod tests {
             .iter()
             .filter(|a| a.provider == ProviderKind::Claude)
             .count();
-        assert_eq!((claude, s.accounts.len() - claude), (4, 2));
-        assert!(
-            s.accounts
-                .iter()
-                .all(|a| a.email.as_deref().unwrap().ends_with("@example.com"))
-        );
+        let cli = s
+            .accounts
+            .iter()
+            .filter(|a| a.provider.is_cli_profile())
+            .count();
+        assert_eq!((claude, cli - claude, s.accounts.len() - cli), (4, 2, 3));
+        // Made-up identities only (Copilot shows a GitHub login, not an email).
+        assert!(s.accounts.iter().all(|a| {
+            let e = a.email.as_deref().unwrap();
+            e.ends_with("@example.com") || (a.provider == ProviderKind::Copilot && e == "demo-dev")
+        }));
         // Running out, used up, benched, hub-only, local-only, stale.
         assert!(left(&s, CLAUDE_PERSONAL, "five_hour") < 25.0);
         assert_eq!(left(&s, CLAUDE_TEAM, "five_hour"), 0.0);
@@ -1266,7 +1348,8 @@ mod tests {
         }
 
         let found = detect::detect(&home, &ProfileEnv::default(), &s.accounts);
-        assert_eq!(found.len(), 4, "{found:?}");
+        // 4 CLI profiles and the 3 app logins (Copilot, Cursor, Antigravity).
+        assert_eq!(found.len(), 7, "{found:?}");
         assert!(
             found
                 .iter()

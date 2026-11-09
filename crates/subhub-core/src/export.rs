@@ -34,10 +34,7 @@ fn line(fields: &[String]) -> String {
 }
 
 fn provider_name(p: ProviderKind) -> &'static str {
-    match p {
-        ProviderKind::Claude => "Claude",
-        ProviderKind::Codex => "Codex",
-    }
+    p.name()
 }
 
 /// Tokens and API-estimate cost per local day, provider and model, from `from` on (oldest

@@ -97,6 +97,8 @@ pub struct SettingsWindow {
     page: Page,
     /// Account page whose remove button is waiting for the second click.
     confirm_remove: Option<Uuid>,
+    /// Hub page: the account whose "Remove from hub" waits for the second click.
+    confirm_hub_remove: Option<Uuid>,
     /// Values the name/tag inputs were last filled with (to save only real edits).
     pop_name: String,
     pop_tag: String,
@@ -295,6 +297,7 @@ impl SettingsWindow {
             advanced_open: false,
             more_open: false,
             confirm_remove: None,
+            confirm_hub_remove: None,
             project_label,
             editing_project: None,
             confirm_remove_project: None,
@@ -422,6 +425,7 @@ impl SettingsWindow {
         let (input, last) = match provider {
             ProviderKind::Claude => (&self.claude_path, &mut self.pop_claude),
             ProviderKind::Codex => (&self.codex_path, &mut self.pop_codex),
+            _ => return,
         };
         let text = input.read(cx).value().to_string();
         if text == *last {
@@ -496,6 +500,7 @@ impl SettingsWindow {
         self.commit_project_label(cx);
         self.page = page;
         self.confirm_remove = None;
+        self.confirm_hub_remove = None;
         self.confirm_remove_project = None;
         self.message = None;
         if page == Page::AddAccounts {
@@ -649,11 +654,13 @@ impl SettingsWindow {
         // A new action message starts its own timer.
         if self.message != self.toast_message {
             self.toast_message = self.message.clone();
-            if self.message.is_some() {
-                self.message_until = Some(now + std::time::Duration::from_secs(4));
+            if let Some(m) = &self.message {
+                // ~4 s, longer for long messages (about 15 characters a second to read).
+                let ms = (4000 + m.chars().count().saturating_sub(60) as u64 * 65).min(10_000);
+                self.message_until = Some(now + std::time::Duration::from_millis(ms));
                 cx.spawn(async move |this, cx| {
                     cx.background_executor()
-                        .timer(std::time::Duration::from_millis(4100))
+                        .timer(std::time::Duration::from_millis(ms + 100))
                         .await;
                     let _ = this.update(cx, |_, cx| cx.notify());
                 })
@@ -715,6 +722,7 @@ impl SettingsWindow {
                 .bottom(px(18.0))
                 .left_0()
                 .right_0()
+                .px(px(16.0))
                 .flex()
                 .justify_center()
                 .child(
@@ -722,7 +730,7 @@ impl SettingsWindow {
                         .flex()
                         .items_center()
                         .gap_2()
-                        .max_w(px(460.0))
+                        .max_w(px(520.0))
                         .pl(px(10.0))
                         .pr(px(if close.is_some() { 6.0 } else { 14.0 }))
                         .py(px(7.0))
@@ -733,6 +741,7 @@ impl SettingsWindow {
                         .shadow_lg()
                         .child(
                             div()
+                                .flex_none()
                                 .size(px(20.0))
                                 .rounded_full()
                                 .flex()
@@ -741,8 +750,15 @@ impl SettingsWindow {
                                 .bg(icon_color.opacity(0.16))
                                 .child(icon(icon_name, 13.0, icon_color)),
                         )
-                        .child(div().text_sm().child(SharedString::from(text)))
-                        .when_some(close, |d, c| d.child(c)),
+                        // Shrinks and wraps inside the card instead of running past its edge.
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .child(SharedString::from(text)),
+                        )
+                        .when_some(close, |d, c| d.child(c.flex_none())),
                 )
                 .into_any_element(),
         )

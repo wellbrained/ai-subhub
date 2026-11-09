@@ -206,14 +206,18 @@ impl SettingsWindow {
             );
 
         let mut list = div().flex().flex_col();
-        for p in [ProviderKind::Claude, ProviderKind::Codex] {
-            list = list.child(provider_heading(p, t));
+        for p in ProviderKind::ALL {
             let rows: Vec<(usize, &DetectedProfile)> = self
                 .detected
                 .iter()
                 .enumerate()
                 .filter(|(_, d)| d.provider == p)
                 .collect();
+            // App logins (Copilot, Cursor, Antigravity) show only when found on this PC.
+            if rows.is_empty() && !p.is_cli_profile() {
+                continue;
+            }
+            list = list.child(provider_heading(p, t));
             if rows.is_empty() {
                 list = list.child(
                     div()
@@ -268,9 +272,9 @@ impl SettingsWindow {
         }
         page.child(div().pb_3().text_xs().text_color(t.muted).child(
             "CLI profiles found in your user folder (.claude*, .codex*), in \
-                 CLAUDE_CONFIG_DIR and CODEX_HOME, and in .config\\claude. Only the \
-                 login email is read; tokens are never touched. A login is never added \
-                 twice.",
+                 CLAUDE_CONFIG_DIR and CODEX_HOME, and in .config\\claude, plus the \
+                 Copilot, Cursor and Antigravity logins on this PC. Only the login email is \
+                 read here; tokens are never touched. A login is never added twice.",
         ))
         .child(toolbar)
         .child(list)
@@ -306,6 +310,12 @@ impl SettingsWindow {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        // App logins are one per PC: named after the provider, not their folder.
+        let folder = if d.provider.is_cli_profile() {
+            folder
+        } else {
+            d.provider.name().to_string()
+        };
         let title = d.email.clone().unwrap_or(folder);
         let path = crate::demo::show_path(&d.dir);
         let path = path.strip_prefix(r"\\?\").unwrap_or(&path).to_string();
@@ -385,7 +395,8 @@ impl SettingsWindow {
                     .flex()
                     .flex_none()
                     .gap_1()
-                    .when(d.email.is_none(), |r| {
+                    // App logins read their login at the first refresh, not here.
+                    .when(d.email.is_none() && d.provider.is_cli_profile(), |r| {
                         r.child(tag("No login found", t.warn, t))
                     })
                     .when(in_hub, |r| r.child(tag("Also in the hub", t.muted, t)))

@@ -41,7 +41,30 @@ pub fn profile_email(provider: ProviderKind, dir: &Path) -> Option<String> {
                 .as_str()?;
             valid_email(email)
         }
+        // GitHub login comes with the first reading (`copilot_internal/user` -> login).
+        ProviderKind::Copilot => None,
+        ProviderKind::Cursor => crate::cursor::profile_email(dir),
+        ProviderKind::Antigravity => crate::antigravity::profile_email(dir),
     }
+}
+
+/// Folders of the one-login-per-PC providers (Copilot, Cursor, Antigravity) that exist:
+/// `<COPILOT_HOME or ~\.copilot>`, `%APPDATA%\Cursor` (the Cursor CLI's `auth.json` lives there),
+/// `<GEMINI_CLI_HOME or ~\.gemini>\antigravity-cli`. Kept apart from `discover_dirs`, which also
+/// feeds the log statistics (Claude and Codex only).
+pub fn discover_app_dirs(home: &Path, env: &ProfileEnv) -> Vec<(ProviderKind, PathBuf)> {
+    let var = |v: &Option<String>| v.as_deref().map(PathBuf::from);
+    let mut out = vec![];
+    let copilot = var(&env.copilot_home).unwrap_or_else(|| home.join(".copilot"));
+    out.push((ProviderKind::Copilot, copilot));
+    let roaming = var(&env.appdata).unwrap_or_else(|| home.join("AppData").join("Roaming"));
+    out.push((ProviderKind::Cursor, roaming.join("Cursor")));
+    let gemini = var(&env.gemini_cli_home).unwrap_or_else(|| home.join(".gemini"));
+    out.push((ProviderKind::Antigravity, gemini.join("antigravity-cli")));
+    out.into_iter()
+        .filter(|(_, d)| d.is_dir())
+        .filter_map(|(p, d)| Some((p, std::fs::canonicalize(&d).map(plain).ok()?)))
+        .collect()
 }
 
 /// The environment variables that move a provider's profile folder. `CLAUDE_CONFIG_DIR` may
@@ -51,6 +74,10 @@ pub struct ProfileEnv {
     pub claude_config_dir: Option<String>,
     pub codex_home: Option<String>,
     pub xdg_config_home: Option<String>,
+    /// App logins: `COPILOT_HOME`, `APPDATA` (Cursor), `GEMINI_CLI_HOME` (Antigravity).
+    pub copilot_home: Option<String>,
+    pub appdata: Option<String>,
+    pub gemini_cli_home: Option<String>,
 }
 
 impl ProfileEnv {
@@ -60,6 +87,9 @@ impl ProfileEnv {
             claude_config_dir: var("CLAUDE_CONFIG_DIR"),
             codex_home: var("CODEX_HOME"),
             xdg_config_home: var("XDG_CONFIG_HOME"),
+            copilot_home: var("COPILOT_HOME"),
+            appdata: var("APPDATA"),
+            gemini_cli_home: var("GEMINI_CLI_HOME"),
         }
     }
 }
@@ -244,6 +274,7 @@ mod tests {
             )),
             codex_home: Some(h.join("cx").display().to_string()),
             xdg_config_home: None,
+            ..ProfileEnv::default()
         };
         let found = discover_dirs(h, &env);
         // Stored as plain paths (usable as CLAUDE_CONFIG_DIR), not verbatim `\\?\C:\…`.

@@ -2,7 +2,7 @@
 
 **Your AI subscriptions at a glance, from the Windows tray.**
 
-AI SubHub shows the usage limits of all your **Claude Code** and **Codex** accounts in one place: the 5-hour and weekly windows, how much is left and when each one resets. It also starts the right CLI profile in the right project folder. Free, open source and local, with no account, no backend and no telemetry.
+AI SubHub shows the usage limits of all your **Claude Code** and **Codex** accounts in one place: the 5-hour and weekly windows, how much is left and when each one resets. **GitHub Copilot**, **Cursor** and **Google Antigravity** logins on your PC show their limits too. It also starts the right CLI profile in the right project folder. Free, open source and local, with no account, no backend and no telemetry.
 
 [Download](https://github.com/wellbrained/ai-subhub/releases/latest) · [Changelog](CHANGELOG.md) · [Report a bug](https://github.com/wellbrained/ai-subhub/issues) · [Build from source](#build-from-source) · [MIT license](LICENSE)
 
@@ -102,13 +102,16 @@ Demo mode runs the real app on made-up accounts, usage and projects in a tempora
 | --- | --- | --- |
 | Claude Code | Claude's OAuth usage endpoint (**undocumented**), with the profile's own token | Managed by Claude Code; SubHub only reads the token into memory for the request |
 | Codex | The Codex CLI's own app-server (account and rate-limit reads only, no model calls) | Managed by the Codex CLI |
+| GitHub Copilot | GitHub's Copilot quota endpoint (**undocumented**): monthly premium requests or AI credits | The Copilot CLI's GitHub login (or `gh`); SubHub sends it only to api.github.com |
+| Cursor | Cursor's usage endpoint (**unofficial**): the plan's weekly or monthly usage, Auto and API pools | The Cursor CLI's login (`cursor-agent login`); never refreshed by SubHub |
+| Google Antigravity | The official `agy` CLI's `/usage` command | Managed by `agy`; SubHub never touches its token (Google's terms forbid third-party use) |
 | CLIProxyAPI hub (optional) | The hub's management API; the hub adds the token itself | Your hub's management key, stored in Windows Credential Manager |
 
 - Requests go straight to the providers or your own hub. There is **no SubHub server and no telemetry**. The only other requests are the update check (GitHub) and a public model price list ([LiteLLM](https://github.com/BerriAI/litellm)) for cost estimates.
 - SubHub never refreshes, copies or saves provider tokens. Its settings (`%LOCALAPPDATA%\AI SubHub\settings.json`) hold account names, profile paths, project folders, preferences and the last readings.
 - A failed reading keeps the last one, marked stale. Missing data is shown as unavailable, never as 0%, and a passed reset time never refills a bar without a new reading.
 - Errors back off, and provider rate limits are respected, also by manual refresh.
-- Claude's usage endpoint is unofficial and can change without notice. API-key billing is outside the scope of a subscription monitor.
+- Claude's, Copilot's and Cursor's usage endpoints are unofficial and can change without notice. Copilot, Cursor and Antigravity show limits only (no Tokens & cost, no hub, no Launch), and were built from their documented shapes without a real account to test with yet. API-key billing is outside the scope of a subscription monitor.
 
 ## Build from source
 

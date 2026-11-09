@@ -93,7 +93,6 @@ pub fn cost(t: &Tokens, price: &ModelPrice) -> f64 {
 /// Plain-text aggregate report of a scan for the last 90 days (`--stats-dump`): numbers only,
 /// never any log content.
 pub fn dump_report(scan: &Scan, now: NaiveDateTime, prices: &PriceBook) -> String {
-    use crate::model::ProviderKind;
     use std::fmt::Write;
     let s = summarize(scan, Range::Quarter, now, prices);
     let mut o = String::new();
@@ -123,10 +122,7 @@ pub fn dump_report(scan: &Scan, now: NaiveDateTime, prices: &PriceBook) -> Strin
         s.cache_savings
     );
     for p in &s.providers {
-        let name = match p.provider {
-            ProviderKind::Claude => "claude",
-            ProviderKind::Codex => "codex",
-        };
+        let name = p.provider.name().to_lowercase();
         let _ = writeln!(
             o,
             "provider {name}: sessions {}, tokens {}, cost {:.2}",

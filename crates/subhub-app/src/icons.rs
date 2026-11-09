@@ -101,6 +101,9 @@ impl Icon {
             Icon::Sheet => "icons/sheet.svg",
             Icon::Provider(ProviderKind::Claude) => "icons/provider-claude.svg",
             Icon::Provider(ProviderKind::Codex) => "icons/provider-openai.svg",
+            Icon::Provider(ProviderKind::Copilot) => "icons/provider-copilot.svg",
+            Icon::Provider(ProviderKind::Cursor) => "icons/provider-cursor.svg",
+            Icon::Provider(ProviderKind::Antigravity) => "icons/provider-antigravity.svg",
         }
     }
 }
@@ -123,6 +126,12 @@ pub fn series_color(p: ProviderKind, dark: bool) -> Hsla {
         (ProviderKind::Codex, false) => 0x3f74cc,
         (ProviderKind::Claude, true) => 0xd07052,
         (ProviderKind::Codex, true) => 0x4f84dc,
+        (ProviderKind::Copilot, false) => 0x8a63d2,
+        (ProviderKind::Copilot, true) => 0x9d7ce3,
+        (ProviderKind::Cursor, false) => 0x2a9686,
+        (ProviderKind::Cursor, true) => 0x3cb0a0,
+        (ProviderKind::Antigravity, false) => 0xc08a14,
+        (ProviderKind::Antigravity, true) => 0xd6a23a,
     };
     gpui::rgb(hex).into()
 }
@@ -131,6 +140,9 @@ pub fn series_color(p: ProviderKind, dark: bool) -> Hsla {
 pub fn provider_color(p: ProviderKind, neutral: Hsla) -> Hsla {
     match p {
         ProviderKind::Claude => gpui::rgb(0xd97757).into(),
-        ProviderKind::Codex => neutral,
+        ProviderKind::Codex | ProviderKind::Cursor => neutral,
+        // Copilot's purple, Google blue.
+        ProviderKind::Copilot => gpui::rgb(0x8957e5).into(),
+        ProviderKind::Antigravity => gpui::rgb(0x4285f4).into(),
     }
 }

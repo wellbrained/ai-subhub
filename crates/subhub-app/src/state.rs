@@ -78,6 +78,10 @@ pub struct AppState {
     pub notice: Option<String>,
     /// A priority write is in flight.
     steering_busy: bool,
+    /// A hub sign-in waiting for the browser (Settings → Hub → Add): provider, the hub's state.
+    pub hub_login: Option<(ProviderKind, String)>,
+    /// Hub logins (file names) whose removal is running.
+    pub hub_removing: HashSet<String>,
     /// Last steering failure, shown in Settings → Hub.
     pub steering_error: Option<String>,
     /// The hub's login for an account answered 429: read its CLI profile (a different login)
@@ -169,6 +173,8 @@ impl AppState {
             last_refresh: None,
             notice,
             steering_busy: false,
+            hub_login: None,
+            hub_removing: HashSet::new(),
             steering_error: None,
             hub_cooldown: HashMap::new(),
             user_saves: 0,
@@ -700,7 +706,8 @@ impl AppState {
         cx.notify();
     }
 
-    // ---- hub steering (ADR 0001 refinements: the only hub write is credential priority) ----
+    // ---- hub steering (ADR 0001 refinements: credential priority; logins below are the only
+    // other hub writes, each started by the owner) ----
 
     /// Puts the steering target on top in the hub and restores every other login SubHub changed.
     /// Writes run in the background; originals are persisted only after all writes succeeded.
@@ -767,6 +774,185 @@ impl AppState {
             });
         })
         .detach();
+    }
+
+    // ---- hub logins (owner, 2026-11-09: add and remove CLI accounts in the hub) ----
+
+    /// Removes the account's login from the hub (deletes its auth file there). The account stays
+    /// in SubHub: the next listing drops its hub link, so it reads through its CLI profile, or
+    /// shows Not connected without one.
+    pub fn remove_hub_login(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        let Some(acc) = self.account(id).cloned() else {
+            return;
+        };
+        let Some(file) = acc.hub.as_ref().map(|h| h.file_name.clone()) else {
+            return;
+        };
+        if crate::demo::on() {
+            self.message_for_user = Some(crate::demo::NOT_AVAILABLE.into());
+            cx.notify();
+            return;
+        }
+        if !self.hub_removing.insert(file.clone()) {
+            return;
+        }
+        cx.notify();
+        let base_url = self.settings.hub.base_url.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let f = file.clone();
+            let result = cx
+                .background_executor()
+                .spawn(async move { hub_client(base_url)?.remove_login(&f).map_err(hub_text) })
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                s.hub_removing.remove(&file);
+                s.message_for_user = Some(match result {
+                    Ok(()) => {
+                        let stays = if acc.profile_dir.is_some() {
+                            "as a CLI account"
+                        } else {
+                            "as Not connected (no CLI profile)"
+                        };
+                        format!(
+                            "Removed {} from the hub. It stays in SubHub {stays}.",
+                            acc.label
+                        )
+                    }
+                    Err(e) => format!("Could not remove {} from the hub: {e}", acc.label),
+                });
+                s.refresh(true, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Adds a login to the hub: the hub starts its sign-in, the browser opens it, and SubHub
+    /// waits (up to 10 min) until the hub reports it done, then lists the hub again.
+    pub fn start_hub_login(&mut self, provider: ProviderKind, cx: &mut Context<Self>) {
+        if crate::demo::on() {
+            self.message_for_user = Some(crate::demo::NOT_AVAILABLE.into());
+            cx.notify();
+            return;
+        }
+        if self.hub_login.is_some() {
+            return;
+        }
+        self.hub_login = Some((provider, String::new()));
+        cx.notify();
+        let base_url = self.settings.hub.base_url.clone();
+        cx.spawn(async move |this: WeakEntity<Self>, cx| {
+            let b = base_url.clone();
+            let started = cx
+                .background_executor()
+                .spawn(async move { hub_client(b)?.start_login(provider).map_err(hub_text) })
+                .await;
+            let start = match started {
+                Ok(s) => s,
+                Err(e) => {
+                    let _ = this.update(cx, |s, cx| {
+                        s.hub_login = None;
+                        s.message_for_user = Some(format!("Could not start the sign-in: {e}"));
+                        cx.notify();
+                    });
+                    return;
+                }
+            };
+            let state = start.state.clone();
+            // Cancelled while the hub was starting: drop it there too.
+            let go = this
+                .update(cx, |s, cx| {
+                    if s.hub_login.is_none() {
+                        return false;
+                    }
+                    s.hub_login = Some((provider, state.clone()));
+                    cx.open_url(&start.url);
+                    cx.notify();
+                    true
+                })
+                .unwrap_or(false);
+            if !go {
+                let (b, st) = (base_url.clone(), state.clone());
+                cx.background_executor()
+                    .spawn(async move {
+                        if let Ok(c) = hub_client(b) {
+                            c.cancel_login(&st)
+                        }
+                    })
+                    .await;
+                return;
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+            let outcome = loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(2))
+                    .await;
+                // Cancelled (or replaced) meanwhile.
+                let still = this
+                    .update(cx, |s, _| {
+                        s.hub_login.as_ref().is_some_and(|(_, st)| *st == state)
+                    })
+                    .unwrap_or(false);
+                if !still {
+                    return;
+                }
+                if std::time::Instant::now() > deadline {
+                    let (b, st) = (base_url.clone(), state.clone());
+                    cx.background_executor()
+                        .spawn(async move {
+                            if let Ok(c) = hub_client(b) {
+                                c.cancel_login(&st)
+                            }
+                        })
+                        .await;
+                    break Err("No sign-in within 10 minutes.".to_string());
+                }
+                let (b, st) = (base_url.clone(), state.clone());
+                let status = cx
+                    .background_executor()
+                    .spawn(async move { hub_client(b)?.login_status(&st).map_err(hub_text) })
+                    .await;
+                match status {
+                    Ok(subhub_core::hub::LoginStatus::Waiting) => continue,
+                    Ok(subhub_core::hub::LoginStatus::Done) => break Ok(()),
+                    Ok(subhub_core::hub::LoginStatus::Failed(e)) => break Err(e),
+                    // A hiccup while waiting: keep trying until the deadline.
+                    Err(_) => continue,
+                }
+            };
+            let _ = this.update(cx, |s, cx| {
+                s.hub_login = None;
+                s.message_for_user = Some(match outcome {
+                    Ok(()) => format!(
+                        "Signed in. The new {} login shows up in a moment.",
+                        provider_name(provider)
+                    ),
+                    Err(e) => format!("The sign-in did not finish: {e}"),
+                });
+                s.refresh(true, cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Stops waiting for a hub sign-in and tells the hub to drop it.
+    pub fn cancel_hub_login(&mut self, cx: &mut Context<Self>) {
+        let Some((_, state)) = self.hub_login.take() else {
+            return;
+        };
+        cx.notify();
+        if state.is_empty() {
+            return;
+        }
+        let base_url = self.settings.hub.base_url.clone();
+        cx.background_executor()
+            .spawn(async move {
+                if let Ok(c) = hub_client(base_url) {
+                    c.cancel_login(&state)
+                }
+            })
+            .detach();
     }
 
     /// The hub took the priority writes: mirror them locally so the next plan sees them.
@@ -838,7 +1024,10 @@ impl AppState {
                     .cloned()
                     .map(Schedule::from_cached)
                     .unwrap_or_else(|| Schedule::new(now));
-                sched.can_attempt(force, now)
+                // Antigravity runs its CLI: once signed out, only a manual retry asks it again.
+                let parked = a.provider == ProviderKind::Antigravity
+                    && sched.0.state == UsageState::SignInRequired;
+                sched.can_attempt(force, now) && (force || !parked)
             })
             .cloned()
             .collect()
@@ -1351,6 +1540,7 @@ impl AppState {
                         })
                         .map_err(|e| format!("Codex Desktop could not be started: {e}")),
                 },
+                _ => Err("Launch is not available for this provider.".to_string()),
             },
         };
         match result {
@@ -1378,6 +1568,7 @@ impl AppState {
         match provider {
             ProviderKind::Claude => self.settings.tools.claude_exe = path,
             ProviderKind::Codex => self.settings.tools.codex_exe = path,
+            _ => return Err("This provider has no CLI path setting.".into()),
         }
         // A new path may fix a "CLI missing" account: try again at the next round.
         self.save_user();
@@ -1407,6 +1598,12 @@ impl AppState {
             cx.notify();
             return;
         };
+        if !acc.provider.is_cli_profile() {
+            self.account_notes
+                .insert(id, launch::app_sign_in_hint(acc.provider).into());
+            cx.notify();
+            return;
+        }
         if self.signing_in.contains(&id) {
             return;
         }
@@ -1648,10 +1845,7 @@ fn toggle(list: &mut Vec<String>, key: &str) {
 }
 
 pub fn provider_name(p: ProviderKind) -> &'static str {
-    match p {
-        ProviderKind::Claude => "Claude",
-        ProviderKind::Codex => "Codex",
-    }
+    p.name()
 }
 
 /// Checks every 30 s which accounts are due; each account's schedule decides (interval, backoff,
@@ -1676,4 +1870,17 @@ pub fn spawn_periodic(state: gpui::Entity<AppState>, cx: &mut gpui::App) {
         }
     })
     .detach();
+}
+
+/// A hub client with the stored key (background threads only: reads Credential Manager).
+fn hub_client(base_url: String) -> Result<HubClient, String> {
+    let key = secrets::hub_key()
+        .ok()
+        .flatten()
+        .ok_or_else(|| "No hub key stored.".to_string())?;
+    Ok(HubClient::new(base_url, key))
+}
+
+fn hub_text(e: HubError) -> String {
+    e.to_string()
 }

@@ -171,10 +171,11 @@ impl Summary {
     }
 }
 
+/// Statistics hold Claude and Codex logs only (`ProviderKind::is_cli_profile`).
 fn slot(p: ProviderKind) -> usize {
     match p {
         ProviderKind::Claude => 0,
-        ProviderKind::Codex => 1,
+        _ => 1,
     }
 }
 

@@ -60,6 +60,9 @@ pub fn read_account(
     match account.provider {
         ProviderKind::Claude => claude::read_profile(dir),
         ProviderKind::Codex => codex::read_profile(dir, codex_exe),
+        ProviderKind::Copilot => crate::copilot::read_profile(dir),
+        ProviderKind::Cursor => crate::cursor::read_profile(dir),
+        ProviderKind::Antigravity => crate::antigravity::read_profile(dir, None),
     }
 }
 

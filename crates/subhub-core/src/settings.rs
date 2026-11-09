@@ -269,6 +269,7 @@ impl ToolsSettings {
         match provider {
             ProviderKind::Claude => self.claude_exe.as_deref(),
             ProviderKind::Codex => self.codex_exe.as_deref(),
+            _ => None,
         }
     }
 }

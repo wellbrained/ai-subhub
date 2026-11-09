@@ -9,6 +9,39 @@ use uuid::Uuid;
 pub enum ProviderKind {
     Claude,
     Codex,
+    /// GitHub Copilot (limits only, owner 2026-11-09).
+    Copilot,
+    /// Cursor (limits only).
+    Cursor,
+    /// Google Antigravity, read through its `agy` CLI (limits only).
+    Antigravity,
+}
+
+impl ProviderKind {
+    pub const ALL: [ProviderKind; 5] = [
+        ProviderKind::Claude,
+        ProviderKind::Codex,
+        ProviderKind::Copilot,
+        ProviderKind::Cursor,
+        ProviderKind::Antigravity,
+    ];
+
+    /// Claude and Codex: the hub, CLI profiles per folder, session logs and plan tables.
+    /// The others are one app login per PC, limits only.
+    pub fn is_cli_profile(self) -> bool {
+        matches!(self, ProviderKind::Claude | ProviderKind::Codex)
+    }
+
+    /// Display name ("Claude", "Codex", "Copilot", "Cursor", "Antigravity").
+    pub fn name(self) -> &'static str {
+        match self {
+            ProviderKind::Claude => "Claude",
+            ProviderKind::Codex => "Codex",
+            ProviderKind::Copilot => "Copilot",
+            ProviderKind::Cursor => "Cursor",
+            ProviderKind::Antigravity => "Antigravity",
+        }
+    }
 }
 
 /// Outcome of one usage check. Missing data is `Unavailable`, never zero or full.
@@ -54,9 +87,14 @@ impl AllowanceWindow {
             || self.codex_length() == Some(chrono::Duration::days(7))
     }
 
-    /// Length of a window of Codex's main limit, from its label ("5-hour", "Weekly").
+    /// Length of an account's main limit window, from its label ("5-hour", "Weekly"): Codex's
+    /// slots, Cursor's plan total and Antigravity's first group (`agy:5h`, `agy:weekly`).
+    /// Per-model windows ("Weekly · Claude & GPT") never count as the main one.
     fn codex_length(&self) -> Option<chrono::Duration> {
-        if self.key != "codex:primary" && self.key != "codex:secondary" {
+        if !matches!(
+            self.key.as_str(),
+            "codex:primary" | "codex:secondary" | "cursor:plan" | "agy:5h" | "agy:weekly"
+        ) {
             return None;
         }
         crate::limits::window_duration(&self.label)

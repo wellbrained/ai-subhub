@@ -128,8 +128,16 @@ pub fn enter() -> anyhow::Result<()> {
         std::env::set_var("USERPROFILE", &home);
         std::env::set_var("HOME", &home);
         std::env::set_var("LOCALAPPDATA", &local);
+        std::env::set_var("APPDATA", home.join("AppData").join("Roaming"));
         // These would point profile detection, the statistics scan and launches at real folders.
-        for var in ["CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME"] {
+        for var in [
+            "CLAUDE_CONFIG_DIR",
+            "CODEX_HOME",
+            "XDG_CONFIG_HOME",
+            "COPILOT_HOME",
+            "GEMINI_CLI_HOME",
+            "COPILOT_GITHUB_TOKEN",
+        ] {
             std::env::remove_var(var);
         }
     }
@@ -172,6 +180,9 @@ pub fn fake_cli(provider: ProviderKind) -> Option<PathBuf> {
     let name = match provider {
         ProviderKind::Claude => "claude.exe",
         ProviderKind::Codex => "codex.exe",
+        ProviderKind::Copilot => "copilot.exe",
+        ProviderKind::Cursor => "cursor-agent.exe",
+        ProviderKind::Antigravity => "agy.exe",
     };
     Some(root.join("home").join(".local").join("bin").join(name))
 }

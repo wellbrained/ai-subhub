@@ -4,7 +4,7 @@ use std::borrow::Cow;
 
 use gpui::{AssetSource, Result, SharedString};
 
-const OWN: [(&str, &[u8]); 10] = [
+const OWN: [(&str, &[u8]); 13] = [
     ("icons/app-logo.svg", crate::logo::APP_SVG),
     ("icons/app-logo-small.svg", crate::logo::APP_SMALL_SVG),
     ("icons/mark-dark.svg", crate::logo::TRAY_DARK_SVG),
@@ -16,6 +16,18 @@ const OWN: [(&str, &[u8]); 10] = [
     (
         "icons/provider-openai.svg",
         include_bytes!("../assets/icons/provider-openai.svg"),
+    ),
+    (
+        "icons/provider-copilot.svg",
+        include_bytes!("../assets/icons/provider-copilot.svg"),
+    ),
+    (
+        "icons/provider-cursor.svg",
+        include_bytes!("../assets/icons/provider-cursor.svg"),
+    ),
+    (
+        "icons/provider-antigravity.svg",
+        include_bytes!("../assets/icons/provider-antigravity.svg"),
     ),
     // Window controls of the merged title bar (10 px, 1 px strokes like Windows' own).
     (

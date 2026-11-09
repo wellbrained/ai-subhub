@@ -303,17 +303,18 @@ fn share_text(frac: f64) -> String {
 fn provider_label(p: ProviderKind) -> &'static str {
     match p {
         ProviderKind::Claude => "Claude Code",
-        ProviderKind::Codex => "Codex",
+        p => p.name(),
     }
 }
 
 /// Stack order of the series: Claude at the bottom of a bar, Codex on top.
 const SERIES: [ProviderKind; 2] = [ProviderKind::Claude, ProviderKind::Codex];
 
+/// Statistics hold Claude and Codex logs only.
 fn slot(p: ProviderKind) -> usize {
     match p {
         ProviderKind::Claude => 0,
-        ProviderKind::Codex => 1,
+        _ => 1,
     }
 }
 

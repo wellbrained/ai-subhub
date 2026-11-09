@@ -195,6 +195,7 @@ pub fn discover_roots(home: &Path, env: &ProfileEnv) -> Roots {
                 roots.add_codex(&dir.join("sessions"));
                 roots.add_codex(&dir.join("archived_sessions"));
             }
+            _ => {}
         }
     }
     roots
@@ -242,6 +243,7 @@ fn walk(dir: &Path, provider: ProviderKind, out: &mut Vec<Listed>, seen: &mut Ha
         let ok = match provider {
             ProviderKind::Claude => name.ends_with(".jsonl"),
             ProviderKind::Codex => name.ends_with(".jsonl") || compressed,
+            _ => false,
         };
         if !ok {
             continue;
@@ -664,6 +666,7 @@ fn process(job: Job, seen: &Mutex<HashSet<u64>>) -> FileEntry {
         match listed.provider {
             ProviderKind::Claude => proc.feed_claude(&buf, seen),
             ProviderKind::Codex => proc.feed_codex(&buf),
+            _ => {}
         }
         if buf.capacity() > 64 << 20 {
             buf = Vec::new();

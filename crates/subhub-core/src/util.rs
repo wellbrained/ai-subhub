@@ -129,6 +129,86 @@ pub(crate) fn failure_for_status(
     }
 }
 
+/// The claims of a JWT (payload only; never verified, never kept).
+pub(crate) fn jwt_claims(token: &str) -> Option<Value> {
+    let payload = token.split('.').nth(1)?;
+    serde_json::from_slice(&crate::hub::base64url_decode(payload)?).ok()
+}
+
+#[cfg(test)]
+pub(crate) fn base64url_encode(bytes: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
+        let chars = chunk.len() + 1;
+        for i in 0..chars {
+            out.push(A[((n >> (18 - 6 * i)) & 63) as usize] as char);
+        }
+    }
+    out
+}
+
+/// Runs `cmd` (stdout piped) and returns its stdout, or None when it fails to start, exits
+/// with an error or runs longer than `timeout` (then it is killed with its process tree).
+pub(crate) fn output_with_timeout(
+    mut cmd: std::process::Command,
+    timeout: Duration,
+) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let mut child = cmd.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    // The read ends when every process holding the pipe closed it; a helper the child started
+    // may keep it open after the child exited, so the read is bounded by the same deadline.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = vec![];
+        let _ = stdout.read_to_end(&mut buf);
+        let _ = tx.send(buf);
+    });
+    let deadline = std::time::Instant::now() + timeout;
+    let kill_tree = |child: &mut std::process::Child| {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &child.id().to_string(), "/T", "/F"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(0x0800_0000)
+                .status();
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(100))
+            }
+            _ => break None,
+        }
+    };
+    let Some(status) = status else {
+        kill_tree(&mut child);
+        return None;
+    };
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    match rx.recv_timeout(left.max(Duration::from_millis(500))) {
+        Ok(out) => status.success().then_some(out),
+        Err(_) => {
+            // The child is done; its helpers hold the pipe. The tree is gone with the child, so
+            // only a detached helper is left; the reader thread ends when it does.
+            kill_tree(&mut child);
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

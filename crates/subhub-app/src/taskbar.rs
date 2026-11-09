@@ -106,12 +106,9 @@ pub fn taskbar_is_dark() -> bool {
     !(ok.is_ok() && value == 1)
 }
 
-/// Provider icon colour: Claude's orange, Codex neutral.
+/// Provider icon colour (the brand colour, or `neutral`).
 fn provider_color(p: subhub_core::model::ProviderKind, neutral: Hsla) -> Hsla {
-    match p {
-        subhub_core::model::ProviderKind::Claude => gpui::rgb(0xd97757).into(),
-        subhub_core::model::ProviderKind::Codex => neutral,
-    }
+    crate::icons::provider_color(p, neutral)
 }
 
 /// The account's tag: the user's own (Settings → Accounts, up to 3 chars, as typed), else two
@@ -258,28 +255,48 @@ pub fn shown_ids(s: &AppState) -> Vec<uuid::Uuid> {
     shown(s).iter().map(|a| a.id).collect()
 }
 
-/// The 5-hour and weekly windows of an account (first match each).
-fn session_and_week(
-    s: &AppState,
-    a: &Account,
-) -> (Option<AllowanceWindow>, Option<AllowanceWindow>) {
+type BadgeRow = (String, Option<AllowanceWindow>);
+
+/// The two rows of an account's badge: "5h" and "W" (first match each). An account with neither
+/// (Copilot's monthly credits) shows its own first two windows with a short label ("M"); a
+/// missing second one leaves the row out (empty label).
+fn badge_windows(s: &AppState, a: &Account) -> (BadgeRow, BadgeRow) {
+    let five_w = || (("5h".to_string(), None), ("W".to_string(), None));
     let Some(r) = s.settings.readings.get(&a.id) else {
-        return (None, None);
+        return five_w();
     };
-    let vis = |w: &&AllowanceWindow| !a.hidden_windows.contains(&w.key);
-    let session = r
+    let vis: Vec<&AllowanceWindow> = r
         .windows
         .iter()
-        .filter(vis)
-        .find(|w| w.is_session())
-        .cloned();
-    let week = r
-        .windows
-        .iter()
-        .filter(vis)
-        .find(|w| w.is_weekly())
-        .cloned();
-    (session, week)
+        .filter(|w| !a.hidden_windows.contains(&w.key))
+        .collect();
+    let session = vis.iter().find(|w| w.is_session()).map(|w| (*w).clone());
+    let week = vis.iter().find(|w| w.is_weekly()).map(|w| (*w).clone());
+    if session.is_some() || week.is_some() || vis.is_empty() {
+        return (("5h".into(), session), ("W".into(), week));
+    }
+    let row = |w: Option<&&AllowanceWindow>| match w {
+        Some(w) => (short_window_label(&w.label), Some((*w).clone())),
+        None => (String::new(), None),
+    };
+    (row(vis.first()), row(vis.get(1)))
+}
+
+/// A badge label for a window title: "Monthly · AI credits" -> "M", "Weekly" -> "W",
+/// "5-hour" -> "5h", "1-day" -> "1d", else its first two letters.
+fn short_window_label(label: &str) -> String {
+    let base = label.split(" ·").next().unwrap_or(label).trim();
+    match base {
+        "Monthly" => "M".into(),
+        "Weekly" => "W".into(),
+        "Daily" => "D".into(),
+        _ => match base.split_once('-') {
+            Some((n, unit)) if n.chars().all(|c| c.is_ascii_digit()) => {
+                format!("{n}{}", unit.chars().next().unwrap_or('?'))
+            }
+            _ => base.chars().take(2).collect(),
+        },
+    }
 }
 
 impl Render for TaskbarDisplay {
@@ -361,7 +378,7 @@ impl Render for TaskbarDisplay {
             .items_center()
             .gap(px(if badges { 2.0 } else { 16.0 }));
         for (i, a) in accounts.iter().enumerate() {
-            let (session, week) = session_and_week(s, a);
+            let ((top_label, session), (bottom_label, week)) = badge_windows(s, a);
             let stale = s.is_stale(a.id);
             let (sv, sc, sf) = value(&session, stale);
             let (wv, wc, _) = value(&week, stale);
@@ -373,7 +390,7 @@ impl Render for TaskbarDisplay {
                     let (_, _, wf) = value(&week, stale);
                     // Two rows like the clock: left block spans both (glyph + tag), right block
                     // is "5h bar %" over "W bar %".
-                    let metric = |label: &'static str, v: String, c: Hsla, f: f32| {
+                    let metric = |label: String, v: String, c: Hsla, f: f32| {
                         div()
                             .h(px(16.0))
                             .flex()
@@ -463,8 +480,10 @@ impl Render for TaskbarDisplay {
                             div()
                                 .flex()
                                 .flex_col()
-                                .child(metric("5h", sv.clone(), sc, sf))
-                                .child(metric("W", wv.clone(), wc, wf)),
+                                .child(metric(top_label.clone(), sv.clone(), sc, sf))
+                                .when(!bottom_label.is_empty(), |d| {
+                                    d.child(metric(bottom_label.clone(), wv.clone(), wc, wf))
+                                }),
                         )
                 }
                 // Line 1: name and 5-hour %, line 2: the 5-hour bar.
@@ -820,4 +839,18 @@ pub fn open(
     })
     .detach();
     Some(handle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_window_label;
+
+    #[test]
+    fn badge_labels_are_short() {
+        assert_eq!(short_window_label("Monthly · AI credits"), "M");
+        assert_eq!(short_window_label("Weekly · Auto"), "W");
+        assert_eq!(short_window_label("5-hour"), "5h");
+        assert_eq!(short_window_label("30-day"), "30d");
+        assert_eq!(short_window_label("Credits"), "Cr");
+    }
 }

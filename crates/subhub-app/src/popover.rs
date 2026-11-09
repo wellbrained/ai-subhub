@@ -174,7 +174,7 @@ impl Popover {
         if visible.is_empty() {
             return 240.0;
         }
-        let providers = [ProviderKind::Claude, ProviderKind::Codex]
+        let providers = ProviderKind::ALL
             .iter()
             .filter(|p| visible.iter().any(|a| a.provider == **p))
             .count();
@@ -233,7 +233,7 @@ impl Render for Popover {
         if s.settings.accounts.iter().all(|a| a.hidden) {
             body = body.child(empty_state(s, &t));
         }
-        for provider in [ProviderKind::Claude, ProviderKind::Codex] {
+        for provider in ProviderKind::ALL {
             let accs: Vec<&Account> = s
                 .settings
                 .accounts
@@ -652,7 +652,8 @@ fn source_tags(acc: &Account, s: &AppState, t: &Tokens) -> gpui::Div {
     }
     // A CLI profile next to a hub login is the normal case and gets no pill (owner, 2026-11-07);
     // only an account outside the hub is marked.
-    if acc.profile_dir.is_some() && acc.hub.is_none() {
+    // App logins (Copilot, Cursor, Antigravity) are never in the hub: no pill either.
+    if acc.profile_dir.is_some() && acc.hub.is_none() && acc.provider.is_cli_profile() {
         row = row.child(pill("Local only", t.surface_hover, t.muted));
     }
     row
@@ -712,16 +713,19 @@ fn account_card(
         head = head.child(pill(label, bg, fg));
     }
     head = head.child(div().flex_1());
-    head = head.child(card_menu_button(
-        acc.id,
-        CardMenu::Launch,
-        Icon::Rocket,
-        "Launch in a project",
-        s,
-        t,
-        state_for_star.clone(),
-        || launch_panel(acc, s, t, state_for_star.clone(), open_settings.clone()),
-    ));
+    // Launch starts Claude / Codex sessions; app logins have nothing to launch from here.
+    if acc.provider.is_cli_profile() {
+        head = head.child(card_menu_button(
+            acc.id,
+            CardMenu::Launch,
+            Icon::Rocket,
+            "Launch in a project",
+            s,
+            t,
+            state_for_star.clone(),
+            || launch_panel(acc, s, t, state_for_star.clone(), open_settings.clone()),
+        ));
+    }
     {
         // ☆/★: show this account on the taskbar (Favorites mode).
         let fav = s.display().taskbar_favorites.contains(&acc.id);

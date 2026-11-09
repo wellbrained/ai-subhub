@@ -2,6 +2,12 @@
 
 Patch notes shown after an update (embedded in the exe). Each release gets `## X.Y.Z – date` and 3-6 short bullets. Work in progress goes under `## Unreleased` and is renamed when a version is released (`scripts/release.ps1` refuses a version without a section).
 
+## Unreleased
+
+- New providers: GitHub Copilot, Cursor and Google Antigravity logins on your PC show their limits (Limits now, popover, taskbar). Not yet tested with real accounts.
+- Settings → Hub lists the hub's logins: remove one from the hub, or sign in a new Claude or Codex login through the hub. A removed login's account stays in SubHub.
+- Long notifications in Settings wrap inside their box and stay up longer.
+
 ## 0.1.8 – 2026-11-08
 
 - Export from the main window: a PDF usage report, tokens and cost as CSV, and the limit history as CSV.

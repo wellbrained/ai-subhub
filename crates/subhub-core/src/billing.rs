@@ -141,6 +141,9 @@ pub fn billing_url(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Claude => "https://claude.ai/settings/billing",
         ProviderKind::Codex => "https://chatgpt.com/#settings/Account",
+        ProviderKind::Copilot => "https://github.com/settings/copilot",
+        ProviderKind::Cursor => "https://cursor.com/dashboard",
+        ProviderKind::Antigravity => "https://one.google.com/settings",
     }
 }
 

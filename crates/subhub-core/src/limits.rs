@@ -28,6 +28,10 @@ pub fn window_duration(title: &str) -> Option<Duration> {
     if base == "Weekly" {
         return Some(Duration::days(7));
     }
+    // Copilot and legacy Cursor plans (a month is taken as 30 days for the pace marker).
+    if base == "Monthly" {
+        return Some(Duration::days(30));
+    }
     let (n, unit) = base.split_once('-')?;
     let n: i64 = n.parse().ok().filter(|n| *n > 0)?;
     match unit {

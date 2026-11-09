@@ -30,6 +30,25 @@ pub fn profile_env_var(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Claude => "CLAUDE_CONFIG_DIR",
         ProviderKind::Codex => "CODEX_HOME",
+        ProviderKind::Copilot => "COPILOT_HOME",
+        ProviderKind::Cursor => "CURSOR_CONFIG_DIR",
+        ProviderKind::Antigravity => "GEMINI_CLI_HOME",
+    }
+}
+
+/// How to sign in an app login (Copilot, Cursor, Antigravity): SubHub does not open those.
+pub fn app_sign_in_hint(provider: ProviderKind) -> &'static str {
+    match provider {
+        ProviderKind::Copilot => {
+            "Sign in with the Copilot CLI (`copilot`, then /login) or `gh auth login`; SubHub reads that login."
+        }
+        ProviderKind::Cursor => {
+            "Sign in with the Cursor CLI (`cursor-agent login`); SubHub reads Cursor through that login."
+        }
+        ProviderKind::Antigravity => {
+            "Sign in once in Antigravity's CLI (run `agy`); SubHub asks it for usage."
+        }
+        _ => "",
     }
 }
 
@@ -38,6 +57,8 @@ pub fn login_args(provider: ProviderKind) -> &'static [&'static str] {
     match provider {
         ProviderKind::Claude => &["auth", "login", "--claudeai"],
         ProviderKind::Codex => &["login"],
+        // App logins sign in through their own app or CLI (the read says how).
+        _ => &[],
     }
 }
 
@@ -45,6 +66,9 @@ fn cli_name(provider: ProviderKind) -> &'static str {
     match provider {
         ProviderKind::Claude => "claude",
         ProviderKind::Codex => "codex",
+        ProviderKind::Copilot => "copilot",
+        ProviderKind::Cursor => "cursor-agent",
+        ProviderKind::Antigravity => "agy",
     }
 }
 
@@ -354,6 +378,7 @@ impl DesktopApps {
         match provider {
             ProviderKind::Claude => self.claude.as_deref(),
             ProviderKind::Codex => self.codex.as_deref(),
+            _ => None,
         }
     }
 }
@@ -504,6 +529,7 @@ pub fn menu_targets(
             label: match provider {
                 ProviderKind::Claude => "Claude Desktop · local folder",
                 ProviderKind::Codex => "Codex Desktop · choose folder there",
+                _ => "Desktop app",
             },
             disabled: gate(env.desktop_app.is_none().then_some(HINT_NO_DESKTOP)),
         },

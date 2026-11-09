@@ -1,5 +1,8 @@
-//! CLIProxyAPI hub, read-only: `GET /v0/management/auth-files` and `POST /v0/management/api-call`
-//! (the hub substitutes `$TOKEN$`). Never reads the hub's auth files directly; never writes.
+//! CLIProxyAPI hub through its management API: `GET auth-files` (the logins) and
+//! `POST api-call` (usage reads; the hub substitutes `$TOKEN). Writes, all started by the
+//! owner: credential priority (steering), removing a login (`DELETE auth-files`) and adding one
+//! (the hub's own OAuth flow: `*-auth-url`, then `get-auth-status`). Never reads the hub's
+//! auth files directly.
 use std::time::Duration;
 
 use chrono::Utc;
@@ -377,6 +380,12 @@ impl HubClient {
         match account.provider {
             ProviderKind::Claude => self.read_claude(account),
             ProviderKind::Codex => self.read_codex(account),
+            // The hub listing keeps only Claude and Codex logins.
+            _ => failure(
+                UsageState::Unavailable,
+                "The hub does not read this provider.",
+                src,
+            ),
         }
     }
 
@@ -439,9 +448,182 @@ impl HubClient {
     }
 }
 
+/// A sign-in the hub started: open `url` in the browser, then poll with `state`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoginStart {
+    pub url: String,
+    pub state: String,
+}
+
+/// Where a hub sign-in stands.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoginStatus {
+    Waiting,
+    Done,
+    Failed(String),
+}
+
+/// The management path that starts a sign-in for `provider`.
+fn login_path(provider: ProviderKind) -> Option<&'static str> {
+    match provider {
+        ProviderKind::Claude => Some("anthropic-auth-url"),
+        ProviderKind::Codex => Some("codex-auth-url"),
+        _ => None,
+    }
+}
+
+fn parse_login_start(v: &Value) -> Option<LoginStart> {
+    let url = v.get("url")?.as_str()?.trim();
+    let state = v.get("state")?.as_str()?.trim();
+    (url.starts_with("https://") && !state.is_empty()).then(|| LoginStart {
+        url: url.to_string(),
+        state: state.to_string(),
+    })
+}
+
+fn parse_login_status(v: &Value) -> LoginStatus {
+    match v.get("status").and_then(Value::as_str) {
+        Some("ok") => LoginStatus::Done,
+        Some("wait") => LoginStatus::Waiting,
+        _ => LoginStatus::Failed(
+            v.get("error")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|e| !e.is_empty())
+                .unwrap_or("The sign-in did not finish.")
+                .to_string(),
+        ),
+    }
+}
+
+fn map_send(e: reqwest::Error) -> HubError {
+    if e.is_connect() || e.is_timeout() {
+        HubError::Unreachable
+    } else {
+        HubError::Other("The hub request failed.".into())
+    }
+}
+
+impl HubClient {
+    fn http(&self) -> Result<&reqwest::blocking::Client, HubError> {
+        self.http
+            .as_ref()
+            .ok_or_else(|| HubError::Other("Could not start the network client.".into()))
+    }
+
+    /// Status check shared by the login calls; the JSON body on success.
+    fn json_of(response: reqwest::blocking::Response) -> Result<Value, HubError> {
+        match response.status().as_u16() {
+            200..=299 => {}
+            401 | 403 => return Err(HubError::Unauthorized),
+            404 => {
+                return Err(HubError::Other(
+                    "This hub version does not offer that through its management API.".into(),
+                ));
+            }
+            n => return Err(HubError::Other(format!("The hub answered with HTTP {n}."))),
+        }
+        response
+            .json()
+            .map_err(|_| HubError::Other("The hub returned an unexpected response.".into()))
+    }
+
+    /// Removes a login from the hub: deletes its auth file there. Signing in again brings it
+    /// back. SubHub's account stays (it only loses its hub link on the next listing).
+    pub fn remove_login(&self, file_name: &str) -> Result<(), HubError> {
+        let response = self
+            .http()?
+            .delete(self.url("auth-files"))
+            .query(&[("name", file_name)])
+            .bearer_auth(&self.key)
+            .send()
+            .map_err(map_send)?;
+        Self::json_of(response).map(|_| ())
+    }
+
+    /// Starts the hub's sign-in for a new login (`is_webui`: the hub runs the callback itself).
+    pub fn start_login(&self, provider: ProviderKind) -> Result<LoginStart, HubError> {
+        let response = self
+            .http()?
+            .get(self.url(login_path(provider).ok_or_else(|| {
+                HubError::Other("SubHub adds only Claude and Codex logins to the hub.".into())
+            })?))
+            .query(&[("is_webui", "true")])
+            .bearer_auth(&self.key)
+            .send()
+            .map_err(map_send)?;
+        parse_login_start(&Self::json_of(response)?)
+            .ok_or_else(|| HubError::Other("The hub did not return a sign-in link.".into()))
+    }
+
+    pub fn login_status(&self, state: &str) -> Result<LoginStatus, HubError> {
+        let response = self
+            .http()?
+            .get(self.url("get-auth-status"))
+            .query(&[("state", state)])
+            .bearer_auth(&self.key)
+            .send()
+            .map_err(map_send)?;
+        Ok(parse_login_status(&Self::json_of(response)?))
+    }
+
+    /// Cancels a pending sign-in (best effort).
+    pub fn cancel_login(&self, state: &str) {
+        if let Ok(http) = self.http() {
+            let _ = http
+                .delete(self.url("oauth-session"))
+                .query(&[("state", state)])
+                .bearer_auth(&self.key)
+                .send();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_start_needs_an_https_link_and_a_state() {
+        let ok = json!({"status": "ok", "url": "https://claude.ai/oauth/authorize?x=1", "state": "anth-123"});
+        assert_eq!(
+            parse_login_start(&ok),
+            Some(LoginStart {
+                url: "https://claude.ai/oauth/authorize?x=1".into(),
+                state: "anth-123".into()
+            })
+        );
+        assert_eq!(
+            parse_login_start(&json!({"url": "javascript:x", "state": "s"})),
+            None
+        );
+        assert_eq!(
+            parse_login_start(&json!({"url": "https://a.test", "state": ""})),
+            None
+        );
+        assert_eq!(login_path(ProviderKind::Codex), Some("codex-auth-url"));
+        assert_eq!(login_path(ProviderKind::Cursor), None);
+    }
+
+    #[test]
+    fn login_status_maps_wait_ok_and_errors() {
+        assert_eq!(
+            parse_login_status(&json!({"status": "wait"})),
+            LoginStatus::Waiting
+        );
+        assert_eq!(
+            parse_login_status(&json!({"status": "ok"})),
+            LoginStatus::Done
+        );
+        assert_eq!(
+            parse_login_status(&json!({"status": "error", "error": "expired"})),
+            LoginStatus::Failed("expired".into())
+        );
+        assert_eq!(
+            parse_login_status(&json!({})),
+            LoginStatus::Failed("The sign-in did not finish.".into())
+        );
+    }
 
     fn now() -> chrono::DateTime<Utc> {
         "2026-11-06T10:00:00Z".parse().unwrap()

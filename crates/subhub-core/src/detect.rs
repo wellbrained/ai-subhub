@@ -52,6 +52,12 @@ fn is_profile(provider: ProviderKind, dir: &Path) -> bool {
     match provider {
         ProviderKind::Claude => dir.join(".claude.json").is_file() || dir.join("projects").is_dir(),
         ProviderKind::Codex => dir.join("auth.json").is_file() || dir.join("sessions").is_dir(),
+        // One app login per PC: the folder is enough (the read says what is missing).
+        ProviderKind::Copilot => {
+            dir.join("config.json").is_file() || dir.join("session-state").is_dir()
+        }
+        ProviderKind::Cursor => dir.join("auth.json").is_file() || dir.join("User").is_dir(),
+        ProviderKind::Antigravity => dir.is_dir(),
     }
 }
 
@@ -69,6 +75,7 @@ fn same_email(a: Option<&str>, b: &str) -> bool {
 pub fn detect(home: &Path, env: &ProfileEnv, accounts: &[Account]) -> Vec<DetectedProfile> {
     let found = discover_dirs(home, env)
         .into_iter()
+        .chain(crate::profile::discover_app_dirs(home, env))
         .filter(|(p, d)| is_profile(*p, d))
         .map(|(p, d)| {
             let email = profile_email(p, &d);
@@ -190,11 +197,15 @@ pub fn default_label(
     email: Option<&str>,
     dir: &Path,
 ) -> String {
-    let folder = dir
-        .file_name()
-        .map(|n| n.to_string_lossy().trim_start_matches('.').to_string())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "Profile".into());
+    // App logins (one per PC) are named after the provider; CLI profiles after their folder.
+    let folder = if provider.is_cli_profile() {
+        dir.file_name()
+            .map(|n| n.to_string_lossy().trim_start_matches('.').to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "Profile".into())
+    } else {
+        provider.name().to_string()
+    };
     let base = email
         .and_then(|e| e.split('@').next())
         .filter(|l| !l.is_empty())
