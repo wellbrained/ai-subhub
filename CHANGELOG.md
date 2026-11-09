@@ -2,7 +2,7 @@
 
 Patch notes shown after an update (embedded in the exe). Each release gets `## X.Y.Z – date` and 3-6 short bullets. Work in progress goes under `## Unreleased` and is renamed when a version is released (`scripts/release.ps1` refuses a version without a section).
 
-## Unreleased
+## 0.1.11 – 2026-11-09
 
 - Tokens & cost now includes GitHub Copilot CLI sessions (counted when a session ends).
 - Popover: click a provider heading to fold it; folded, it shows how many accounts it has and which has the most room.
