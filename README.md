@@ -23,13 +23,14 @@ AI SubHub shows the usage limits of all your **Claude Code** and **Codex** accou
 - **All limits in one popover.** Click the tray icon for one card per account, with a bar per window, % left (or % used) and the reset time. Stale readings, cooldowns and sign-in problems are shown, not hidden.
 - **Usage on the taskbar.** Small badges next to the tray show up to five accounts at all times (favourites, the one in focus, or automatic), on the main or every taskbar. Hover one for all its limits; drag it to move it. You can switch it off in Appearance.
 - **Several accounts per provider.** Each CLI profile is its own account, with a name, a coloured tag, a plan badge and an optional group. SubHub finds the profiles on your PC and offers to add them.
+- **More than Claude and Codex.** GitHub Copilot (monthly premium requests or AI credits), Cursor (the plan's weekly or monthly usage, Auto and API) and Google Antigravity (5-hour and weekly limits per model group) show up next to them, read from the login already on your PC. For now these three show limits only.
 - **Launch by account and project.** The rocket on a card opens a project folder in Windows Terminal, PowerShell, VS Code or the provider's desktop app, signed in as that account.
 - **Insights.** Whether your plans fit how you work (too big, at the limit, unused), how often you waited for a 5-hour reset while another account was free, upcoming renewals, and where your usage goes by task, project and model.
 - **Warm-up (optional).** Start your 5-hour windows early at a time you choose, so the first reset comes when you usually run out. SubHub suggests a time from your own days; nothing runs until you set it up.
 - **Heads-up before you run out (optional).** A notification about 15 minutes before an account's 5-hour window runs out, when another account still has a fresh one.
 - **Usage statistics.** Tokens and an API cost estimate per day, model and provider, read from the CLIs' local session logs, plus a live board of all limits.
 - **Renewal reminders.** Optionally enter an account's monthly renewal or access end date to get a reminder 7 and 3 days before.
-- **Hub support (optional).** If you run a [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) hub, SubHub lists its logins by itself and can steer new hub threads to the account whose weekly limit expires soonest, or to one you pick.
+- **Hub support (optional).** If you run a [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) hub, SubHub lists its logins by itself, lets you remove one or sign in a new Claude or Codex login there, and can steer new hub threads to the account whose weekly limit expires soonest, or to one you pick.
 - **Updates itself** from GitHub Releases, automatically or when you say so, and shows short patch notes afterwards.
 
 ## The main window
@@ -50,12 +51,16 @@ Open **Statistics** or **Settings** from the tray menu or the popover. Both open
 
 **Data**
 
-- **Limits now:** a live board of every account's session and weekly windows, with % left, reset countdowns and pace. It is useful for picking the account with the most room before a long task.
+- **Limits now:** a live board of every account's windows (5-hour, weekly, monthly and model limits), with % left, reset countdowns and pace. It is useful for picking the account with the most room before a long task.
 - **Tokens & cost:** work tokens (input and output) and an API cost estimate for the past 24 hours or 7, 30 or 90 days, split into input, output and cache, with a daily chart per provider and a table per model. The estimate uses public list prices and shows what the same work would cost on the API, not what you pay for your plan.
 
 | | |
 | --- | --- |
 | ![Limits now: a live board of every account's windows](docs/images/demo-statistics-limits.png) | ![Tokens & cost: work tokens, API estimate, cost by type and a daily chart per provider](docs/images/demo-statistics-usage.png) |
+
+<p align="center">
+  <img src="docs/images/demo-more-providers.png" width="680" alt="Limits now for GitHub Copilot (monthly AI credits), Cursor (weekly, Auto and API) and Google Antigravity (5-hour)">
+</p>
 
 **Export** (the download button in the title bar):
 
@@ -67,15 +72,15 @@ Open **Statistics** or **Settings** from the tray menu or the popover. Both open
 
 - **General:** refresh interval, Warm-up status, the run-out heads-up, what the close button does, Start with Windows, and (under Advanced) the sign-in terminal and CLI paths.
 - **Appearance:** theme, accent colour, % left or % used, plan badges, emails, and the taskbar badges (which accounts, left or right).
-- **Accounts:** all accounts by provider with their source and status. Open an account to rename it, change its tag colour and group, show it on the taskbar, set its renewal date, or sign in again. **Add accounts** lists the CLI profiles found on your PC.
-- **Hub:** connect a CLIProxyAPI hub and turn steering for new threads on or off.
+- **Accounts:** all accounts by provider with their source and status. Open an account to rename it, change its tag colour and group, show it on the taskbar, set its renewal date, or sign in again. **Add accounts** lists the CLI profiles and the Copilot, Cursor and Antigravity logins found on your PC.
+- **Hub:** connect a CLIProxyAPI hub, manage its logins (remove one, or sign in a new Claude or Codex login in your browser) and turn steering for new threads on or off. A login removed from the hub stays in SubHub as a normal CLI account if it has a profile on your PC.
 - **Projects:** the folders that appear in every card's Launch menu, in your order, with the option to hide some.
 - **About & updates:** version, update mode (automatic or manual) and the patch notes.
 
 | | |
 | --- | --- |
 | ![Settings, General: refresh, warm-up, the run-out heads-up and the close button](docs/images/demo-settings-general.png) | ![Settings, Accounts: accounts per provider with source and status](docs/images/demo-settings-accounts.png) |
-| ![Settings, Appearance: theme, accent colour, usage display and taskbar badges](docs/images/demo-settings-appearance.png) | ![Settings, Hub: connection status, steering and the hub address](docs/images/demo-settings-hub.png) |
+| ![Settings, Appearance: theme, accent colour, usage display and taskbar badges](docs/images/demo-settings-appearance.png) | ![Settings, Hub: connection status, the hub's logins with Remove, Add a login and steering](docs/images/demo-settings-hub.png) |
 
 ## Get started
 
@@ -83,7 +88,7 @@ Requires **Windows 11** (x64); Windows 10 may work but is untested. macOS and Li
 
 1. Download `ai-subhub.exe` from the [latest release](https://github.com/wellbrained/ai-subhub/releases/latest) and put it in a folder you keep, for example `%LOCALAPPDATA%\Programs\AI SubHub`. There is no installer, and updates replace the exe in place.
 2. Start it. The exe is not code-signed, so Windows SmartScreen may warn you the first time: **More info → Run anyway**.
-3. On the first start, the window opens on **Add accounts** with the Claude Code and Codex profiles found on your PC (`~\.claude*`, `~\.codex*`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`). Tick the ones you want. A profile in another place can be added with **Choose a folder manually**.
+3. On the first start, the window opens on **Add accounts** with the Claude Code and Codex profiles found on your PC (`~\.claude*`, `~\.codex*`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`), plus a Copilot, Cursor or Antigravity login if you have one. Tick the ones you want. A profile in another place can be added with **Choose a folder manually**.
 4. Click the tray icon. If an account says *Sign in needed*, use **Sign in** on its card or settings page; the CLI login opens in a terminal, and the account refreshes when it is done.
 
 **Start with Windows** is opt-in (Settings → General). Closing a window keeps SubHub in the tray; quit it from the tray menu.
@@ -133,4 +138,4 @@ Bug reports and focused pull requests are welcome. Please include your Windows v
 
 The app's font is [Geist](https://github.com/vercel/geist-font) by Vercel, under the SIL Open Font License 1.1 ([crates/subhub-app/assets/fonts/OFL.txt](crates/subhub-app/assets/fonts/OFL.txt)).
 
-AI SubHub is an independent project and is not affiliated with Anthropic or OpenAI.
+AI SubHub is an independent project and is not affiliated with Anthropic, OpenAI, GitHub, Cursor (Anysphere) or Google.
