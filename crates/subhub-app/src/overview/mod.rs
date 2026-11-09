@@ -107,14 +107,19 @@ impl OverviewState {
         }
     }
 
-    /// A background analysis is running.
-    pub fn is_computing(&self) -> bool {
-        self.computing.is_some()
-    }
-
     /// The last analysis result, if any.
     pub fn latest(&self) -> Option<Arc<Overview>> {
         self.result.as_ref().map(|(_, _, o)| o.clone())
+    }
+
+    /// The last result if it was computed from the current inputs (exports wait for it, so a
+    /// log scan that finished meanwhile is in).
+    pub fn current(&self, s: &AppState) -> Option<Arc<Overview>> {
+        let sig = signature(s, self.range);
+        self.result
+            .as_ref()
+            .filter(|(k, _, _)| *k == sig)
+            .map(|(_, _, o)| o.clone())
     }
 
     /// The result is old enough to recompute (the window's 30 s timer re-renders then).

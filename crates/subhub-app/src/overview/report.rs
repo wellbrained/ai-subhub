@@ -159,8 +159,8 @@ pub fn blocks(
             .collect();
         out.push(table(
             &[
-                ("Account", 40, false),
-                ("", 15, false),
+                ("Account", 35, false),
+                ("What", 20, false),
                 ("Date", 25, false),
                 ("When", 20, true),
             ],

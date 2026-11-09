@@ -61,8 +61,9 @@ pub struct StatsWindow {
     export_open: bool,
     export_closed: Option<Instant>,
     export_note: Option<(Instant, String)>,
-    /// Demo `--demo-export kind=PATH`: export once the data is ready, without a dialog.
-    demo_export: Option<(crate::export_ui::Kind, std::path::PathBuf)>,
+    /// An export waiting for its data (the log scan and the analysis that includes it): set after
+    /// the save dialog, or by demo `--demo-export kind=PATH`.
+    pending_export: Option<(crate::export_ui::Kind, std::path::PathBuf)>,
     /// The price table under the tiles is shown (ⓘ on "API estimate").
     prices_open: bool,
     /// The summary for (range, state.stats_rev); recomputed only when either changes.
@@ -144,7 +145,7 @@ impl StatsWindow {
             export_open: crate::demo::open_row() == Some("export"),
             export_closed: None,
             export_note: None,
-            demo_export: crate::demo::export_target(),
+            pending_export: crate::demo::export_target(),
             prices_open: false,
             summary: None,
             overview: {
@@ -186,8 +187,22 @@ impl StatsWindow {
 
     /// Re-renders after each delay (ms): the fit follows layouts that happen after a resize.
     /// The Overview's last analysis (the PDF report is built from it).
-    pub fn overview_latest(&self) -> Option<std::sync::Arc<subhub_core::insights::Overview>> {
-        self.overview.latest()
+    pub fn overview_current(
+        &self,
+        s: &crate::state::AppState,
+    ) -> Option<std::sync::Arc<subhub_core::insights::Overview>> {
+        self.overview.current(s)
+    }
+
+    /// Exports to `path` once the data is ready (checked on every render).
+    pub fn queue_export(
+        &mut self,
+        kind: crate::export_ui::Kind,
+        path: std::path::PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_export = Some((kind, path));
+        cx.notify();
     }
 
     /// Shows an export result in the title bar for a few seconds.
@@ -625,21 +640,21 @@ impl Render for StatsWindow {
                 }
             }));
         }
-        // Demo: export once the needed data is there (no dialog; hidden screenshot runs).
-        if let Some((kind, path)) = self.demo_export.clone() {
+        // A chosen export runs once its data is there: the log scan done (or failed), and for
+        // the report the analysis of the current inputs.
+        if let Some((kind, path)) = self.pending_export.clone() {
+            let scanned = (has_scan || error.is_some()) && !scanning;
             let ready = match kind {
-                // After the log scan, and the analysis that includes it.
                 crate::export_ui::Kind::Report => {
-                    has_scan
-                        && !scanning
-                        && self.overview.latest().is_some()
-                        && !self.overview.is_computing()
+                    scanned && self.overview.current(self.state.read(cx)).is_some()
                 }
-                crate::export_ui::Kind::Tokens => has_scan,
+                crate::export_ui::Kind::Tokens => scanned,
                 crate::export_ui::Kind::Limits => true,
             };
-            if ready {
-                self.demo_export = None;
+            if !ready {
+                trailing.push(status("Preparing export…".into()));
+            } else {
+                self.pending_export = None;
                 let state = self.state.clone();
                 let days = self.export_days(kind);
                 crate::export_ui::run(self, kind, days, Some(path), &state, cx);

@@ -150,8 +150,9 @@ fn job(
     }
 }
 
-/// Exports `kind` over the last `days`: asks where (unless `to` is given), builds, writes, and
-/// leaves a note in the title bar.
+/// Exports `kind` over the last `days`. Without `to`: asks where, then queues it on the window
+/// (`StatsWindow::queue_export`), which calls back here with the path once the data is ready.
+/// With `to`: builds, writes, and leaves a note in the title bar.
 pub fn run(
     window: &mut StatsWindow,
     kind: Kind,
@@ -160,7 +161,22 @@ pub fn run(
     state: &Entity<AppState>,
     cx: &mut Context<StatsWindow>,
 ) {
-    let overview = window.overview_latest();
+    let Some(path) = to else {
+        // Ask where first; the window exports once the data is ready.
+        cx.spawn(async move |this, cx| {
+            let Ok(rx) = this.update(cx, |_, cx| {
+                cx.prompt_for_new_path(&start_dir(), Some(&kind.file_name()))
+            }) else {
+                return;
+            };
+            if let Ok(Ok(Some(path))) = rx.await {
+                let _ = this.update(cx, |w, cx| w.queue_export(kind, path, cx));
+            }
+        })
+        .detach();
+        return;
+    };
+    let overview = window.overview_current(state.read(cx));
     let job = match job(kind, state.read(cx), overview, days) {
         Ok(j) => j,
         Err(why) => {
@@ -169,20 +185,6 @@ pub fn run(
         }
     };
     cx.spawn(async move |this, cx| {
-        let path = match to {
-            Some(p) => p,
-            None => {
-                let Ok(rx) = this.update(cx, |_, cx| {
-                    cx.prompt_for_new_path(&start_dir(), Some(&kind.file_name()))
-                }) else {
-                    return;
-                };
-                match rx.await {
-                    Ok(Ok(Some(p))) => p,
-                    _ => return, // cancelled
-                }
-            }
-        };
         let built = cx
             .background_executor()
             .spawn(async move { job.build() })
