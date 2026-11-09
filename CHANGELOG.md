@@ -5,7 +5,8 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 ## 0.1.10 – 2026-11-09
 
 - Accounts: Copilot, Cursor and Antigravity only appear once this PC has a login for them.
-- New README screenshots, including the new providers and the hub logins.
+- The README covers the new providers and adding or removing hub logins.
+- New README screenshots, with a picture of the new providers on Limits now.
 
 ## 0.1.9 – 2026-11-09
 
