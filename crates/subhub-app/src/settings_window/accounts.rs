@@ -53,6 +53,10 @@ impl SettingsWindow {
         let mut list = div().flex().flex_col();
         let mut n = 0usize;
         for (p, rows) in groups {
+            // App logins (Copilot, Cursor, Antigravity) only show up once this PC has one.
+            if rows.is_empty() && !p.is_cli_profile() {
+                continue;
+            }
             list = list.child(provider_heading(p, t));
             if rows.is_empty() {
                 list = list.child(

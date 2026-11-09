@@ -2,6 +2,11 @@
 
 Patch notes shown after an update (embedded in the exe). Each release gets `## X.Y.Z – date` and 3-6 short bullets. Work in progress goes under `## Unreleased` and is renamed when a version is released (`scripts/release.ps1` refuses a version without a section).
 
+## 0.1.10 – 2026-11-09
+
+- Accounts: Copilot, Cursor and Antigravity only appear once this PC has a login for them.
+- New README screenshots, including the new providers and the hub logins.
+
 ## 0.1.9 – 2026-11-09
 
 - New providers: GitHub Copilot, Cursor and Google Antigravity logins on your PC show their limits (Limits now, popover, taskbar). Not yet tested with real accounts.
