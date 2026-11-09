@@ -25,7 +25,8 @@ impl SettingsWindow {
         let groups: Vec<(ProviderKind, Vec<RowData>)> = {
             let s = self.state.read(cx);
             let views = crate::hover_card::account_views(s);
-            ProviderKind::ALL
+            s.display()
+                .ordered_providers()
                 .into_iter()
                 .map(|p| {
                     let rows = views
@@ -162,7 +163,8 @@ impl SettingsWindow {
             return div().child("Account not found.").into_any_element();
         };
         let (tag_text, tag_color) = account_tag(s, &acc);
-        let plan = s.settings.plans.get(&id).cloned();
+        let plan = s.settings.plan_label(id).map(str::to_string);
+        let manual_plan = s.settings.manual_plans.get(&id).cloned();
         let favorite = s.display().taskbar_favorites.contains(&id);
         let preferred = s.settings.steering.preferred == Some(id);
         let groups = s.settings.groups.clone();
@@ -418,6 +420,9 @@ impl SettingsWindow {
                 ))
             })
             .child(self.sign_in_block(&acc, t, cx))
+            .when(acc.provider == ProviderKind::Antigravity, |d| {
+                d.child(self.plan_block(id, manual_plan.clone(), t))
+            })
             .child(self.billing_block(&acc, t, cx))
             .child(block("Group", None, group_block, t))
             .child(block(
@@ -493,6 +498,37 @@ impl SettingsWindow {
                 .when_some(note, |d, n| {
                     d.child(div().text_xs().text_color(t.muted).child(n))
                 }),
+            t,
+        )
+        .into_any_element()
+    }
+
+    /// Antigravity's plan, chosen by hand (owner, 2026-11-09): its readings never name the paid
+    /// Google AI plan. The choice is the plan badge and sizes plan fit (by capacity only).
+    fn plan_block(&self, id: Uuid, current: Option<String>, t: &Tokens) -> AnyElement {
+        let choices = subhub_core::insights::AGY_PLAN_CHOICES;
+        let mut options: Vec<(Option<&'static str>, &'static str)> = vec![(None, "Not set")];
+        options.extend(choices.iter().map(|c| (Some(*c), *c)));
+        // A hand-edited value that is no choice shows as "Not set" until one is picked.
+        let current = current
+            .as_deref()
+            .and_then(|c| choices.iter().copied().find(|x| *x == c));
+        let st = self.state.clone();
+        block(
+            "Plan",
+            Some("Antigravity does not report which Google AI plan you have. Pick it for the plan badge and for plan fit in Statistics, which compares your use with the plan's size, never its price: the plans also include storage and other perks."),
+            div().flex().child(chips(
+                "agy-plan",
+                &options,
+                &current,
+                t,
+                move |pick, cx| {
+                    st.update(cx, |s, cx| {
+                        s.set_manual_plan(id, pick);
+                        cx.notify();
+                    })
+                },
+            )),
             t,
         )
         .into_any_element()

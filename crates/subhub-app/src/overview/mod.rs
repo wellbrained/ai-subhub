@@ -24,9 +24,9 @@ use gpui::{
 use gpui_component::Disableable as _;
 use gpui_component::switch::Switch;
 use subhub_core::insights::{
-    self, AT_LIMIT_HITS, AccountInsight, Collect, ExampleDay, FitVerdict, InsightRange, Overview,
-    PlanFit, ProjectKey, Renewal, Span, Tip, TipAction, TipKind, TipRow, WhatIf, WhatIfChange,
-    WindowsReport, Zone,
+    self, AT_LIMIT_HITS, AccountInsight, Collect, CycleLen, ExampleDay, FitVerdict, InsightRange,
+    Overview, PlanFit, ProjectKey, Renewal, Span, Tip, TipAction, TipKind, TipRow, WhatIf,
+    WhatIfChange, WindowsReport, Zone,
 };
 use subhub_core::model::ProviderKind;
 use subhub_core::settings::UsageStyle;
@@ -43,8 +43,9 @@ use crate::title_bar::seg;
 
 /// A result older than this is recomputed (today, running windows and resets move on).
 const RECOMPUTE: StdDuration = StdDuration::from_secs(10 * 60);
-/// History read beyond the plan-fit lookback, so the oldest cycle in it starts inside.
-const HISTORY_EXTRA_DAYS: i64 = 14;
+/// History read beyond the plan-fit lookback, so the oldest cycle in it starts inside (a monthly
+/// cycle that ended inside the lookback began up to a month before it).
+const HISTORY_EXTRA_DAYS: i64 = 35;
 
 /// Font sizes (px): body lines, small lines, tiny sublines.
 const BODY: f32 = 13.0;
@@ -209,6 +210,7 @@ fn signature(s: &AppState, range: InsightRange) -> u64 {
             .map(|r| r.fetched_at)
             .hash(&mut h);
         s.settings.plans.get(&a.id).hash(&mut h);
+        s.settings.manual_plans.get(&a.id).hash(&mut h);
         format!("{:?}", s.settings.billing.get(&a.id)).hash(&mut h);
     }
     for p in &s.settings.projects {
@@ -284,21 +286,27 @@ pub fn body(ov: &OverviewState, cx: &Ctx) -> AnyElement {
 }
 
 /// The small count next to a topic in the sidebar: plans that need a look (red when one is at
-/// its limit), waits while another account was free, days to a renewal within two weeks.
+/// its limit; every account's own row counts, also the app logins kept out of the header),
+/// waits while another account was free, days to a renewal within two weeks.
 pub fn nav_badge(ov: &OverviewState, r: TipRow, t: &Tokens) -> Option<AnyElement> {
     let o = ov.latest()?;
     let tint = |c: Hsla| c.opacity(if t.dark { 0.16 } else { 0.12 });
     let (text, fg, bg) = match r {
         TipRow::Plans => {
-            let v = &o.header.verdict;
-            let n = v.downgrade.len() + v.at_limit.len() + v.unused.len();
+            let verdicts: Vec<FitVerdict> = o
+                .accounts
+                .iter()
+                .filter_map(|a| a.fit.ready().map(|f| f.verdict))
+                .filter(|v| *v != FitVerdict::Fits)
+                .collect();
+            let n = verdicts.len();
             if n == 0 {
                 return None;
             }
-            let c = if v.at_limit.is_empty() {
-                t.info
-            } else {
+            let c = if verdicts.contains(&FitVerdict::AtLimit) {
                 t.danger
+            } else {
+                t.info
             };
             (n.to_string(), c, tint(c))
         }

@@ -6,8 +6,9 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveTime, Utc};
 use uuid::Uuid;
 
 use super::fit::{FitVerdict, PlanTier, WhatIf};
+use super::readings::CycleLen;
 use super::usage::UsageReport;
-use super::{AccountInsight, Renewal, WindowsReport};
+use super::{AccountInsight, Renewal, WindowsReport, in_totals};
 use crate::settings::Settings;
 use crate::stats::TaskKind;
 
@@ -162,7 +163,8 @@ pub(super) fn tips(i: &TipInput) -> Vec<Tip> {
     }
     for a in i.accounts {
         let id = Some(a.account);
-        if let Some(f) = a.fit.ready() {
+        // Copilot, Cursor and Antigravity: their verdict stays in their own Plans row.
+        if let Some(f) = a.fit.ready().filter(|_| in_totals(a.provider)) {
             match f.verdict {
                 FitVerdict::AtLimit if !a.benched => out.push(match f.suggested {
                     Some(to) => tip(
@@ -261,7 +263,8 @@ pub(super) fn tips(i: &TipInput) -> Vec<Tip> {
             out.push(t);
         }
         // Weekly room that is about to reset unused.
-        if let Some(w) = a.now_weekly
+        if a.cycle == CycleLen::Week
+            && let Some(w) = a.now_weekly
             && let Some(reset) = w.resets_at
             && reset > i.now
             && reset - i.now <= Duration::hours(EXPIRING_HOURS)

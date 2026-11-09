@@ -22,11 +22,12 @@ use serde::{Deserialize, Serialize};
 
 use super::kind::{TaskKind, ToolCall, step_kinds};
 use super::parse::{
-    ClaudeMessage, CodexEvent, RawUsage, parse_claude_line, parse_claude_title, parse_codex_line,
+    ClaudeMessage, CodexEvent, CopilotEvent, RawUsage, parse_claude_line, parse_claude_title,
+    parse_codex_line, parse_copilot_line,
 };
 use super::{Tokens, hour_index};
 use crate::model::ProviderKind;
-use crate::profile::{ProfileEnv, discover_dirs, home_dir};
+use crate::profile::{ProfileEnv, discover_app_dirs, discover_dirs, home_dir};
 
 /// 2: buckets gained task kind, sidechain, cwd and thread; thread titles (one full re-scan).
 const CACHE_VERSION: u32 = 2;
@@ -65,7 +66,7 @@ pub struct FileEntry {
     /// Codex: model of the latest turn.
     #[serde(default)]
     pub model: Option<String>,
-    /// Codex: working folder of the latest turn.
+    /// Codex: working folder of the latest turn. Copilot: working folder of the session.
     #[serde(default)]
     pub cwd: Option<String>,
     /// Codex: tool calls since the last token count (they belong to the next one).
@@ -74,6 +75,10 @@ pub struct FileEntry {
     /// Codex: running total after the previous token count, to take per-request deltas.
     #[serde(default)]
     pub prev_total: Option<RawUsage>,
+    /// Copilot: cumulative usage per model at the previous `session.shutdown` (a resumed session
+    /// appends another shutdown with higher totals; only the difference is new).
+    #[serde(default)]
+    pub copilot_prev: BTreeMap<String, RawUsage>,
     /// Claude: hashes of message id + request id already counted from this file.
     #[serde(default)]
     pub seen: Vec<u64>,
@@ -101,6 +106,7 @@ impl FileEntry {
             cwd: None,
             pending: vec![],
             prev_total: None,
+            copilot_prev: BTreeMap::new(),
             seen: vec![],
             cwds: vec![],
             threads: vec![],
@@ -131,7 +137,7 @@ pub struct Bucket {
     /// Working folder of the steps (None when the log has none). Resolved to a project folder
     /// later (`insights::project_of`), so editing projects needs no re-scan.
     pub cwd: Option<Arc<str>>,
-    /// Session id (Claude `sessionId`, Codex file name).
+    /// Session id (Claude `sessionId`, Codex file name, Copilot session folder).
     pub thread: Arc<str>,
 }
 
@@ -157,12 +163,13 @@ pub struct Scan {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
-/// Where logs live: Claude config dirs' `projects` folders and Codex `sessions` folders, already
-/// canonical and without duplicates (the owner's Claude account folders share one `projects`).
+/// Where logs live: Claude config dirs' `projects` folders, Codex `sessions` folders and the
+/// Copilot CLI's `session-state` folder, already canonical and without duplicates (the owner's Claude account folders share one `projects`).
 #[derive(Debug, Clone, Default)]
 pub struct Roots {
     pub claude: Vec<PathBuf>,
     pub codex: Vec<PathBuf>,
+    pub copilot: Vec<PathBuf>,
 }
 
 impl Roots {
@@ -182,10 +189,15 @@ impl Roots {
     pub fn add_codex(&mut self, dir: &Path) {
         Self::push(&mut self.codex, dir);
     }
+
+    pub fn add_copilot(&mut self, dir: &Path) {
+        Self::push(&mut self.copilot, dir);
+    }
 }
 
-/// `projects` of every Claude profile folder and `sessions` + `archived_sessions` of every Codex
-/// one, as found by `profile::discover_dirs` (the same discovery as profile detection).
+/// `projects` of every Claude profile folder, `sessions` + `archived_sessions` of every Codex
+/// one (`profile::discover_dirs`, the same discovery as profile detection) and `session-state` of
+/// the Copilot home (`profile::discover_app_dirs`).
 pub fn discover_roots(home: &Path, env: &ProfileEnv) -> Roots {
     let mut roots = Roots::default();
     for (provider, dir) in discover_dirs(home, env) {
@@ -196,6 +208,11 @@ pub fn discover_roots(home: &Path, env: &ProfileEnv) -> Roots {
                 roots.add_codex(&dir.join("archived_sessions"));
             }
             _ => {}
+        }
+    }
+    for (provider, dir) in discover_app_dirs(home, env) {
+        if provider == ProviderKind::Copilot {
+            roots.add_copilot(&dir.join("session-state"));
         }
     }
     roots
@@ -248,24 +265,61 @@ fn walk(dir: &Path, provider: ProviderKind, out: &mut Vec<Listed>, seen: &mut Ha
         if !ok {
             continue;
         }
-        let key = path.to_string_lossy().into_owned();
-        if !seen.insert(key.clone()) {
+        list_file(path, provider, compressed, out, seen);
+    }
+}
+
+fn list_file(
+    path: PathBuf,
+    provider: ProviderKind,
+    compressed: bool,
+    out: &mut Vec<Listed>,
+    seen: &mut HashSet<String>,
+) {
+    let key = path.to_string_lossy().into_owned();
+    if seen.contains(&key) {
+        return;
+    }
+    let Ok(md) = fs::metadata(&path) else { return };
+    seen.insert(key.clone());
+    let mtime_ms = md
+        .modified()
+        .ok()
+        .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as i64);
+    out.push(Listed {
+        key,
+        path,
+        provider,
+        size: md.len(),
+        mtime_ms,
+        compressed,
+    });
+}
+
+/// Copilot's `session-state`: `<session>/events.jsonl`, plus the older flat `<uuid>.jsonl`. Other
+/// files in a session folder (checkpoints, plans, ...) are not usage logs.
+fn walk_copilot(root: &Path, out: &mut Vec<Listed>, seen: &mut HashSet<String>) {
+    let Ok(rd) = fs::read_dir(root) else { return };
+    for e in rd.flatten() {
+        let path = e.path();
+        let Ok(ft) = e.file_type() else { continue };
+        if ft.is_symlink() {
             continue;
         }
-        let Ok(md) = e.metadata() else { continue };
-        let mtime_ms = md
-            .modified()
-            .ok()
-            .and_then(|m| m.duration_since(UNIX_EPOCH).ok())
-            .map_or(0, |d| d.as_millis() as i64);
-        out.push(Listed {
-            key,
-            path,
-            provider,
-            size: md.len(),
-            mtime_ms,
-            compressed,
-        });
+        if ft.is_dir() {
+            let events = path.join("events.jsonl");
+            if events.is_file() {
+                list_file(events, ProviderKind::Copilot, false, out, seen);
+            }
+        } else if e
+            .file_name()
+            .to_string_lossy()
+            .to_lowercase()
+            .ends_with(".jsonl")
+        {
+            list_file(path, ProviderKind::Copilot, false, out, seen);
+        }
     }
 }
 
@@ -424,13 +478,27 @@ impl FileProc {
         tools: &[ToolCall],
         t: &Tokens,
     ) {
+        let parts = split_tokens(t, &step_kinds(tools));
+        self.add_parts(hour, model, session, sidechain, cwd, &parts);
+    }
+
+    /// Adds tokens already split by task kind.
+    fn add_parts(
+        &mut self,
+        hour: i64,
+        model: &str,
+        session: &str,
+        sidechain: bool,
+        cwd: Option<&str>,
+        parts: &[(TaskKind, Tokens)],
+    ) {
         let cwd = cwd.map(|c| index_of(&mut self.entry.cwds, &mut self.cwd_ix, c));
         let thread = index_of(&mut self.entry.threads, &mut self.thread_ix, session);
-        for (kind, part) in split_tokens(t, &step_kinds(tools)) {
+        for (kind, part) in parts {
             self.buckets
-                .entry((hour, model.to_string(), kind, sidechain, cwd, thread))
+                .entry((hour, model.to_string(), *kind, sidechain, cwd, thread))
                 .or_default()
-                .add(&part);
+                .add(part);
         }
         self.sessions
             .entry(session.to_string())
@@ -576,6 +644,48 @@ impl FileProc {
         }
     }
 
+    /// One Copilot CLI log line: `session.start` (cwd) and `session.shutdown` (cumulative usage
+    /// per model; the difference to the previous shutdown of the file is new). The log has no
+    /// tool calls at this granularity, so the tokens go to "Other tools", at the shutdown hour.
+    fn feed_copilot(&mut self, line: &[u8]) {
+        if memchr::memmem::find(line, b"\"session.start\"").is_none()
+            && memchr::memmem::find(line, b"\"session.shutdown\"").is_none()
+        {
+            return;
+        }
+        let Ok(text) = std::str::from_utf8(line) else {
+            return;
+        };
+        match parse_copilot_line(text) {
+            Some(CopilotEvent::Start { cwd }) => {
+                if cwd.is_some() {
+                    self.entry.cwd = cwd;
+                }
+            }
+            Some(CopilotEvent::Shutdown { ts, models }) => {
+                let session = self.default_session.clone();
+                let cwd = self.entry.cwd.clone();
+                for (model, total) in models {
+                    let prev = self.entry.copilot_prev.insert(model.clone(), total);
+                    // A counter that went down is a new counting epoch: all of it is new.
+                    let delta = prev.and_then(|p| total.checked_sub(&p)).unwrap_or(total);
+                    if delta.is_zero() {
+                        continue;
+                    }
+                    self.add_parts(
+                        local_hour(ts),
+                        &model,
+                        &session,
+                        false,
+                        cwd.as_deref(),
+                        &[(TaskKind::OtherTools, delta.tokens())],
+                    );
+                }
+            }
+            None => {}
+        }
+    }
+
     fn finish(mut self) -> FileEntry {
         // A message cut by the end of what was written so far is counted with the blocks read;
         // its later blocks repeat a seen key and add nothing (a rare, small misattribution).
@@ -633,7 +743,13 @@ fn process(job: Job, seen: &Mutex<HashSet<u64>>) -> FileEntry {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let stem = stem.split(".jsonl").next().unwrap_or(&stem).to_string();
+    let mut stem = stem.split(".jsonl").next().unwrap_or(&stem).to_string();
+    if listed.provider == ProviderKind::Copilot && stem == "events" {
+        // `session-state/<session id>/events.jsonl`: the folder names the session.
+        if let Some(dir) = listed.path.parent().and_then(|d| d.file_name()) {
+            stem = dir.to_string_lossy().into_owned();
+        }
+    }
     let mut proc = FileProc::new(entry, stem);
     let Ok(mut file) = File::open(&listed.path) else {
         return proc.finish();
@@ -666,6 +782,7 @@ fn process(job: Job, seen: &Mutex<HashSet<u64>>) -> FileEntry {
         match listed.provider {
             ProviderKind::Claude => proc.feed_claude(&buf, seen),
             ProviderKind::Codex => proc.feed_codex(&buf),
+            ProviderKind::Copilot => proc.feed_copilot(&buf),
             _ => {}
         }
         if buf.capacity() > 64 << 20 {
@@ -688,6 +805,9 @@ pub fn scan(roots: &Roots, cache_file: Option<&Path>) -> anyhow::Result<Scan> {
     }
     for d in &roots.codex {
         walk(d, ProviderKind::Codex, &mut listed, &mut keys);
+    }
+    for d in &roots.copilot {
+        walk_copilot(d, &mut listed, &mut keys);
     }
     let files = listed.len();
     let mut cache = cache_file.map(load_cache).unwrap_or(CacheFile {
@@ -777,7 +897,7 @@ pub fn scan(roots: &Roots, cache_file: Option<&Path>) -> anyhow::Result<Scan> {
 
 type MergeKey = (
     i64,
-    bool,
+    ProviderKind,
     String,
     TaskKind,
     bool,
@@ -787,7 +907,7 @@ type MergeKey = (
 
 fn merge(files: &BTreeMap<String, FileEntry>) -> Scan {
     let mut buckets: HashMap<MergeKey, Tokens> = HashMap::new();
-    let mut sessions: HashMap<(bool, String), BTreeSet<i64>> = HashMap::new();
+    let mut sessions: HashMap<(ProviderKind, String), BTreeSet<i64>> = HashMap::new();
     let mut titles: HashMap<String, String> = HashMap::new();
     // One shared string per distinct folder / thread across files.
     let mut strings: HashSet<Arc<str>> = HashSet::new();
@@ -799,7 +919,6 @@ fn merge(files: &BTreeMap<String, FileEntry>) -> Scan {
         strings.insert(a.clone());
         a
     };
-    let is_claude = |p: ProviderKind| p == ProviderKind::Claude;
     for e in files.values() {
         let cwds: Vec<Arc<str>> = e.cwds.iter().map(|c| intern(c)).collect();
         let threads: Vec<Arc<str>> = e.threads.iter().map(|t| intern(t)).collect();
@@ -812,7 +931,7 @@ fn merge(files: &BTreeMap<String, FileEntry>) -> Scan {
             buckets
                 .entry((
                     b.hour,
-                    is_claude(e.provider),
+                    e.provider,
                     b.model.clone(),
                     b.kind,
                     b.sidechain,
@@ -824,7 +943,7 @@ fn merge(files: &BTreeMap<String, FileEntry>) -> Scan {
         }
         for s in &e.sessions {
             sessions
-                .entry((is_claude(e.provider), s.id.clone()))
+                .entry((e.provider, s.id.clone()))
                 .or_default()
                 .extend(s.hours.iter().copied());
         }
@@ -832,19 +951,12 @@ fn merge(files: &BTreeMap<String, FileEntry>) -> Scan {
             titles.insert(k.clone(), v.clone());
         }
     }
-    let provider = |claude: bool| {
-        if claude {
-            ProviderKind::Claude
-        } else {
-            ProviderKind::Codex
-        }
-    };
     let mut out_b: Vec<Bucket> = buckets
         .into_iter()
         .map(
-            |((hour, c, model, kind, sidechain, cwd, thread), tokens)| Bucket {
+            |((hour, provider, model, kind, sidechain, cwd, thread), tokens)| Bucket {
                 hour,
-                provider: provider(c),
+                provider,
                 model,
                 tokens,
                 kind,
@@ -866,8 +978,8 @@ fn merge(files: &BTreeMap<String, FileEntry>) -> Scan {
     });
     let mut out_s: Vec<ScanSession> = sessions
         .into_iter()
-        .map(|((c, id), hours)| ScanSession {
-            provider: provider(c),
+        .map(|((provider, id), hours)| ScanSession {
+            provider,
             id,
             hours: hours.into_iter().collect(),
         })
@@ -1027,6 +1139,152 @@ mod tests {
         let s = scan(&roots, None).unwrap();
         assert_eq!(totals(&s, ProviderKind::Codex).processed(), 110);
         assert_eq!(s.sessions[0].id, "rollout-2");
+    }
+
+    fn copilot_start(cwd: &str) -> String {
+        format!(
+            r#"{{"type":"session.start","timestamp":"2026-11-05T09:00:00Z","id":"a","data":{{"context":{{"cwd":{}}}}}}}"#,
+            serde_json::to_string(cwd).unwrap()
+        )
+    }
+
+    /// A shutdown snapshot: (model, input incl. cache, output, cache read, cache write).
+    fn copilot_shutdown(hour: u32, models: &[(&str, u64, u64, u64, u64)]) -> String {
+        let m: Vec<String> = models
+            .iter()
+            .map(|(name, i, o, r, w)| {
+                format!(
+                    r#""{name}":{{"requests":{{"count":1}},"usage":{{"inputTokens":{i},"outputTokens":{o},"cacheReadTokens":{r},"cacheWriteTokens":{w},"reasoningTokens":1}}}}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"type":"session.shutdown","timestamp":"2026-11-05T{hour:02}:00:00Z","id":"b","data":{{"modelMetrics":{{{}}}}}}}"#,
+            m.join(",")
+        )
+    }
+
+    #[test]
+    fn copilot_counts_shutdown_differences_and_reads_only_appended_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("session-state");
+        let sess = state.join("sess-1");
+        fs::create_dir_all(&sess).unwrap();
+        fs::create_dir_all(state.join("sess-2")).unwrap();
+        // Not a usage log: another file in a session folder.
+        fs::write(sess.join("checkpoint.jsonl"), "{}\n").unwrap();
+        let file = sess.join("events.jsonl");
+        let mut roots = Roots::default();
+        roots.add_copilot(&state);
+        let cache = dir.path().join("cache.json");
+
+        // Input 1000 = 600 cache read + 100 cache write + 300 uncached. Garbage lines are skipped.
+        let first = [
+            copilot_start(r"D:\Work\x"),
+            "not json".to_string(),
+            r#"{"type":"assistant.message","data":{"content":"SECRET"}}"#.to_string(),
+            copilot_shutdown(10, &[("claude-sonnet-4.5", 1000, 50, 600, 100)]),
+        ];
+        fs::write(&file, first.join("\n") + "\n").unwrap();
+        let s = scan(&roots, Some(&cache)).unwrap();
+        assert_eq!(s.files, 1);
+        assert_eq!(
+            totals(&s, ProviderKind::Copilot),
+            Tokens {
+                input: 300,
+                cache_read: 600,
+                cache_write: 100,
+                output: 50
+            }
+        );
+        let b = &s.buckets[0];
+        assert_eq!(&*b.thread, "sess-1");
+        assert_eq!(b.model, "claude-sonnet-4.5");
+        assert_eq!(b.kind, TaskKind::OtherTools);
+        assert_eq!(b.cwd.as_deref(), Some(r"D:\Work\x"));
+        assert_eq!(s.sessions.len(), 1);
+        assert_eq!(s.sessions[0].provider, ProviderKind::Copilot);
+
+        // Resumed: a second shutdown with higher totals, a second model, and an empty one. Only
+        // the differences count; a re-scan reads just the appended bytes.
+        let more = [
+            copilot_shutdown(
+                12,
+                &[
+                    ("claude-sonnet-4.5", 1500, 80, 900, 100),
+                    ("gpt-5.1-codex", 200, 20, 0, 0),
+                ],
+            ),
+            copilot_shutdown(13, &[]),
+        ];
+        let mut f = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        writeln!(f, "{}", more.join("\n")).unwrap();
+        drop(f);
+        let s = scan(&roots, Some(&cache)).unwrap();
+        assert_eq!(s.files_read, 1);
+        assert_eq!(
+            totals(&s, ProviderKind::Copilot),
+            Tokens {
+                input: 300 + 200 + 200,
+                cache_read: 900,
+                cache_write: 100,
+                output: 80 + 20
+            }
+        );
+        let hours: BTreeSet<i64> = s.buckets.iter().map(|b| b.hour).collect();
+        assert_eq!(hours.len(), 2);
+        // Unchanged files are not read again and the total stays.
+        let again = scan(&roots, Some(&cache)).unwrap();
+        assert_eq!(again.files_read, 0);
+        assert_eq!(
+            totals(&again, ProviderKind::Copilot),
+            totals(&s, ProviderKind::Copilot)
+        );
+    }
+
+    #[test]
+    fn copilot_counter_going_down_counts_the_new_snapshot_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("session-state");
+        fs::create_dir_all(&state).unwrap();
+        // Older flat layout: `<uuid>.jsonl` next to the folders. Input smaller than its cache
+        // buckets clamps the uncached part at 0.
+        let lines = [
+            copilot_shutdown(10, &[("m", 500, 10, 0, 0)]),
+            copilot_shutdown(11, &[("m", 100, 5, 150, 0)]),
+        ];
+        fs::write(state.join("abc.jsonl"), lines.join("\n") + "\n").unwrap();
+        let mut roots = Roots::default();
+        roots.add_copilot(&state);
+        let s = scan(&roots, None).unwrap();
+        assert_eq!(
+            totals(&s, ProviderKind::Copilot),
+            Tokens {
+                input: 500,
+                cache_read: 150,
+                cache_write: 0,
+                output: 15
+            }
+        );
+        assert_eq!(&*s.buckets[0].thread, "abc");
+        assert!(s.buckets[0].cwd.is_none());
+    }
+
+    #[test]
+    fn copilot_root_comes_from_the_copilot_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        fs::create_dir_all(home.join(".copilot").join("session-state")).unwrap();
+        let r = discover_roots(home, &ProfileEnv::default());
+        assert_eq!(r.copilot.len(), 1);
+        // Without a session-state folder there is nothing to scan.
+        let empty = tempfile::tempdir().unwrap();
+        fs::create_dir_all(empty.path().join(".copilot")).unwrap();
+        assert!(
+            discover_roots(empty.path(), &ProfileEnv::default())
+                .copilot
+                .is_empty()
+        );
     }
 
     #[test]

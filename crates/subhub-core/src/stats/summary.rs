@@ -74,7 +74,7 @@ impl CostParts {
     }
 }
 
-/// One chart point (an hour in the 24h range, otherwise a day); index 0 = Claude, 1 = Codex.
+/// One chart point (an hour in the 24h range, otherwise a day); index by [`slot`] (0 = Claude, 1 = Codex, 2 = Copilot).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Point {
     /// Short axis label ("Nov 7", "14:00").
@@ -82,10 +82,10 @@ pub struct Point {
     /// Tooltip title ("Sat, Nov 7", "Nov 7, 14:00").
     pub title: String,
     /// Work tokens (input + output + cache writes).
-    pub work: [u64; 2],
+    pub work: [u64; SLOTS],
     /// Everything processed, cache reads included.
-    pub tokens: [u64; 2],
-    pub cost: [f64; 2],
+    pub tokens: [u64; SLOTS],
+    pub cost: [f64; SLOTS],
 }
 
 impl Point {
@@ -149,7 +149,7 @@ pub struct Summary {
     pub cache_hit_rate: Option<f64>,
     /// Models in the range without a price.
     pub unpriced_models: usize,
-    /// Codex first, then Claude (the order of the usage board).
+    /// Codex first, then Claude, then Copilot (the order of the usage board).
     pub providers: Vec<ProviderSummary>,
     /// Chart points. For day ranges they start at the first day with data (see `trimmed`).
     pub points: Vec<Point>,
@@ -171,10 +171,14 @@ impl Summary {
     }
 }
 
-/// Statistics hold Claude and Codex logs only (`ProviderKind::is_cli_profile`).
-fn slot(p: ProviderKind) -> usize {
+/// Providers with usage logs: Claude, Codex, Copilot CLI. The others never have buckets.
+pub const SLOTS: usize = 3;
+
+/// Chart slot of a provider (see [`Point`]).
+pub fn slot(p: ProviderKind) -> usize {
     match p {
         ProviderKind::Claude => 0,
+        ProviderKind::Copilot => 2,
         _ => 1,
     }
 }
@@ -214,9 +218,9 @@ pub fn summarize(scan: &Scan, range: Range, now: NaiveDateTime, prices: &PriceBo
             Point {
                 label,
                 title,
-                work: [0; 2],
-                tokens: [0; 2],
-                cost: [0.0; 2],
+                work: [0; SLOTS],
+                tokens: [0; SLOTS],
+                cost: [0.0; SLOTS],
             }
         })
         .collect();
@@ -225,7 +229,7 @@ pub fn summarize(scan: &Scan, range: Range, now: NaiveDateTime, prices: &PriceBo
     let mut tokens = Tokens::default();
     let mut cost = CostParts::default();
     let mut savings = 0.0;
-    let mut prov: [(Tokens, f64); 2] = [(Tokens::default(), 0.0), (Tokens::default(), 0.0)];
+    let mut prov = [(Tokens::default(), 0.0); SLOTS];
     let mut models: HashMap<(&str, ProviderKind), (Tokens, Option<f64>)> = HashMap::new();
     // Per day: work tokens, processed tokens, cost.
     let mut days: BTreeMap<NaiveDate, (u64, u64, f64)> = BTreeMap::new();
@@ -265,7 +269,7 @@ pub fn summarize(scan: &Scan, range: Range, now: NaiveDateTime, prices: &PriceBo
         }
     }
 
-    let mut sess = [0usize; 2];
+    let mut sess = [0usize; SLOTS];
     let mut day_sessions: BTreeMap<NaiveDate, usize> = BTreeMap::new();
     for s in &scan.sessions {
         let in_range: Vec<NaiveDate> = s
@@ -294,16 +298,20 @@ pub fn summarize(scan: &Scan, range: Range, now: NaiveDateTime, prices: &PriceBo
         points.drain(..i);
         trimmed = true;
     }
-    let providers = [ProviderKind::Codex, ProviderKind::Claude]
-        .into_iter()
-        .map(|p| ProviderSummary {
-            provider: p,
-            sessions: sess[slot(p)],
-            tokens: prov[slot(p)].0,
-            cost: prov[slot(p)].1,
-        })
-        .filter(|p| p.sessions > 0 || !p.tokens.is_zero())
-        .collect();
+    let providers = [
+        ProviderKind::Codex,
+        ProviderKind::Claude,
+        ProviderKind::Copilot,
+    ]
+    .into_iter()
+    .map(|p| ProviderSummary {
+        provider: p,
+        sessions: sess[slot(p)],
+        tokens: prov[slot(p)].0,
+        cost: prov[slot(p)].1,
+    })
+    .filter(|p| p.sessions > 0 || !p.tokens.is_zero())
+    .collect();
     let mut models: Vec<ModelRow> = models
         .into_iter()
         .map(|((model, provider), (tokens, cost))| ModelRow {
@@ -323,7 +331,7 @@ pub fn summarize(scan: &Scan, range: Range, now: NaiveDateTime, prices: &PriceBo
     let read = tokens.input + tokens.cache_read + tokens.cache_write;
     Summary {
         range,
-        sessions: sess[0] + sess[1],
+        sessions: sess.iter().sum(),
         tokens,
         cost,
         cache_savings: savings,
@@ -524,6 +532,56 @@ mod tests {
     }
 
     #[test]
+    fn copilot_has_its_own_slot_provider_and_model_row() {
+        let now = at(2026, 11, 7, 12);
+        let t = Tokens {
+            input: 1_000_000,
+            output: 100_000,
+            ..Tokens::default()
+        };
+        let scan = Scan {
+            buckets: vec![
+                bucket(
+                    at(2026, 11, 7, 9),
+                    ProviderKind::Copilot,
+                    "claude-sonnet-4.5",
+                    t,
+                ),
+                bucket(
+                    at(2026, 11, 7, 9),
+                    ProviderKind::Claude,
+                    "claude-sonnet-4-5",
+                    t,
+                ),
+            ],
+            sessions: vec![ScanSession {
+                provider: ProviderKind::Copilot,
+                id: "c1".into(),
+                hours: vec![hour_index(at(2026, 11, 7, 9))],
+            }],
+            ..Scan::default()
+        };
+        let s = summarize(&scan, Range::Week, now, &PriceBook::default());
+        let last = s.points.last().unwrap();
+        assert_eq!(last.work, [1_100_000, 0, 1_100_000]);
+        // The dotted Copilot id finds the built-in Sonnet 4.5 price: 3 + 1.5 USD per 1M / 0.1M.
+        assert!((last.cost[2] - 4.5).abs() < 1e-9);
+        assert_eq!(s.unpriced_models, 0);
+        let copilot = s
+            .providers
+            .iter()
+            .find(|p| p.provider == ProviderKind::Copilot)
+            .unwrap();
+        assert_eq!((copilot.sessions, copilot.tokens.work()), (1, 1_100_000));
+        assert!(
+            s.models
+                .iter()
+                .any(|m| m.provider == ProviderKind::Copilot && m.model == "claude-sonnet-4.5")
+        );
+        assert_eq!(s.sessions, 1);
+    }
+
+    #[test]
     fn work_tokens_per_provider_day_model_and_type() {
         let s = summarize(
             &sample(),
@@ -573,10 +631,10 @@ mod tests {
         assert_eq!(s.days[0].sessions, 2);
         assert_eq!(s.days[1].sessions, 1);
 
-        // Chart points carry work and cost per provider (0 = Claude, 1 = Codex).
+        // Chart points carry work and cost per provider (0 = Claude, 1 = Codex, 2 = Copilot).
         assert_eq!(s.points.len(), 2);
-        assert_eq!(s.points[1].work, [2_100_000, 1000]);
-        assert_eq!(s.points[1].tokens, [12_100_000, 1000]);
+        assert_eq!(s.points[1].work, [2_100_000, 1000, 0]);
+        assert_eq!(s.points[1].tokens, [12_100_000, 1000, 0]);
         assert!((s.points[0].cost[0] - 13.0).abs() < 1e-9);
         assert_eq!(s.points[0].title, "Fri, Nov 6");
     }

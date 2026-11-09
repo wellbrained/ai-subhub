@@ -40,7 +40,7 @@ struct Col {
 pub fn board(s: &AppState, now: DateTime<Utc>, t: &Tokens) -> AnyElement {
     let mut out = div().flex().flex_col().gap(px(14.0));
     let mut any = false;
-    for provider in ProviderKind::ALL {
+    for provider in s.display().ordered_providers() {
         let accounts: Vec<&Account> = s
             .settings
             .accounts

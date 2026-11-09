@@ -9,7 +9,8 @@ pub(super) fn plans_line(o: &Overview, cx: &Ctx) -> (AnyElement, Option<AnyEleme
         .iter()
         .filter(|a| !cx.hidden(a.account) && !a.benched)
         .collect();
-    let mut parts: Vec<Vec<(String, bool)>> = vec![];
+    // (counts in the totals, words)
+    let mut parts: Vec<(bool, Vec<(String, bool)>)> = vec![];
     let mut verdicts: Vec<FitVerdict> = vec![];
     for want in [
         FitVerdict::Downgrade,
@@ -35,11 +36,18 @@ pub(super) fn plans_line(o: &Overview, cx: &Ctx) -> (AnyElement, Option<AnyEleme
                 FitVerdict::AtLimit => vec![b(label_of(o, a.account)), m(" is at its limit")],
                 _ => vec![b(label_of(o, a.account)), m(" sits unused")],
             };
-            parts.push(p);
+            parts.push((insights::in_totals(a.provider), p));
         }
     }
+    // Claude and Codex first: the line names two plans at most, and the app logins' verdicts
+    // belong to their own rows (owner, 2026-11-09).
+    parts.sort_by_key(|(totals, _)| !totals);
     let answer = if parts.is_empty() {
-        let ready_on = shown.iter().filter_map(|a| a.fit.ready_on()).min();
+        let ready_on = shown
+            .iter()
+            .filter(|a| !a.plan_conflict)
+            .filter_map(|a| a.fit.ready_on())
+            .min();
         if shown.iter().any(|a| a.fit.ready().is_some()) {
             plain("Every plan fits how you use it")
         } else if let Some(d) = ready_on {
@@ -49,7 +57,7 @@ pub(super) fn plans_line(o: &Overview, cx: &Ctx) -> (AnyElement, Option<AnyEleme
         }
     } else {
         let mut all = vec![];
-        for (i, p) in parts.into_iter().take(2).enumerate() {
+        for (i, (_, p)) in parts.into_iter().take(2).enumerate() {
             if i > 0 {
                 all.push(m(" · "));
             }
@@ -73,9 +81,34 @@ pub(super) const C_WEEK: f32 = 124.0;
 pub(super) const C_HITS: f32 = 62.0;
 pub(super) const C_GAP: f32 = 16.0;
 
+/// "Weekly used", "Monthly used", or "Cycle use" when both kinds of account are shown (short:
+/// the column is narrow).
+pub(super) fn cycle_heading(accounts: &[&AccountInsight]) -> &'static str {
+    let monthly = accounts.iter().any(|a| a.cycle == CycleLen::Month);
+    let weekly = accounts.iter().any(|a| a.cycle == CycleLen::Week);
+    match (weekly, monthly) {
+        (true, true) => "Cycle use",
+        (false, true) => "Monthly used",
+        _ => "Weekly used",
+    }
+}
+
+/// "week" or "month": what one cycle of the account is.
+pub(super) fn cycle_word(a: &AccountInsight) -> &'static str {
+    match a.cycle {
+        CycleLen::Week => "week",
+        CycleLen::Month => "month",
+    }
+}
+
 pub(super) fn plans_content(o: &Overview, cx: &Ctx) -> AnyElement {
     let t = cx.t;
     let small = |s: String| div().text_size(px(SMALL)).text_color(t.muted).child(s);
+    let visible: Vec<&AccountInsight> = o
+        .accounts
+        .iter()
+        .filter(|a| !cx.hidden(a.account))
+        .collect();
     let header = div()
         .flex()
         .gap(px(C_GAP))
@@ -94,17 +127,16 @@ pub(super) fn plans_content(o: &Overview, cx: &Ctx) -> AnyElement {
             .flex_none(),
         )
         .child(
-            small(format!("Weekly used · {}", o.range.label()))
+            small(format!("{} · {}", cycle_heading(&visible), o.range.label()))
                 .w(px(C_WEEK))
                 .flex_none(),
         )
         .child(small("5-h hits".into()).w(px(C_HITS)).flex_none())
         .child(small("Plan fit".into()).flex_1());
     let mut rows = div().flex().flex_col();
-    let mut n = 0;
-    for a in o.accounts.iter().filter(|a| !cx.hidden(a.account)) {
+    let n = visible.len();
+    for a in visible {
         rows = rows.child(account_row(a, o, cx));
-        n += 1;
     }
     div()
         .flex()
@@ -210,9 +242,16 @@ pub(super) fn account_row(a: &AccountInsight, o: &Overview, cx: &Ctx) -> gpui::D
         .when(a.has_session_window || a.now_session.is_some(), |d| {
             d.child(now_bar("5 h", a.now_session))
         })
-        .child(now_bar("Wk", a.now_weekly));
+        .child(now_bar(
+            if a.cycle == CycleLen::Month {
+                "Mo"
+            } else {
+                "Wk"
+            },
+            a.now_weekly,
+        ));
 
-    // Weekly use per cycle: the last few cycles as columns under a dashed 100 % line.
+    // Use per cycle (week or month): the last few cycles as columns under a dashed 100 % line.
     let cycles: Vec<&insights::WeeklyCycle> = a.cycles.iter().rev().take(6).rev().collect();
     let n = cycles.len();
     let week = div()
@@ -252,7 +291,7 @@ pub(super) fn account_row(a: &AccountInsight, o: &Overview, cx: &Ctx) -> gpui::D
                 .text_color(t.muted)
                 .child(match (a.weekly_avg, a.weekly_peak) {
                     (Some(avg), Some(peak)) => format!("avg {} · peak {}", pct(avg), pct(peak)),
-                    _ if n > 0 => "no full week yet".into(),
+                    _ if n > 0 => format!("no full {} yet", cycle_word(a)),
                     _ => "no readings yet".into(),
                 }),
         );
@@ -288,6 +327,12 @@ pub(super) fn account_row(a: &AccountInsight, o: &Overview, cx: &Ctx) -> gpui::D
 
     let fit_cell = div().flex_1().flex().items_center().child(if a.benched {
         pill("Benched", t.muted, t.surface)
+    } else if a.plan_conflict {
+        pill(
+            "Check plan",
+            t.warn,
+            t.warn.opacity(if t.dark { 0.16 } else { 0.12 }),
+        )
     } else {
         match &a.fit {
             Collect::Ready(f) => fit_pill(f.verdict, t),
@@ -357,24 +402,35 @@ pub(super) fn fit_line(a: &AccountInsight, o: &Overview) -> String {
 }
 
 pub(super) fn fit_words(a: &AccountInsight, o: &Overview) -> String {
+    if a.plan_conflict {
+        return format!(
+            "{} is chosen, but the readings look like the Free plan (no 5-hour limit). Check the plan on the account page.",
+            a.plan.as_deref().unwrap_or("A paid plan")
+        );
+    }
     let f: &PlanFit = match &a.fit {
         Collect::Ready(f) => f,
         Collect::Collecting { ready_on } => return collecting_text(*ready_on),
     };
-    let unknown = if f.tier.is_none() {
-        " Plan unknown, so no price advice."
-    } else {
-        ""
+    let unit = cycle_word(a);
+    let unknown = match (f.tier, a.provider) {
+        (None, ProviderKind::Antigravity) => " Set its plan on the account page for advice.",
+        (None, _) => " Plan unknown, so no price advice.",
+        // Google AI plans also carry storage and other perks: no saving is shown.
+        (Some(t), _) if t.capacity_only() && f.suggested.is_some() => {
+            " By usage only: the plan also covers storage and other perks."
+        }
+        _ => "",
     };
     let line = match f.verdict {
         FitVerdict::Fits => format!(
-            "Well used: avg {}, peak {} of its week.",
+            "Well used: avg {}, peak {} of its {unit}.",
             pct(f.avg),
             pct(f.peak)
         ),
         FitVerdict::Downgrade => match (f.suggested, f.peak_on_suggested) {
             (Some(to), Some(p)) => format!(
-                "Your busiest week would fit {} ({}).{}",
+                "Your busiest {unit} would fit {} ({}).{}",
                 to.label(),
                 pct(p),
                 f.price_change
@@ -386,15 +442,26 @@ pub(super) fn fit_words(a: &AccountInsight, o: &Overview) -> String {
         },
         FitVerdict::AtLimit => match f.suggested {
             Some(to) => format!(
-                "Peak {} and {} 5-hour hits a week. {} would give it room{}.",
-                pct(f.peak),
-                num(f.hits_per_week),
+                "{} {} would give it room{}.",
+                if a.has_session_window {
+                    format!(
+                        "Peak {} and {} 5-hour hits a {unit}.",
+                        pct(f.peak),
+                        num(f.hits_per_week)
+                    )
+                } else {
+                    format!("Peak {} of its {unit}.", pct(f.peak))
+                },
                 to.label(),
                 f.price_change
                     .filter(|c| *c > 0.0)
                     .map(|c| format!(" (~{} more a month)", usd(c)))
                     .unwrap_or_default()
             ),
+            // One login per PC: there is no other account to spread to.
+            None if !insights::in_totals(a.provider) => {
+                "Already the biggest plan and it reaches its limit.".into()
+            }
             None => {
                 "Already the biggest plan and it hits its limits: spread work to other accounts."
                     .into()

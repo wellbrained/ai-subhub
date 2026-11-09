@@ -95,6 +95,15 @@ impl SettingsWindow {
                 t,
             ))
             .child(row(
+                "Compact cards",
+                Some("One line per account with its two main limits. Click an account for its full card."),
+                Switch::new("compact")
+                    .checked(d.popover_compact)
+                    .on_click(set(|d, v| d.popover_compact = v)),
+                t,
+            ))
+            .child(self.providers_block(&d, t, cx))
+            .child(row(
                 "Close popover when clicking elsewhere",
                 Some("Off: it stays open until you click the tray icon, press Esc or use the close button."),
                 Switch::new("blur-close")
@@ -198,6 +207,87 @@ impl SettingsWindow {
                         .on_click(move |_, _, cx| u(Box::new(|d| *d = Default::default()), cx)),
                 ),
             )
+    }
+
+    /// Providers that have accounts, in their order: move up/down (also the order on Limits now
+    /// and Accounts) and show or hide in the popover.
+    pub(super) fn providers_block(
+        &self,
+        d: &DisplaySettings,
+        t: &Tokens,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let s = self.state.read(cx);
+        let shown: Vec<ProviderKind> = d
+            .ordered_providers()
+            .into_iter()
+            .filter(|p| s.settings.accounts.iter().any(|a| a.provider == *p))
+            .collect();
+        let last = shown.len().saturating_sub(1);
+        let mut list = div().flex().flex_col();
+        for (i, p) in shown.iter().copied().enumerate() {
+            let on = !d.hidden_providers.contains(&p);
+            let (u_up, u_down, u_vis) = (self.updater(), self.updater(), self.updater());
+            let (sh_up, sh_down) = (shown.clone(), shown.clone());
+            list = list.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .py_2()
+                    .child(icon(
+                        Icon::Provider(p),
+                        14.0,
+                        crate::icons::provider_color(p, t.muted),
+                    ))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_sm()
+                            .when(!on, |d| d.text_color(t.muted))
+                            .child(p.name()),
+                    )
+                    .child(
+                        square_button(("prov-up", i), Icon::ArrowUp, "Move up", i > 0, t).on_click(
+                            move |_, _, cx| {
+                                let sh = sh_up.clone();
+                                u_up(Box::new(move |d| d.move_provider(p, true, &sh)), cx)
+                            },
+                        ),
+                    )
+                    .child(
+                        square_button(("prov-down", i), Icon::ArrowDown, "Move down", i < last, t)
+                            .on_click(move |_, _, cx| {
+                                let sh = sh_down.clone();
+                                u_down(Box::new(move |d| d.move_provider(p, false, &sh)), cx)
+                            }),
+                    )
+                    .child(
+                        Switch::new(SharedString::from(format!("prov-vis-{}", p.name())))
+                            .checked(on)
+                            .on_click(move |v, _, cx| {
+                                let v = *v;
+                                u_vis(
+                                    Box::new(move |d| {
+                                        DisplaySettings::toggle_provider(
+                                            &mut d.hidden_providers,
+                                            p,
+                                            !v,
+                                        )
+                                    }),
+                                    cx,
+                                )
+                            }),
+                    ),
+            );
+        }
+        block(
+            "Providers",
+            Some("Their order in the popover, Limits now and Accounts. Switched off: left out of the popover only. A click on a provider's heading in the popover folds it."),
+            list,
+            t,
+        )
     }
 
     /// Which accounts the taskbar shows, compact: Favorites / Focus / Auto and, except for

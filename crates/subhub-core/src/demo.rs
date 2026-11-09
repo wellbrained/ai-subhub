@@ -49,6 +49,7 @@ struct Spec {
     hub: Option<(&'static str, bool)>,
     group: &'static str,
     tag: &'static str,
+    /// The plan the provider reports; empty when it names none (Antigravity's paid plans).
     plan: &'static str,
     windows: &'static [WindowSpec],
     /// How old the seeded reading is.
@@ -166,8 +167,9 @@ const SPECS: &[Spec] = &[
         failing: true,
     },
     // App logins (owner, 2026-11-09: no real accounts to test with, so the demo shows them):
-    // Copilot's monthly AI credits, Cursor's weekly plan with its Auto/API pools, Antigravity's
-    // two groups with 5-hour and weekly quotas each.
+    // Copilot's monthly AI credits, Cursor's weekly plan with its Auto/API pools (a plan of the
+    // current, weekly lineup), Antigravity's two groups with 5-hour and weekly quotas each (its
+    // plan is chosen by hand, see `settings`).
     Spec {
         id: COPILOT,
         provider: ProviderKind::Copilot,
@@ -192,7 +194,7 @@ const SPECS: &[Spec] = &[
         hub: None,
         group: "Personal",
         tag: "CUR",
-        plan: "Pro+",
+        plan: "Premium",
         windows: &[
             ("cursor:plan", "Weekly", 41.0, 4320),
             ("cursor:auto", "Weekly · Auto", 35.0, 4320),
@@ -210,10 +212,10 @@ const SPECS: &[Spec] = &[
         hub: None,
         group: "Personal",
         tag: "AG",
-        plan: "Ultra",
+        plan: "",
         windows: &[
             ("agy:5h", "5-hour", 30.0, 180),
-            ("agy:weekly", "Weekly", 55.0, 6500),
+            ("agy:weekly", "Weekly", 12.0, 6500),
             ("agy:claude-gpt:5h", "5-hour · Claude & GPT", 10.0, 120),
             ("agy:claude-gpt:weekly", "Weekly · Claude & GPT", 20.0, 6500),
         ],
@@ -248,6 +250,9 @@ const CLAUDE_MODELS: &[(&str, u64)] = &[
     ("claude-haiku-5-5", 10),
 ];
 const CODEX_MODEL: &str = "gpt-6.1-sol";
+/// Copilot CLI models (Copilot's dotted ids; the price lookup maps them to the built-in table)
+/// and their share of sessions.
+const COPILOT_MODELS: &[(&str, u64)] = &[("claude-sonnet-4.5", 70), ("claude-haiku-4.5", 30)];
 
 /// Days of session logs and of reading history.
 pub const LOG_DAYS: i64 = 60;
@@ -257,10 +262,13 @@ fn spec(id: Uuid) -> Option<&'static Spec> {
     SPECS.iter().find(|s| s.id == id)
 }
 
-/// The plan badge of a demo account.
+/// The plan a demo account's provider reports (None when it names none).
 pub fn plan(id: Uuid) -> Option<&'static str> {
-    spec(id).map(|s| s.plan)
+    spec(id).map(|s| s.plan).filter(|p| !p.is_empty())
 }
+
+/// Antigravity's plan as chosen on its account page (no reading names it).
+pub const ANTIGRAVITY_PLAN: &str = "Ultra 5x";
 
 /// `%TEMP%\AI SubHub Demo`.
 pub fn sandbox_dir(temp: &Path) -> PathBuf {
@@ -380,6 +388,8 @@ pub fn settings(home: &Path, now: DateTime<Utc>, version: &str) -> Settings {
         );
         s.account_tags.insert(sp.id, sp.tag.into());
     }
+    s.manual_plans
+        .insert(ANTIGRAVITY, ANTIGRAVITY_PLAN.to_string());
     s.display.taskbar_favorites = vec![CLAUDE_WORK, CLAUDE_PERSONAL, CODEX_WORK];
     // By the widgets, so it never sits on the installed app's display next to the tray (owner,
     // 2026-11-07: the two were drawn over each other).
@@ -462,7 +472,7 @@ pub fn refresh_result(
         reading: Some(reading),
         retry_after_secs: None,
         email: account.email.clone(),
-        plan: sp.map(|s| s.plan.to_string()),
+        plan: plan(account.id).map(str::to_string),
         source,
     }
 }
@@ -832,6 +842,59 @@ pub fn session_logs(now: DateTime<Utc>, home: &Path) -> Vec<(PathBuf, String)> {
                 text,
             ));
         }
+        // Copilot CLI: usage only in the cumulative `session.shutdown` snapshots; some sessions
+        // are resumed and end a second time with higher totals.
+        let sessions = ((rng.range(0, 2) as f64) * factor).round() as u64;
+        for _ in 0..sessions {
+            let project = PROJECTS[rng.range(0, PROJECTS.len() as u64 - 1) as usize].1;
+            let pick = rng.range(0, 99);
+            let mut acc = 0;
+            let model = COPILOT_MODELS
+                .iter()
+                .find(|(_, share)| {
+                    acc += share;
+                    pick < acc
+                })
+                .map_or(COPILOT_MODELS[0].0, |m| m.0);
+            let session = rng.uuid();
+            // Early enough that both shutdowns lie before `now`.
+            let start =
+                now - Duration::days(day) - Duration::minutes(rng.range(90, 12 * 60) as i64);
+            let mut text = String::new();
+            let _ = writeln!(
+                text,
+                r#"{{"type":"session.start","timestamp":"{}","id":"{}","data":{{"context":{{"cwd":{}}}}}}}"#,
+                ts(start),
+                rng.uuid(),
+                json_str(&projects.join(project).to_string_lossy())
+            );
+            // Running totals: input includes both cache buckets.
+            let (mut ti, mut tr, mut tw, mut to) = (0u64, 0u64, 0u64, 0u64);
+            let mut t = start;
+            for _ in 0..rng.range(1, 2) {
+                let input = rng.range(40_000, 400_000);
+                ti += input;
+                tr += input * rng.range(60, 85) / 100;
+                tw += input * rng.range(3, 10) / 100;
+                to += rng.range(2_000, 30_000);
+                t += Duration::minutes(rng.range(10, 40) as i64);
+                let _ = writeln!(
+                    text,
+                    r#"{{"type":"session.shutdown","timestamp":"{}","id":"{}","data":{{"modelMetrics":{{"{model}":{{"requests":{{"count":{}}},"usage":{{"inputTokens":{ti},"outputTokens":{to},"cacheReadTokens":{tr},"cacheWriteTokens":{tw},"reasoningTokens":{}}}}}}}}}}}"#,
+                    ts(t),
+                    rng.uuid(),
+                    rng.range(4, 30),
+                    to / 5
+                );
+            }
+            out.push((
+                Path::new(".copilot")
+                    .join("session-state")
+                    .join(session.to_string())
+                    .join("events.jsonl"),
+                text,
+            ));
+        }
     }
     out
 }
@@ -859,7 +922,8 @@ const NO_WINDOWS: &[(u32, f64)] = &[];
 /// waiting"); Work (Max 20x) peaks near 20 % of its week (could drop to Max 5x); Team (Max 5x)
 /// fits; Side project (benched, added 12 days ago) sits idle; Codex Work (Pro) fits; Codex
 /// Personal (Plus, its access ends soon) uses afternoons, past the PC's evening switch-off
-/// (windows with an unknown end).
+/// (windows with an unknown end). Antigravity (Ultra 5x, chosen by hand) peaks near 15 % of its
+/// week: Google AI Pro would do (its own row only; Copilot and Cursor are in `LONG_PATTERNS`).
 const PATTERNS: &[Pattern] = &[
     Pattern {
         id: CLAUDE_PERSONAL,
@@ -967,6 +1031,57 @@ const PATTERNS: &[Pattern] = &[
         ],
         weekly_base: 35.0,
         weekly_spread: 10,
+        history_days: HISTORY_DAYS,
+    },
+    Pattern {
+        id: ANTIGRAVITY,
+        session_key: "agy:5h",
+        weekly_key: "agy:weekly",
+        scoped: &[("agy:claude-gpt:weekly", 0.6)],
+        days: [
+            &[(9, 7.0)],
+            &[(9, 6.0), (14, 5.0)],
+            &[(9, 7.0)],
+            &[(9, 6.0)],
+            &[(9, 5.0)],
+            NO_WINDOWS,
+            NO_WINDOWS,
+        ],
+        weekly_base: 13.0,
+        weekly_spread: 3,
+        history_days: HISTORY_DAYS,
+    },
+];
+
+/// An app login with one long window and no 5-hour one: its cycles (a calendar month or a week)
+/// climb to `base` + up to `spread` %, the running one to the seeded reading.
+struct LongPattern {
+    id: Uuid,
+    key: &'static str,
+    monthly: bool,
+    base: f64,
+    spread: u64,
+    history_days: i64,
+}
+
+/// Copilot (Pro) uses about 80 % of its monthly credits: it fits. Cursor (Premium, weekly)
+/// about 60 % of its week: it fits too (Plus would be far too small). Copilot's history reaches
+/// back past one whole month, so a monthly cycle has ended and counts.
+const LONG_PATTERNS: &[LongPattern] = &[
+    LongPattern {
+        id: COPILOT,
+        key: "copilot:premium",
+        monthly: true,
+        base: 78.0,
+        spread: 8,
+        history_days: 45,
+    },
+    LongPattern {
+        id: CURSOR,
+        key: "cursor:plan",
+        monthly: false,
+        base: 55.0,
+        spread: 10,
         history_days: HISTORY_DAYS,
     },
 ];
@@ -1099,6 +1214,77 @@ pub fn history_lines(now: DateTime<Utc>) -> Vec<HistoryLine> {
             for (key, share) in p.scoped {
                 push(key, (weekly * share).round(), Some(reset + jitter));
             }
+        }
+    }
+    out.extend(long_history_lines(now));
+    out
+}
+
+/// Readings of the [`LONG_PATTERNS`] on the PC's schedule: each cycle climbs evenly to its peak
+/// shortly before its reset; the running cycle ends at the seeded reading.
+fn long_history_lines(now: DateTime<Utc>) -> Vec<HistoryLine> {
+    use chrono::{DurationRound, Months};
+    let mut out = vec![];
+    for p in LONG_PATTERNS {
+        let Some(sp) = spec(p.id) else { continue };
+        let Some(&(_, _, cur_used, cur_mins)) = sp.windows.iter().find(|w| w.0 == p.key) else {
+            continue;
+        };
+        let last = now - Duration::minutes(sp.fetched_mins_ago);
+        let start = now - Duration::days(p.history_days);
+        let back = |r: DateTime<Utc>| {
+            if p.monthly {
+                r.checked_sub_months(Months::new(1))
+                    .unwrap_or(r - Duration::days(30))
+            } else {
+                r - Duration::days(7)
+            }
+        };
+        // Resets from the seeded one back to before the history starts, oldest first.
+        let mut resets = vec![now + Duration::minutes(cur_mins)];
+        while let Some(&r) = resets.last()
+            && r > start
+        {
+            resets.push(back(r));
+        }
+        resets.reverse();
+        let current = *resets.last().expect("seeded reset");
+        let mut rng = Rng::new(p.id.as_u128() as u64);
+        let peaks: HashMap<DateTime<Utc>, f64> = resets
+            .iter()
+            .map(|r| (*r, p.base + rng.range(0, p.spread) as f64))
+            .collect();
+        let first = start.duration_trunc(Duration::minutes(15)).unwrap_or(start);
+        let times = std::iter::successors(Some(first), |t| Some(*t + Duration::minutes(15)))
+            .take_while(|t| *t < last)
+            .filter(|t| *t >= start && pc_on(*t));
+        for t in times {
+            let Some(&reset) = resets.iter().find(|r| **r > t) else {
+                continue;
+            };
+            let from = back(reset);
+            let used = if reset == current {
+                cur_used * (t - from).num_seconds() as f64 / (last - from).num_seconds() as f64
+            } else {
+                let frac = (t - from).num_seconds() as f64 / (reset - from).num_seconds() as f64;
+                peaks[&reset] * (frac / 0.9).min(1.0)
+            };
+            out.push(HistoryLine {
+                account: p.id,
+                fetched_at: t,
+                window: p.key.into(),
+                used_percent: used.clamp(0.0, 100.0).round(),
+                resets_at: Some(reset),
+            });
+        }
+        for w in spec_windows(sp, now) {
+            out.push(HistoryLine {
+                account: p.id,
+                fetched_at: last,
+                window: w.key,
+                used_percent: w.used_percent,
+                resets_at: w.resets_at,
+            });
         }
     }
     out
@@ -1373,6 +1559,12 @@ mod tests {
         assert_eq!(kinds.len(), stats::TaskKind::ALL.len(), "{kinds:?}");
         assert!(scan.buckets.iter().any(|b| b.sidechain));
         assert!(!scan.titles.is_empty());
+        // Copilot CLI sessions are in the statistics too, priced through the dotted model ids.
+        assert!(
+            scan.buckets
+                .iter()
+                .any(|b| b.provider == ProviderKind::Copilot)
+        );
         assert!(scan.buckets.iter().any(|b| b.cwd.is_none()));
         let o = overview(&s, Some(&scan), now());
         let saved: Vec<_> = o
@@ -1399,7 +1591,7 @@ mod tests {
     ) -> insights::Overview {
         let plans: HashMap<Uuid, String> = SPECS
             .iter()
-            .map(|sp| (sp.id, sp.plan.to_string()))
+            .filter_map(|sp| Some((sp.id, plan(sp.id)?.to_string())))
             .collect();
         let history = history_lines(now);
         insights::analyze(&insights::Input {
@@ -1464,6 +1656,31 @@ mod tests {
             );
         }
         assert!(matches!(o.tips[0].kind, TipKind::EndingPlan { .. }));
+        // The app logins' own rows: Copilot Pro fits its month (one ended month counted),
+        // Cursor Premium (current, weekly lineup) fits, Antigravity (Ultra 5x by hand) would do
+        // with Google AI Pro, by capacity only. None of them is in the headline or the tips.
+        let copilot = o.account(COPILOT).unwrap();
+        assert_eq!(copilot.tier, Some(PlanTier::CopilotPro));
+        assert_eq!(copilot.cycle, insights::CycleLen::Month);
+        assert_eq!(fit(COPILOT), Some(FitVerdict::Fits));
+        assert_eq!(
+            o.account(CURSOR).unwrap().tier,
+            Some(PlanTier::CursorPremium)
+        );
+        assert_eq!(fit(CURSOR), Some(FitVerdict::Fits));
+        let agy = o.account(ANTIGRAVITY).unwrap();
+        assert_eq!(agy.plan.as_deref(), Some(ANTIGRAVITY_PLAN));
+        let f = agy.fit.ready().unwrap();
+        assert_eq!(
+            (f.verdict, f.suggested, f.price_change),
+            (FitVerdict::Downgrade, Some(PlanTier::AgyPro), None)
+        );
+        let v = &o.header.verdict;
+        for id in [COPILOT, CURSOR, ANTIGRAVITY] {
+            assert!(!o.tips.iter().any(|t| t.account == Some(id)));
+            assert!(!v.downgrade.contains(&id) && !v.at_limit.contains(&id));
+        }
+        assert_eq!(v.downgrade, vec![CLAUDE_WORK]);
         // Deterministic for a given now.
         assert_eq!(overview(&s, None, now()), o);
     }

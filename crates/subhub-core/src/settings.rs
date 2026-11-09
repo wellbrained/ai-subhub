@@ -143,6 +143,16 @@ pub struct DisplaySettings {
     /// How many accounts the taskbar display shows at most (1–5).
     #[serde(default = "default_taskbar_count")]
     pub taskbar_count: u8,
+    /// Popover: one line per account (name and its two main limits); a click opens the full
+    /// card (owner, 2026-11-09: five providers made the popover long).
+    pub popover_compact: bool,
+    /// Popover: providers folded to their heading (account count and the one with most room).
+    pub collapsed_providers: Vec<ProviderKind>,
+    /// Provider order in the popover, Limits now and Accounts; providers missing here follow in
+    /// the built-in order. Empty = built-in order.
+    pub provider_order: Vec<ProviderKind>,
+    /// Providers left out of the popover (still on Limits now, Accounts and the taskbar).
+    pub hidden_providers: Vec<ProviderKind>,
 }
 
 fn default_taskbar_count() -> u8 {
@@ -150,6 +160,47 @@ fn default_taskbar_count() -> u8 {
 }
 
 impl DisplaySettings {
+    /// Every provider once, in the user's order, the rest in the built-in order.
+    pub fn ordered_providers(&self) -> Vec<ProviderKind> {
+        let mut out: Vec<ProviderKind> = vec![];
+        for p in self.provider_order.iter().chain(ProviderKind::ALL.iter()) {
+            if !out.contains(p) {
+                out.push(*p);
+            }
+        }
+        out
+    }
+
+    /// Moves a provider one place up (`up`) or down among `shown` (the providers that have
+    /// accounts, in the current order); the whole order is saved, so later providers keep
+    /// their places.
+    pub fn move_provider(&mut self, p: ProviderKind, up: bool, shown: &[ProviderKind]) {
+        let Some(i) = shown.iter().position(|x| *x == p) else {
+            return;
+        };
+        let j = if up { i.checked_sub(1) } else { Some(i + 1) };
+        let Some(&other) = j.and_then(|j| shown.get(j)) else {
+            return;
+        };
+        let mut all = self.ordered_providers();
+        let (a, b) = (
+            all.iter().position(|x| *x == p),
+            all.iter().position(|x| *x == other),
+        );
+        if let (Some(a), Some(b)) = (a, b) {
+            all.swap(a, b);
+            self.provider_order = all;
+        }
+    }
+
+    /// Adds or removes `p` from a provider list (folded, hidden).
+    pub fn toggle_provider(list: &mut Vec<ProviderKind>, p: ProviderKind, on: bool) {
+        list.retain(|x| *x != p);
+        if on {
+            list.push(p);
+        }
+    }
+
     /// Dragged spot of the taskbar display on this monitor (None = automatic placement). The
     /// main taskbar falls back to the legacy single offset.
     pub fn taskbar_offset_for(&self, monitor: &str, is_main: bool) -> Option<f32> {
@@ -199,6 +250,10 @@ impl Default for DisplaySettings {
             taskbar_accounts: TaskbarAccounts::Favorites,
             taskbar_favorites: vec![],
             taskbar_count: default_taskbar_count(),
+            popover_compact: false,
+            collapsed_providers: vec![],
+            provider_order: vec![],
+            hidden_providers: vec![],
         }
     }
 }
@@ -362,6 +417,10 @@ pub struct Settings {
     /// Last plan label the provider reported per account ("Max 20x"), kept across restarts so
     /// plan fit and badges work before the first refresh.
     pub plans: HashMap<Uuid, String>,
+    /// Plans chosen by hand on the account page, for providers whose readings do not name the
+    /// paid plan (Antigravity: "Google AI Pro", "Ultra 5x", "Ultra 20x"; owner, 2026-11-09).
+    /// Wins over `plans` for the badge and plan fit ([`Settings::plan_label`]).
+    pub manual_plans: HashMap<Uuid, String>,
     /// Warm-up: start the chosen accounts' 5-hour windows at a set time (`warmup`).
     pub warmup: crate::warmup::WarmupSettings,
     /// Run-out nudge: a tray notice before a 5-hour window runs out (`nudge`), off by default.
@@ -389,9 +448,20 @@ impl Default for Settings {
             stats: StatsSettings::default(),
             dismissed_tips: vec![],
             plans: HashMap::new(),
+            manual_plans: HashMap::new(),
             warmup: Default::default(),
             nudge: Default::default(),
         }
+    }
+}
+
+impl Settings {
+    /// The plan badge of an account: the plan chosen by hand, else the provider's last label.
+    pub fn plan_label(&self, id: Uuid) -> Option<&str> {
+        self.manual_plans
+            .get(&id)
+            .or_else(|| self.plans.get(&id))
+            .map(String::as_str)
     }
 }
 
@@ -416,6 +486,34 @@ pub fn save(path: &Path, settings: &Settings) -> anyhow::Result<()> {
 #[cfg(test)]
 mod compat_tests {
     use super::*;
+
+    #[test]
+    fn provider_order_fills_in_and_moves_among_shown_ones() {
+        use ProviderKind::*;
+        let mut d = DisplaySettings::default();
+        assert_eq!(d.ordered_providers(), ProviderKind::ALL.to_vec());
+        // Only Claude, Codex and Cursor have accounts: Cursor up jumps over the hidden-from-view
+        // Copilot and lands before Codex.
+        let shown = [Claude, Codex, Cursor];
+        d.move_provider(Cursor, true, &shown);
+        assert_eq!(d.ordered_providers(), vec![Claude, Cursor, Copilot, Codex, Antigravity]);
+        // The first one can't go up, the last one can't go down.
+        let before = d.provider_order.clone();
+        d.move_provider(Claude, true, &[Claude, Cursor, Codex]);
+        d.move_provider(Codex, false, &[Claude, Cursor, Codex]);
+        assert_eq!(d.provider_order, before);
+        // Duplicates in a hand-edited file are ignored.
+        d.provider_order = vec![Codex, Codex];
+        assert_eq!(d.ordered_providers()[..2], [Codex, Claude]);
+        assert_eq!(d.ordered_providers().len(), 5);
+
+        let mut list = vec![Claude];
+        DisplaySettings::toggle_provider(&mut list, Claude, true);
+        DisplaySettings::toggle_provider(&mut list, Codex, true);
+        assert_eq!(list, vec![Claude, Codex]);
+        DisplaySettings::toggle_provider(&mut list, Claude, false);
+        assert_eq!(list, vec![Codex]);
+    }
 
     #[test]
     fn empty_and_pre_billing_files_still_load() {
@@ -528,6 +626,26 @@ mod compat_tests {
         };
         let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(back, s);
+    }
+
+    /// Files written before the manual plan choice load without one; a choice roundtrips and
+    /// wins over the reported plan for the badge.
+    #[test]
+    fn older_files_without_manual_plans_still_load() {
+        let mut v = serde_json::to_value(Settings::default()).unwrap();
+        assert!(v.as_object_mut().unwrap().remove("manual_plans").is_some());
+        let s: Settings = serde_json::from_value(v).unwrap();
+        assert_eq!(s, Settings::default());
+
+        let id = Uuid::new_v4();
+        let mut s = Settings::default();
+        s.plans.insert(id, "Free".into());
+        assert_eq!(s.plan_label(id), Some("Free"));
+        s.manual_plans.insert(id, "Ultra 5x".into());
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        assert_eq!(back.plan_label(id), Some("Ultra 5x"));
+        assert_eq!(back.plan_label(Uuid::new_v4()), None);
     }
 
     #[test]

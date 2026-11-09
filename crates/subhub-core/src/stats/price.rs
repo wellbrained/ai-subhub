@@ -60,7 +60,8 @@ pub fn builtin_prices() -> Vec<(&'static str, ModelPrice)> {
     BUILTIN.to_vec()
 }
 
-/// Lower-cases and drops a trailing `-YYYYMMDD` snapshot date and a `[1m]` suffix.
+/// Lower-cases and drops a trailing `-YYYYMMDD` snapshot date and a `[1m]` suffix. Claude ids
+/// written with dots (Copilot: `claude-sonnet-4.5`) get dashes like Anthropic's own ids.
 pub(crate) fn normalize(model: &str) -> String {
     let mut m = model.trim().to_lowercase();
     if let Some(i) = m.find('[') {
@@ -71,6 +72,9 @@ pub(crate) fn normalize(model: &str) -> String {
         && tail.bytes().all(|b| b.is_ascii_digit())
     {
         m = head.to_string();
+    }
+    if m.starts_with("claude-") {
+        m = m.replace('.', "-");
     }
     m
 }
@@ -109,6 +113,12 @@ mod tests {
             builtin_lookup("claude-sonnet-4-5")
         );
         assert!(builtin_lookup("claude-opus-5-5[1m]").is_some());
+        // Copilot writes Claude versions with a dot.
+        assert_eq!(
+            builtin_lookup("claude-sonnet-4.5"),
+            builtin_lookup("claude-sonnet-4-5")
+        );
+        assert!(builtin_lookup("claude-sonnet-4.5").is_some());
         assert!(builtin_lookup("codex-auto-review").is_none());
     }
 

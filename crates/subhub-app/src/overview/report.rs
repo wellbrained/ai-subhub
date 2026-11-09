@@ -105,12 +105,19 @@ pub fn blocks(
     let accounts: Vec<&AccountInsight> = o.accounts.iter().filter(|a| !hidden(a.account)).collect();
     if !accounts.is_empty() {
         out.push(Block::Heading("Accounts".into()));
+        let monthly = accounts.iter().any(|a| a.cycle == CycleLen::Month);
         let rows = accounts
             .iter()
             .map(|a| {
+                let plan = a.plan.clone().unwrap_or_else(|| "–".into());
                 vec![
                     format!("{} ({})", a.label, provider_name(a.provider)),
-                    a.plan.clone().unwrap_or_else(|| "–".into()),
+                    // Monthly accounts say so: their averages are per month.
+                    if a.cycle == CycleLen::Month {
+                        format!("{plan} · monthly")
+                    } else {
+                        plan
+                    },
                     a.weekly_avg.map(pct).unwrap_or_else(|| "–".into()),
                     a.weekly_peak.map(pct).unwrap_or_else(|| "–".into()),
                     a.hits.to_string(),
@@ -122,7 +129,7 @@ pub fn blocks(
             &[
                 ("Account", 20, false),
                 ("Plan", 11, false),
-                ("Avg week", 11, true),
+                (if monthly { "Avg cycle" } else { "Avg week" }, 11, true),
                 ("Peak", 7, true),
                 ("5h hits", 9, true),
                 ("Plan fit", 42, false),

@@ -23,7 +23,7 @@ AI SubHub shows the usage limits of all your **Claude Code** and **Codex** accou
 - **All limits in one popover.** Click the tray icon for one card per account, with a bar per window, % left (or % used) and the reset time. Stale readings, cooldowns and sign-in problems are shown, not hidden.
 - **Usage on the taskbar.** Small badges next to the tray show up to five accounts at all times (favourites, the one in focus, or automatic), on the main or every taskbar. Hover one for all its limits; drag it to move it. You can switch it off in Appearance.
 - **Several accounts per provider.** Each CLI profile is its own account, with a name, a coloured tag, a plan badge and an optional group. SubHub finds the profiles on your PC and offers to add them.
-- **More than Claude and Codex.** GitHub Copilot (monthly premium requests or AI credits), Cursor (the plan's weekly or monthly usage, Auto and API) and Google Antigravity (5-hour and weekly limits per model group) show up next to them, read from the login already on your PC. For now these three show limits only.
+- **More than Claude and Codex.** GitHub Copilot (monthly premium requests or AI credits), Cursor (the plan's weekly or monthly usage, Auto and API) and Google Antigravity (5-hour and weekly limits per model group) show up next to them, read from the login already on your PC. **Plans & renewals** also tells whether their plan fits how you use it (Antigravity's Google AI plan is picked on its account page, and judged by usage only, never by price).
 - **Launch by account and project.** The rocket on a card opens a project folder in Windows Terminal, PowerShell, VS Code or the provider's desktop app, signed in as that account.
 - **Insights.** Whether your plans fit how you work (too big, at the limit, unused), how often you waited for a 5-hour reset while another account was free, upcoming renewals, and where your usage goes by task, project and model.
 - **Warm-up (optional).** Start your 5-hour windows early at a time you choose, so the first reset comes when you usually run out. SubHub suggests a time from your own days; nothing runs until you set it up.
@@ -116,7 +116,7 @@ Demo mode runs the real app on made-up accounts, usage and projects in a tempora
 - SubHub never refreshes, copies or saves provider tokens. Its settings (`%LOCALAPPDATA%\AI SubHub\settings.json`) hold account names, profile paths, project folders, preferences and the last readings.
 - A failed reading keeps the last one, marked stale. Missing data is shown as unavailable, never as 0%, and a passed reset time never refills a bar without a new reading.
 - Errors back off, and provider rate limits are respected, also by manual refresh.
-- Claude's, Copilot's and Cursor's usage endpoints are unofficial and can change without notice. Copilot, Cursor and Antigravity show limits only (no Tokens & cost, no hub, no Launch), and were built from their documented shapes without a real account to test with yet. API-key billing is outside the scope of a subscription monitor.
+- Claude's, Copilot's and Cursor's usage endpoints are unofficial and can change without notice. Copilot, Cursor and Antigravity have no hub and no Launch, and were built from their documented shapes without a real account to test with yet. Of the three, only Copilot CLI sessions count in Tokens & cost (once a session ends). API-key billing is outside the scope of a subscription monitor.
 
 ## Build from source
 

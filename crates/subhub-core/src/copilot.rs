@@ -107,8 +107,30 @@ pub fn parse_usage(body: &Value, now: DateTime<Utc>) -> Vec<AllowanceWindow> {
     out
 }
 
-/// Plan label: "Free", "Pro", "Pro+", "Business", "Enterprise", from `access_type_sku` /
-/// `copilot_plan`.
+/// The paid tier from the monthly AI-credit entitlement (owner, 2026-11-09): SKU names for Pro+
+/// and Max are not known, and an unknown one would read as Pro and give wrong plan advice.
+/// Only with credit billing; legacy premium requests count in another unit.
+fn credit_tier(body: &Value) -> Option<&'static str> {
+    if body.get("token_based_billing").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let e = num(
+        body.pointer("/quota_snapshots/premium_interactions")?,
+        "entitlement",
+    )?;
+    match e.round() as i64 {
+        1_500 => Some("Pro"),
+        7_000 => Some("Pro+"),
+        20_000 => Some("Max"),
+        _ => None,
+    }
+}
+
+/// Plan label from `access_type_sku` / `copilot_plan` and the credit entitlement. "Pro", "Pro+"
+/// and "Max" (the labels plan fit sizes, `insights::PlanTier`) only come from a known
+/// entitlement; other paid individual plans keep the SKU's name with what is uncertain about
+/// it: "Pro (legacy)" for premium-request billing, "Pro trial", or "Individual" when the
+/// entitlement is one we do not know. Then "Free", "Education", "Business", "Enterprise".
 pub fn parse_plan(body: &Value) -> Option<String> {
     let sku = util::text(body, "access_type_sku")
         .unwrap_or("")
@@ -116,20 +138,32 @@ pub fn parse_plan(body: &Value) -> Option<String> {
     let plan = util::text(body, "copilot_plan")
         .unwrap_or("")
         .to_lowercase();
-    let label = if sku.contains("free") || plan == "free" {
+    let credits = body.get("token_based_billing").and_then(Value::as_bool) == Some(true);
+    let individual =
+        plan == "individual" || sku.contains("plus") || sku.contains("max") || sku.contains("pro");
+    let label = if sku.contains("educational") || plan == "individual_edu" {
+        "Education"
+    } else if sku.contains("free") || plan == "free" {
         "Free"
-    } else if sku.contains("plus") || sku.contains("pro_plus") {
-        "Pro+"
-    } else if sku.contains("max") {
-        "Max"
     } else if plan == "business" || sku.contains("business") {
         "Business"
     } else if plan == "enterprise" || sku.contains("enterprise") {
         "Enterprise"
-    } else if plan == "individual" || sku.contains("pro") {
-        "Pro"
-    } else {
+    } else if sku.contains("trial") {
+        "Pro trial"
+    } else if !individual {
         return None;
+    } else if let Some(tier) = credit_tier(body) {
+        tier
+    } else if !credits {
+        // Annual Pro / Pro+ keep premium-request billing until they end.
+        if sku.contains("plus") {
+            "Pro+ (legacy)"
+        } else {
+            "Pro (legacy)"
+        }
+    } else {
+        "Individual"
     };
     Some(label.into())
 }
@@ -383,6 +417,70 @@ mod tests {
             Some("2026-12-01T00:00:00Z".parse().unwrap())
         );
         assert_eq!(parse_plan(&b).as_deref(), Some("Free"));
+    }
+
+    #[test]
+    fn plan_tier_comes_from_the_credit_entitlement() {
+        let with = |sku: &str, plan: &str, credits: bool, entitlement: Value| {
+            let mut b = body();
+            b["access_type_sku"] = json!(sku);
+            b["copilot_plan"] = json!(plan);
+            b["token_based_billing"] = json!(credits);
+            b["quota_snapshots"]["premium_interactions"]["entitlement"] = entitlement;
+            parse_plan(&b)
+        };
+        let sku = "monthly_subscriber_quota";
+        assert_eq!(
+            with(sku, "individual", true, json!(1500)).as_deref(),
+            Some("Pro")
+        );
+        assert_eq!(
+            with(sku, "individual", true, json!("7000")).as_deref(),
+            Some("Pro+")
+        );
+        assert_eq!(
+            with(sku, "individual", true, json!(20000)).as_deref(),
+            Some("Max")
+        );
+        // An entitlement we do not know, or legacy request billing: named, but no tier.
+        assert_eq!(
+            with(sku, "individual", true, json!(1800)).as_deref(),
+            Some("Individual")
+        );
+        assert_eq!(
+            with(sku, "individual", false, json!(300)).as_deref(),
+            Some("Pro (legacy)")
+        );
+        assert_eq!(
+            with("copilot_pro_plus", "individual", false, json!(1500)).as_deref(),
+            Some("Pro+ (legacy)")
+        );
+        // Trials, education, org seats never get a tier, whatever their entitlement.
+        assert_eq!(
+            with(
+                "trial_30_monthly_subscriber_quota",
+                "individual",
+                true,
+                json!(1500)
+            )
+            .as_deref(),
+            Some("Pro trial")
+        );
+        assert_eq!(
+            with(
+                "free_educational_quota",
+                "individual_edu",
+                true,
+                json!(1500)
+            )
+            .as_deref(),
+            Some("Education")
+        );
+        assert_eq!(
+            with("", "business", true, json!(1500)).as_deref(),
+            Some("Business")
+        );
+        assert_eq!(with("", "", true, json!(1500)), None);
     }
 
     #[test]

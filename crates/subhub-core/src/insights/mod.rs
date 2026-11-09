@@ -5,7 +5,9 @@
 //!
 //! Results that need more data than there is are [`Collect::Collecting`] with the day the first
 //! result is expected, never a guess. Benched hub logins are shown but never count as capacity
-//! (header numbers, "another account was free", what-if).
+//! (header numbers, "another account was free", what-if). Copilot, Cursor and Antigravity get
+//! their own plan fit only (owner, 2026-11-09: "own rows only"): they never reach the header, the
+//! 5-hour analysis, warm-up, what-if or the plan tips ([`in_totals`]).
 //!
 //! Layout: `zone` (local time), `readings` (history -> cycles and windows), `fit` (plan fit,
 //! tiers, prices, what-if), `rhythm` (work rhythm, warm-up suggestion and simulation), `usage`
@@ -29,14 +31,14 @@ use crate::settings::Settings;
 use crate::stats::{PriceBook, Scan, day_index, hour_date, hour_index, hour_of_day};
 
 pub use fit::{
-    AT_LIMIT_HITS, AT_LIMIT_PEAK, DOWNGRADE_HITS, DOWNGRADE_PEAK, FIT_MIN_CYCLES, FitVerdict,
-    Member, PLAN_PRICES_AS_OF, PlanFit, PlanTier, UNUSED_AVG, WhatIf, WhatIfChange, WhatIfShare,
-    plan_fit, what_if,
+    AGY_PLAN_CHOICES, AT_LIMIT_HITS, AT_LIMIT_PEAK, DOWNGRADE_HITS, DOWNGRADE_PEAK, FIT_MIN_CYCLES,
+    FIT_MIN_MONTHS, FitVerdict, Member, PLAN_PRICES_AS_OF, PlanFit, PlanTier, UNUSED_AVG, WhatIf,
+    WhatIfChange, WhatIfShare, min_cycles, plan_fit, what_if,
 };
 pub use readings::{
-    AccountObs, CYCLE_MIN_DAYS, END_SEEN_HOURS, FREE_NEIGHBOUR_MIN, FREE_SESSION_USED,
-    FREE_WEEKLY_LEFT, HIT_PERCENT, Obs, SAME_RESET, SessionWindow, WeeklyCycle, WindowEnd,
-    by_account, cycles, free_at, windows,
+    AccountObs, CYCLE_MIN_DAYS, CycleLen, END_SEEN_HOURS, FREE_NEIGHBOUR_MIN, FREE_SESSION_USED,
+    FREE_WEEKLY_LEFT, HIT_PERCENT, MONTH_MIN_DAY_SHARE, Obs, SAME_RESET, SessionWindow,
+    WEEKLY_MAX_DAYS, WeeklyCycle, WindowEnd, by_account, cycles, cycles_of, free_at, windows,
 };
 pub use rhythm::{
     DayStart, ExampleDay, FirstWindow, MAX_BEFORE_START_H, RECENT_DAYS, RECENT_HITS, RHYTHM_DAYS,
@@ -110,7 +112,8 @@ impl<T> Collect<T> {
 }
 
 /// Everything the analysis reads. `plans` are the plan labels of the last readings
-/// (`UsageResult::plan`, "Max 20x", "Plus", ...); accounts without one have an unknown plan.
+/// (`UsageResult::plan`, "Max 20x", "Plus", ...); accounts without one have an unknown plan. A
+/// plan chosen by hand (`Settings::manual_plans`, Antigravity) wins over it.
 pub struct Input<'a> {
     pub history: &'a [HistoryLine],
     /// None while the first scan runs (Where usage goes is then empty).
@@ -138,6 +141,11 @@ pub struct AccountInsight {
     pub label: String,
     pub plan: Option<String>,
     pub tier: Option<PlanTier>,
+    /// Length of the main long window's cycles (monthly: Copilot, Cursor's legacy plans).
+    pub cycle: CycleLen,
+    /// A paid Antigravity plan was chosen by hand, but the readings have no 5-hour window (the
+    /// Free plan's shape): no verdict until one of them changes.
+    pub plan_conflict: bool,
     pub benched: bool,
     /// A hub login without a CLI profile (warm-up cannot run it in v1).
     pub hub_only: bool,
@@ -145,7 +153,8 @@ pub struct AccountInsight {
     pub now_weekly: Option<NowWindow>,
     /// Ever seen a 5-hour window (Codex plans can have only a weekly one).
     pub has_session_window: bool,
-    /// Weekly cycles that ended in or still run in the range, oldest first.
+    /// Cycles (weekly or monthly, [`Self::cycle`]) that ended in or still run in the range,
+    /// oldest first.
     pub cycles: Vec<WeeklyCycle>,
     /// Average and peak of the counted cycles in the range.
     pub weekly_avg: Option<f64>,
@@ -261,7 +270,59 @@ fn is_benched(a: &Account) -> bool {
     a.hub.as_ref().is_some_and(|h| h.benched)
 }
 
-/// The latest reading's 5-hour and weekly windows (Codex keys by their label's length).
+/// Whether a provider's accounts count in the Overview's totals: the header (verdict, weekly
+/// use, 5-hour hits, waiting), the 5-hour analysis and warm-up, "another account was free",
+/// what-if and the plan tips. Claude and Codex only; Copilot, Cursor and Antigravity have one
+/// login per PC and other units, so they get their own plan-fit rows only (owner, 2026-11-09).
+pub fn in_totals(p: ProviderKind) -> bool {
+    p.is_cli_profile()
+}
+
+/// The length of an account's main long window, when known: Copilot's credits are monthly,
+/// Cursor's plan by the latest reading's label ("Weekly" / "Monthly") or else its history, the
+/// others weekly. None for a Cursor account before any reading (its tier stays unknown, since
+/// "Ultra" is in both ladders).
+fn main_cycle(a: &Account, settings: &Settings, o: &AccountObs) -> Option<CycleLen> {
+    match a.provider {
+        ProviderKind::Copilot => Some(CycleLen::Month),
+        ProviderKind::Cursor => settings
+            .readings
+            .get(&a.id)
+            .and_then(|r| r.windows.iter().find(|w| w.key == "cursor:plan"))
+            .and_then(|w| {
+                let l = w.label.to_ascii_lowercase();
+                if l.starts_with("weekly") {
+                    Some(CycleLen::Week)
+                } else if l.starts_with("monthly") {
+                    Some(CycleLen::Month)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| (!o.weekly.is_empty()).then_some(o.cycle)),
+        _ => Some(CycleLen::Week),
+    }
+}
+
+/// A paid Antigravity tier chosen by hand while the account reads like the Free plan (weekly
+/// window only): the latest reading, else the history.
+fn antigravity_conflict(
+    a: &Account,
+    tier: Option<PlanTier>,
+    settings: &Settings,
+    o: &AccountObs,
+) -> bool {
+    if a.provider != ProviderKind::Antigravity || tier.is_none() {
+        return false;
+    }
+    match settings.readings.get(&a.id) {
+        Some(r) => !r.windows.is_empty() && !r.windows.iter().any(|w| w.key == "agy:5h"),
+        None => !o.weekly.is_empty() && !o.has_session,
+    }
+}
+
+/// The latest reading's 5-hour and weekly windows (Codex keys by their label's length). The
+/// second is the main long window: also Copilot's monthly credits and a monthly Cursor plan.
 pub fn now_windows(settings: &Settings, id: Uuid) -> (Option<NowWindow>, Option<NowWindow>) {
     let Some(r) = settings.readings.get(&id) else {
         return (None, None);
@@ -273,32 +334,43 @@ pub fn now_windows(settings: &Settings, id: Uuid) -> (Option<NowWindow>, Option<
             resets_at: x.resets_at,
             fetched_at: r.fetched_at,
         };
+        let long = x.is_weekly() || matches!(x.key.as_str(), "copilot:premium" | "cursor:plan");
         if s.is_none() && x.is_session() {
             s = Some(nw);
-        } else if w.is_none() && x.is_weekly() {
+        } else if w.is_none() && long {
             w = Some(nw);
         }
     }
     (s, w)
 }
 
-/// When a plan fit with `have` counted cycles will have [`FIT_MIN_CYCLES`]: the running cycle
-/// counts if it can still be read on 3 days, then one more per week.
-fn fit_ready_on(have: usize, all: &[WeeklyCycle], now: DateTime<Utc>, zone: &Zone) -> NaiveDate {
-    let need = FIT_MIN_CYCLES.saturating_sub(have).max(1) as i32;
-    let end = match all.iter().find(|c| !c.ended) {
+/// When a plan fit with `have` counted cycles will have [`min_cycles`]: the running cycle counts
+/// if it can still be read on enough days ([`CycleLen::min_days`]), then one more per cycle.
+fn fit_ready_on(
+    have: usize,
+    all: &[WeeklyCycle],
+    len: CycleLen,
+    now: DateTime<Utc>,
+    zone: &Zone,
+) -> NaiveDate {
+    let need = min_cycles(len).saturating_sub(have).max(1);
+    let mut end = match all.iter().find(|c| !c.ended) {
         Some(c) => {
-            let today_idx = (now - c.start).num_days().clamp(0, 6) as usize;
-            let possible = c.days + (6 - today_idx);
-            let first = if possible >= CYCLE_MIN_DAYS {
+            let len_days = ((c.resets_at - c.start).num_seconds() as f64 / 86_400.0).round() as i64;
+            let last = (len_days - 1).max(0);
+            let today_idx = (now - c.start).num_days().clamp(0, last) as usize;
+            let possible = c.days + (last as usize - today_idx);
+            if possible >= len.min_days(len_days) {
                 c.resets_at
             } else {
-                c.resets_at + Duration::days(7)
-            };
-            first + Duration::days(7 * (need as i64 - 1))
+                len.next(c.resets_at)
+            }
         }
-        None => now + Duration::days(7 * need as i64),
+        None => len.next(now),
     };
+    for _ in 1..need {
+        end = len.next(end);
+    }
     zone.local(end).date()
 }
 
@@ -342,13 +414,16 @@ pub fn analyze(input: &Input) -> Overview {
     // Per account: cycles and windows from the history.
     let mut all_windows: HashMap<Uuid, Vec<SessionWindow>> = HashMap::new();
     let mut all_cycles: HashMap<Uuid, Vec<WeeklyCycle>> = HashMap::new();
+    let mut lens: HashMap<Uuid, Option<CycleLen>> = HashMap::new();
     for a in &settings.accounts {
         let o = obs.get(&a.id).unwrap_or(&empty);
+        let len = main_cycle(a, settings, o);
+        lens.insert(a.id, len);
         all_windows.insert(a.id, windows(a.id, &o.session, now));
-        all_cycles.insert(a.id, cycles(&o.weekly, now));
+        all_cycles.insert(a.id, cycles_of(&o.weekly, len.unwrap_or_default(), now));
     }
-    // Another account was free at each hit.
-    for a in &settings.accounts {
+    // Another account was free at each hit (Claude and Codex: the others have one login).
+    for a in settings.accounts.iter().filter(|a| in_totals(a.provider)) {
         let others: Vec<&Account> = settings
             .accounts
             .iter()
@@ -369,10 +444,17 @@ pub fn analyze(input: &Input) -> Overview {
     let mut accounts: Vec<AccountInsight> = vec![];
     for a in &settings.accounts {
         let o = obs.get(&a.id).unwrap_or(&empty);
-        let plan = plans.get(&a.id).cloned();
+        let plan = settings
+            .manual_plans
+            .get(&a.id)
+            .or_else(|| plans.get(&a.id))
+            .cloned();
+        let known_len = lens[&a.id];
+        let len = known_len.unwrap_or_default();
         let tier = plan
             .as_deref()
-            .and_then(|p| PlanTier::from_plan(a.provider, p));
+            .and_then(|p| PlanTier::from_plan(a.provider, p, known_len));
+        let plan_conflict = antigravity_conflict(a, tier, settings, o);
         let cs = &all_cycles[&a.id];
         let ws = &all_windows[&a.id];
         let in_range: Vec<SessionWindow> = ws
@@ -395,12 +477,12 @@ pub fn analyze(input: &Input) -> Overview {
         let weeks =
             ((now - covered_from).num_minutes() as f64 / (7.0 * 24.0 * 60.0)).max(1.0 / 7.0);
         let fit_cycles: Vec<&WeeklyCycle> = cs.iter().filter(|c| c.resets_at > lookback).collect();
-        let fit = match plan_fit(tier, &fit_cycles, ws) {
+        let fit = match plan_fit(tier, len, &fit_cycles, ws).filter(|_| !plan_conflict) {
             Some(f) => Collect::Ready(f),
             None => {
                 let have = fit_cycles.iter().filter(|c| c.counted).count();
                 Collect::Collecting {
-                    ready_on: fit_ready_on(have, cs, now, zone),
+                    ready_on: fit_ready_on(have, cs, len, now, zone),
                 }
             }
         };
@@ -411,6 +493,8 @@ pub fn analyze(input: &Input) -> Overview {
             label: a.label.clone(),
             plan,
             tier,
+            cycle: len,
+            plan_conflict,
             benched: is_benched(a),
             hub_only: a.profile_dir.is_none() && a.hub.is_some(),
             now_session,
@@ -432,7 +516,10 @@ pub fn analyze(input: &Input) -> Overview {
     add_what_ifs(&mut accounts, &renewals, zone);
 
     // 5-hour windows over the accounts that count.
-    let counting: Vec<&AccountInsight> = accounts.iter().filter(|a| !a.benched).collect();
+    let counting: Vec<&AccountInsight> = accounts
+        .iter()
+        .filter(|a| !a.benched && in_totals(a.provider))
+        .collect();
     let mut workdays: Vec<NaiveDate> = counting
         .iter()
         .flat_map(|a| all_windows[&a.account].iter())
@@ -568,10 +655,11 @@ fn range_weeks(
     ((now - first).num_minutes() as f64 / (7.0 * 24.0 * 60.0)).max(1.0 / 7.0)
 }
 
-/// The first local hour with log activity per local day.
+/// The first local hour with log activity per local day. Claude and Codex only: Copilot sessions
+/// are logged when they end, which says nothing about when the day's 5-hour windows began.
 fn log_starts(scan: &Scan) -> BTreeMap<NaiveDate, NaiveTime> {
     let mut first: BTreeMap<NaiveDate, i64> = BTreeMap::new();
-    for b in &scan.buckets {
+    for b in scan.buckets.iter().filter(|b| b.provider.is_cli_profile()) {
         let e = first.entry(hour_date(b.hour)).or_insert(b.hour);
         *e = (*e).min(b.hour);
     }
@@ -619,6 +707,10 @@ fn add_what_ifs(accounts: &mut [AccountInsight], renewals: &[Renewal], zone: &Zo
     };
     let mut results: Vec<(usize, WhatIf)> = vec![];
     for (i, a) in accounts.iter().enumerate() {
+        // One login per PC elsewhere: nothing to move the use to.
+        if !in_totals(a.provider) {
+            continue;
+        }
         let Some(m) = member(a) else { continue };
         let change = if let Some(r) = ending(a.account) {
             let day = r.date.and_time(NaiveTime::MIN);
@@ -655,18 +747,23 @@ fn header(
     range_start: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> Header {
-    let counting: Vec<&AccountInsight> = accounts.iter().filter(|a| !a.benched).collect();
+    // Claude and Codex only ([`in_totals`]); benched logins never count as capacity.
+    let counting: Vec<&AccountInsight> = accounts
+        .iter()
+        .filter(|a| !a.benched && in_totals(a.provider))
+        .collect();
+    let totals: Vec<&AccountInsight> = accounts.iter().filter(|a| in_totals(a.provider)).collect();
     let avgs: Vec<f64> = counting.iter().filter_map(|a| a.weekly_avg).collect();
     let weekly_avg = (!avgs.is_empty()).then(|| avgs.iter().sum::<f64>() / avgs.len() as f64);
     let hits: usize = counting.iter().map(|a| a.hits).sum();
     let ids = |f: FitVerdict| -> Vec<Uuid> {
-        accounts
+        totals
             .iter()
             .filter(|a| a.fit.ready().is_some_and(|x| x.verdict == f))
             .map(|a| a.account)
             .collect()
     };
-    let any_ready = accounts.iter().any(|a| a.fit.ready().is_some());
+    let any_ready = totals.iter().any(|a| a.fit.ready().is_some());
     Header {
         verdict: Verdict {
             used_share: weekly_avg.map(|a| a / 100.0),
@@ -676,7 +773,7 @@ fn header(
             collecting_until: if any_ready {
                 None
             } else {
-                accounts.iter().filter_map(|a| a.fit.ready_on()).min()
+                totals.iter().filter_map(|a| a.fit.ready_on()).min()
             },
         },
         weekly_avg,

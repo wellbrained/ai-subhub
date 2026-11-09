@@ -43,7 +43,7 @@ Inputs: `readings-history.jsonl` (per refresh: account, window, used %, resets_a
 
 - **Weekly cycles**: weekly readings grouped by `resets_at` (minute precision); a cycle's use = its highest used %. A cycle counts when it ended and has readings in at least 3 of its 7 days.
 - **5-hour windows**: session readings grouped by `resets_at`; start = reset − 5 h; peak used; hit = first reading at ≥ 99.5 % used; waited = reset − hit. "Another account was free" = at the hit, a non-benched account of the same provider had a reading within 30 min with ≤ 50 % session used and > 10 % weekly left. Windows with no reading in their last 2 hours are "unknown end" (PC off), drawn as gaps, never as hits.
-- **Plan fit** (per account, needs 2 counted cycles): tier factor from the plan (Claude Pro 1, Max 5x 5, Max 20x 20; Codex Plus 1, Pro 10, labelled "about"). Peak on a smaller tier = peak × own factor ÷ smaller factor.
+- **Plan fit** (per account, needs 2 counted cycles): tier factor from the plan (Claude Pro 1, Max 5x 5, Max 20x 20; Codex Plus 1, Pro 10, labelled "about"). Copilot, Cursor and Antigravity (2026-11-09, own rows only, monthly cycles, Antigravity by capacity only): `app.md`, "Plan fit for the app logins". Peak on a smaller tier = peak × own factor ÷ smaller factor.
   - *Unused*: avg < 5 %.
   - *Downgrade*: the next smaller tier would keep the peak at ≤ 90 % and the account had ≤ 1 hit a week.
   - *At the limit*: peak ≥ 95 % or ≥ 3 hits a week; suggests the next tier when there is one, else "spread work".

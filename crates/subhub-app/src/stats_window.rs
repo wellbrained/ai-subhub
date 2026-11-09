@@ -17,7 +17,7 @@ use gpui_component::scroll::ScrollableElement;
 use gpui_component::tooltip::Tooltip;
 use subhub_core::model::ProviderKind;
 use subhub_core::settings::{StatsBreakdown, StatsMetric, StatsSettings};
-use subhub_core::stats::{ModelRow, Point, Range, Summary, summarize};
+use subhub_core::stats::{ModelRow, Point, Range, SLOTS, Summary, slot, summarize};
 
 use crate::icons::{Icon, icon, series_color};
 use crate::overview::{self, OverviewState};
@@ -307,15 +307,18 @@ fn provider_label(p: ProviderKind) -> &'static str {
     }
 }
 
-/// Stack order of the series: Claude at the bottom of a bar, Codex on top.
-const SERIES: [ProviderKind; 2] = [ProviderKind::Claude, ProviderKind::Codex];
-
-/// Statistics hold Claude and Codex logs only.
-fn slot(p: ProviderKind) -> usize {
-    match p {
-        ProviderKind::Claude => 0,
-        _ => 1,
+/// Stack order of the series: Claude at the bottom of a bar, then Codex, Copilot on top. Claude
+/// and Codex always show; Copilot only when the range has Copilot usage (no empty series for
+/// people without the Copilot CLI).
+fn series(s: &Summary) -> Vec<ProviderKind> {
+    let mut v = vec![ProviderKind::Claude, ProviderKind::Codex];
+    if s.providers
+        .iter()
+        .any(|p| p.provider == ProviderKind::Copilot)
+    {
+        v.push(ProviderKind::Copilot);
     }
+    v
 }
 
 /// The metric value of a chart point for one provider slot.
@@ -1168,7 +1171,7 @@ fn tiles(s: &Summary, t: &Tokens, prices: &PriceInfo) -> AnyElement {
         .overflow_hidden()
         .bg(t.track);
     let mut legend = div().flex().flex_wrap().gap_x_4().gap_y_1().text_xs();
-    for p in SERIES {
+    for p in series(s) {
         let w = provider_work(p);
         let color = series_color(p, t.dark);
         if work > 0 && w > 0 {
@@ -1628,23 +1631,26 @@ fn by_type(s: &Summary, t: &Tokens) -> AnyElement {
 struct DayTip {
     title: String,
     total: String,
-    rows: [(Hsla, &'static str, String); 2],
+    rows: Vec<(Hsla, &'static str, String)>,
 }
 
 impl DayTip {
-    fn new(p: &Point, metric: StatsMetric, dark: bool) -> Self {
+    fn new(p: &Point, series: &[ProviderKind], metric: StatsMetric, dark: bool) -> Self {
         let v = |slot: usize| point_value(p, slot, metric);
-        let row = |pr: ProviderKind| {
-            (
-                series_color(pr, dark),
-                provider_label(pr),
-                value_text(v(slot(pr)), metric),
-            )
-        };
+        let rows = series
+            .iter()
+            .map(|pr| {
+                (
+                    series_color(*pr, dark),
+                    provider_label(*pr),
+                    value_text(v(slot(*pr)), metric),
+                )
+            })
+            .collect();
         Self {
             title: p.title.clone(),
-            total: value_text(v(0) + v(1), metric),
-            rows: [row(ProviderKind::Claude), row(ProviderKind::Codex)],
+            total: value_text((0..SLOTS).map(v).sum(), metric),
+            rows,
         }
     }
 
@@ -1698,14 +1704,15 @@ fn chart_card(s: &Summary, metric: StatsMetric, t: &Tokens, switch: AnyElement) 
         .mt(px(8.0))
         .text_xs()
         .text_color(t.muted);
-    for p in SERIES {
+    let series = series(s);
+    for p in &series {
         legend = legend.child(
             div()
                 .flex()
                 .items_center()
                 .gap(px(6.0))
-                .child(dot(series_color(p, t.dark)))
-                .child(provider_label(p)),
+                .child(dot(series_color(*p, t.dark)))
+                .child(provider_label(*p)),
         );
     }
     card(t)
@@ -1729,7 +1736,7 @@ fn chart_card(s: &Summary, metric: StatsMetric, t: &Tokens, switch: AnyElement) 
                 .child(div().flex_1())
                 .child(switch),
         )
-        .child(daily_chart(&s.points, metric, t))
+        .child(daily_chart(&s.points, &series, metric, t))
         .child(legend)
         .into_any_element()
 }
@@ -1737,13 +1744,18 @@ fn chart_card(s: &Summary, metric: StatsMetric, t: &Tokens, switch: AnyElement) 
 const PLOT_H: f32 = 160.0;
 const AXIS_W: f32 = 44.0;
 
-/// Stacked bars per day (Claude at the bottom, Codex on top, a 2 px gap between the segments),
+/// Stacked bars per day (Claude at the bottom, then Codex and Copilot, a 2 px gap between the segments),
 /// three recessive gridlines, short date labels and a tooltip per day. Plain elements: the
 /// hover highlight and tooltip come for free.
-fn daily_chart(points: &[Point], metric: StatsMetric, t: &Tokens) -> AnyElement {
+fn daily_chart(
+    points: &[Point],
+    series: &[ProviderKind],
+    metric: StatsMetric,
+    t: &Tokens,
+) -> AnyElement {
     let totals: Vec<f64> = points
         .iter()
-        .map(|p| point_value(p, 0, metric) + point_value(p, 1, metric))
+        .map(|p| (0..SLOTS).map(|sl| point_value(p, sl, metric)).sum())
         .collect();
     let max = totals.iter().copied().fold(0.0, f64::max);
     if max <= 0.0 {
@@ -1803,33 +1815,26 @@ fn daily_chart(points: &[Point], metric: StatsMetric, t: &Tokens) -> AnyElement 
         }
     };
     for (i, p) in points.iter().enumerate() {
-        let (claude, codex) = (
-            h_of(point_value(p, 0, metric)),
-            h_of(point_value(p, 1, metric)),
-        );
-        let tip = DayTip::new(p, metric, t.dark);
+        let tip = DayTip::new(p, series, metric, t.dark);
         let mut stack = div().flex().flex_col().w_full().max_w(px(30.0));
-        if codex > 0.0 {
+        // Top segment first: the series list runs from the bottom up.
+        let mut first = true;
+        for pr in series.iter().rev() {
+            let h = h_of(point_value(p, slot(*pr), metric));
+            if h <= 0.0 {
+                continue;
+            }
+            if !first {
+                stack = stack.child(div().w_full().h(px(2.0)).flex_none());
+            }
+            first = false;
             stack = stack.child(
                 div()
                     .w_full()
-                    .h(px(codex))
+                    .h(px(h))
                     .flex_none()
                     .rounded(px(1.5))
-                    .bg(series_color(ProviderKind::Codex, t.dark)),
-            );
-        }
-        if codex > 0.0 && claude > 0.0 {
-            stack = stack.child(div().w_full().h(px(2.0)).flex_none());
-        }
-        if claude > 0.0 {
-            stack = stack.child(
-                div()
-                    .w_full()
-                    .h(px(claude))
-                    .flex_none()
-                    .rounded(px(1.5))
-                    .bg(series_color(ProviderKind::Claude, t.dark)),
+                    .bg(series_color(*pr, t.dark)),
             );
         }
         bars = bars.child(
@@ -1897,7 +1902,7 @@ fn model_table(s: &Summary, metric: StatsMetric, t: &Tokens) -> AnyElement {
         StatsMetric::Tokens => "Share of work",
         StatsMetric::Cost => "Share of cost",
     };
-    let mut groups: Vec<(ProviderKind, Vec<&ModelRow>)> = SERIES
+    let mut groups: Vec<(ProviderKind, Vec<&ModelRow>)> = series(s)
         .into_iter()
         .map(|p| (p, models_of(s, p, metric)))
         .filter(|(_, rows)| !rows.is_empty())
@@ -2031,7 +2036,7 @@ fn model_table(s: &Summary, metric: StatsMetric, t: &Tokens) -> AnyElement {
 fn providers_view(s: &Summary, metric: StatsMetric, t: &Tokens) -> AnyElement {
     let total = total_value(s, metric);
     let mut cols = div().flex().gap(px(14.0)).items_start();
-    for p in SERIES {
+    for p in series(s) {
         let color = series_color(p, t.dark);
         let ps = s.providers.iter().find(|x| x.provider == p);
         let (work, incl, cost, sessions) = ps.map_or((0, 0, 0.0, 0), |x| {

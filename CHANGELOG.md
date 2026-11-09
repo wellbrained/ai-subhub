@@ -2,6 +2,14 @@
 
 Patch notes shown after an update (embedded in the exe). Each release gets `## X.Y.Z – date` and 3-6 short bullets. Work in progress goes under `## Unreleased` and is renamed when a version is released (`scripts/release.ps1` refuses a version without a section).
 
+## Unreleased
+
+- Tokens & cost now includes GitHub Copilot CLI sessions (counted when a session ends).
+- Popover: click a provider heading to fold it; folded, it shows how many accounts it has and which has the most room.
+- Compact cards (Appearance): one line per account with its two main limits; click one for its full card.
+- Appearance → Providers: put the providers in your order (popover, Limits now, Accounts) and hide some from the popover.
+- Plans & renewals now says whether your Copilot, Cursor and Antigravity plans fit how you use them (pick Antigravity's Google AI plan on its account page).
+
 ## 0.1.10 – 2026-11-09
 
 - Accounts: Copilot, Cursor and Antigravity only appear once this PC has a login for them.

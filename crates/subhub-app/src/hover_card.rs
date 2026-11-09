@@ -162,7 +162,7 @@ pub fn account_views(s: &AppState) -> Vec<AccountView<'_>> {
             reading: s.settings.readings.get(&a.id),
             last_state: s.status.get(&a.id).map(|st| st.state),
             stale: s.is_stale(a.id),
-            plan: s.settings.plans.get(&a.id).cloned(),
+            plan: s.settings.plan_label(a.id).map(str::to_string),
             steering: if steer.preferred == Some(a.id) {
                 Steering::Preferred
             } else if steer.enabled && steer.current == Some(a.id) {

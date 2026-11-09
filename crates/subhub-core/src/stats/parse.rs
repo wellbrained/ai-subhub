@@ -383,6 +383,77 @@ pub fn parse_codex_line(line: &str) -> Option<CodexEvent> {
     }
 }
 
+/// What the scan reads of a GitHub Copilot CLI `events.jsonl` line.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CopilotEvent {
+    /// `session.start`: the session's working folder.
+    Start { cwd: Option<String> },
+    /// `session.shutdown`: the session's cumulative usage per model so far (the models of
+    /// `modelMetrics`; empty when it lists none). `input` includes both cache buckets.
+    Shutdown {
+        ts: DateTime<Utc>,
+        models: Vec<(String, RawUsage)>,
+    },
+}
+
+#[derive(Deserialize)]
+struct PLine {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    timestamp: Option<String>,
+    data: Option<PData>,
+}
+
+#[derive(Deserialize)]
+struct PData {
+    context: Option<PContext>,
+    /// `{model: {usage: {...}, requests: {...}}}`; read by hand so one odd entry (or an empty
+    /// list instead of an object) cannot lose the rest.
+    #[serde(rename = "modelMetrics")]
+    model_metrics: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct PContext {
+    cwd: Option<String>,
+}
+
+/// Parses one line of a Copilot CLI `events.jsonl`: `session.start` (cwd) and `session.shutdown`
+/// (usage per model). Everything else is ignored. A shutdown without a readable timestamp gives
+/// None; a model without `usage` is skipped.
+pub fn parse_copilot_line(line: &str) -> Option<CopilotEvent> {
+    let l: PLine = serde_json::from_str(line).ok()?;
+    let data = l.data;
+    match l.kind.as_deref()? {
+        "session.start" => Some(CopilotEvent::Start {
+            cwd: data?.context?.cwd.filter(|c| !c.is_empty()),
+        }),
+        "session.shutdown" => {
+            let ts = DateTime::parse_from_rfc3339(&l.timestamp?)
+                .ok()?
+                .with_timezone(&Utc);
+            let mut models = vec![];
+            if let Some(serde_json::Value::Object(map)) = data.and_then(|d| d.model_metrics) {
+                for (model, m) in map {
+                    let Some(u) = m.get("usage") else { continue };
+                    let n = |k: &str| u.get(k).and_then(|v| v.as_u64()).unwrap_or(0);
+                    models.push((
+                        model,
+                        RawUsage {
+                            input: n("inputTokens"),
+                            cached: n("cacheReadTokens"),
+                            cache_write: n("cacheWriteTokens"),
+                            output: n("outputTokens"),
+                        },
+                    ));
+                }
+            }
+            Some(CopilotEvent::Shutdown { ts, models })
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,5 +614,44 @@ mod tests {
         };
         assert_eq!(b.checked_sub(&a).unwrap().input, 15);
         assert!(a.checked_sub(&b).is_none());
+    }
+
+    #[test]
+    fn copilot_start_and_shutdown() {
+        let start = r#"{"type":"session.start","timestamp":"2026-11-05T09:00:00Z","id":"e1","data":{"copilotVersion":"1.0","context":{"cwd":"D:\\Work\\x","gitRoot":"D:\\Work"}}}"#;
+        assert_eq!(
+            parse_copilot_line(start),
+            Some(CopilotEvent::Start {
+                cwd: Some(r"D:\Work\x".into())
+            })
+        );
+        let end = r#"{"type":"session.shutdown","timestamp":"2026-11-05T10:00:00Z","id":"e2","data":{"modelMetrics":{"claude-sonnet-4.5":{"requests":{"count":3},"usage":{"inputTokens":1000,"outputTokens":50,"cacheReadTokens":600,"cacheWriteTokens":100,"reasoningTokens":20}},"odd":{"requests":{}}}}}"#;
+        let Some(CopilotEvent::Shutdown { models, .. }) = parse_copilot_line(end) else {
+            panic!("no shutdown");
+        };
+        assert_eq!(
+            models,
+            vec![(
+                "claude-sonnet-4.5".to_string(),
+                RawUsage {
+                    input: 1000,
+                    cached: 600,
+                    cache_write: 100,
+                    output: 50
+                }
+            )]
+        );
+        // Empty metrics (object or list), other events and garbage.
+        for body in ["{}", "[]"] {
+            let l = format!(
+                r#"{{"type":"session.shutdown","timestamp":"2026-11-05T10:00:00Z","data":{{"modelMetrics":{body}}}}}"#
+            );
+            assert!(matches!(
+                parse_copilot_line(&l),
+                Some(CopilotEvent::Shutdown { models, .. }) if models.is_empty()
+            ));
+        }
+        assert!(parse_copilot_line(r#"{"type":"assistant.message","data":{}}"#).is_none());
+        assert!(parse_copilot_line("not json").is_none());
     }
 }

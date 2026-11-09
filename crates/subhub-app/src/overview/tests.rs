@@ -66,4 +66,14 @@ fn demo_overview_is_worded() {
     assert!(w.week.iter().any(|l| !l.spans.is_empty()));
     let off = WarmupSettings::default();
     assert!(own_start_lines(w, &o, &off).len() >= 2);
+    // The app logins' own rows: Copilot in months, Antigravity by capacity and never in $.
+    let copilot = fit_words(o.account(demo::COPILOT).unwrap(), &o);
+    assert!(copilot.contains("of its month"), "{copilot}");
+    let agy = fit_words(o.account(demo::ANTIGRAVITY).unwrap(), &o);
+    assert!(agy.contains("Google AI Pro") && !agy.contains('$'), "{agy}");
+    let shown: Vec<&AccountInsight> = o.accounts.iter().collect();
+    assert_eq!(cycle_heading(&shown), "Cycle use");
+    let report = report::blocks(&o, &|_| false, &[], true, chrono::Local::now());
+    let text = format!("{report:?}");
+    assert!(text.contains("Pro · monthly") && text.contains("Avg cycle"));
 }

@@ -82,6 +82,8 @@ pub struct AppState {
     pub hub_login: Option<(ProviderKind, String)>,
     /// Hub logins (file names) whose removal is running.
     pub hub_removing: HashSet<String>,
+    /// Compact popover: accounts opened to their full card (this session only).
+    pub popover_expanded: HashSet<Uuid>,
     /// Last steering failure, shown in Settings → Hub.
     pub steering_error: Option<String>,
     /// The hub's login for an account answered 429: read its CLI profile (a different login)
@@ -175,6 +177,7 @@ impl AppState {
             steering_busy: false,
             hub_login: None,
             hub_removing: HashSet::new(),
+            popover_expanded: HashSet::new(),
             steering_error: None,
             hub_cooldown: HashMap::new(),
             user_saves: 0,
@@ -1165,6 +1168,9 @@ impl AppState {
             if let Some(p) = self.settings.plans.remove(&removed) {
                 self.settings.plans.entry(kept).or_insert(p);
             }
+            if let Some(p) = self.settings.manual_plans.remove(&removed) {
+                self.settings.manual_plans.entry(kept).or_insert(p);
+            }
             if let Some(until) = self.hub_cooldown.remove(&removed) {
                 self.hub_cooldown.entry(kept).or_insert(until);
             }
@@ -1296,8 +1302,22 @@ impl AppState {
         self.settings.billing.remove(&id);
         self.settings.billing_reminders.remove(&id);
         self.settings.plans.remove(&id);
+        self.settings.manual_plans.remove(&id);
         self.account_notes.remove(&id);
         self.status.remove(&id);
+        self.save_user();
+    }
+
+    /// The plan chosen by hand on the account page (Antigravity); None clears it.
+    pub fn set_manual_plan(&mut self, id: Uuid, plan: Option<&str>) {
+        match plan {
+            Some(p) => {
+                self.settings.manual_plans.insert(id, p.to_string());
+            }
+            None => {
+                self.settings.manual_plans.remove(&id);
+            }
+        }
         self.save_user();
     }
 

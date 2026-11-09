@@ -125,6 +125,7 @@ fn main() {
         .filter(|_| demo::on());
     // Demo only: `--demo-theme light|dark`, `--demo-open-row <row>`, `--demo-height <px>`.
     let demo_theme = demo::theme(&args);
+    let (demo_compact, demo_fold) = demo::popover_flags(&args);
     demo::read_flags(&args);
     gpui_platform::application()
         .with_assets(assets::Assets)
@@ -144,6 +145,8 @@ fn main() {
                 // Demo: every account knows its plan from the start (the stale one never gets
                 // a fresh reading that would bring it), so the Overview shows every state.
                 if demo::on() {
+                    s.settings.display.popover_compact |= demo_compact;
+                    s.settings.display.collapsed_providers.extend(demo_fold);
                     for a in &s.settings.accounts {
                         if let Some(plan) = subhub_core::demo::plan(a.id) {
                             s.settings.plans.insert(a.id, plan.to_string());

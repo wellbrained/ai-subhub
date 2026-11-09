@@ -213,9 +213,18 @@ pub fn build_series<'a>(
     for l in &kept {
         grouped.entry((l.account, &l.window)).or_default().push(l);
     }
+    // Weekly and 5-hour only: monthly windows have no series.
     let kinds: std::collections::HashMap<(Uuid, &str), bool> = grouped
         .iter()
-        .filter_map(|(k, ls)| Some((*k, crate::insights::readings::kind_of(k.1, ls)?)))
+        .filter_map(|(k, ls)| {
+            use crate::insights::readings::{CycleLen, Kind};
+            let session = match crate::insights::readings::kind_of(k.1, ls)? {
+                Kind::Session => true,
+                Kind::Long(CycleLen::Week) => false,
+                Kind::Long(CycleLen::Month) => return None,
+            };
+            Some((*k, session))
+        })
         .collect();
     let mut map: std::collections::BTreeMap<Uuid, AccountSeries> = Default::default();
     for l in &kept {

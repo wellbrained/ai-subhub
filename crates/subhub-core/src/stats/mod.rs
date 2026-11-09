@@ -1,4 +1,4 @@
-//! Usage statistics from the CLIs' local session logs (ADR 0001, "Usage statistics").
+//! Usage statistics from the CLIs' local session logs (Claude Code, Codex, GitHub Copilot CLI) (ADR 0001, "Usage statistics").
 //!
 //! Privacy: the logs contain conversation text. Parsers read only usage numbers, model, timestamp,
 //! session, subagent flag, working folder, tool names, the first word of shell commands and thread
@@ -19,7 +19,8 @@ use serde::{Deserialize, Serialize};
 
 pub use kind::{TaskKind, ToolCall, classify_tool, command_word, step_kinds};
 pub use parse::{
-    ClaudeMessage, CodexEvent, RawUsage, parse_claude_line, parse_claude_title, parse_codex_line,
+    ClaudeMessage, CodexEvent, CopilotEvent, RawUsage, parse_claude_line, parse_claude_title,
+    parse_codex_line, parse_copilot_line,
 };
 pub use price::{ModelPrice, builtin_lookup, builtin_prices};
 pub use prices::{
@@ -30,7 +31,8 @@ pub use scan::{
     Bucket, FileEntry, Roots, Scan, ScanSession, cache_path, discover_roots, scan, scan_default,
 };
 pub use summary::{
-    CostParts, DayRow, ModelRow, MonthPace, Point, ProviderSummary, Range, Summary, summarize,
+    CostParts, DayRow, ModelRow, MonthPace, Point, ProviderSummary, Range, SLOTS, Summary, slot,
+    summarize,
 };
 
 /// Token counts of one kind of work, normalized across providers: `input` is uncached input,

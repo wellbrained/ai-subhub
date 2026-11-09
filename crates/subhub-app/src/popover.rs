@@ -170,17 +170,20 @@ impl Popover {
             return h.clamp(MIN_HEIGHT, 2000.0);
         }
         let row = 26.0;
-        let visible: Vec<&Account> = s.settings.accounts.iter().filter(|a| !a.hidden).collect();
-        if visible.is_empty() {
+        let groups = popover_groups(s);
+        if groups.is_empty() {
             return 240.0;
         }
-        let providers = ProviderKind::ALL
+        let d = s.display();
+        let providers = groups.len();
+        let cards: f32 = groups
             .iter()
-            .filter(|p| visible.iter().any(|a| a.provider == **p))
-            .count();
-        let cards: f32 = visible
-            .iter()
+            .filter(|(p, _)| !d.collapsed_providers.contains(p))
+            .flat_map(|(_, accs)| accs.iter())
             .map(|a| {
+                if d.popover_compact && !s.popover_expanded.contains(&a.id) {
+                    return COMPACT_ROW;
+                }
                 let rows = s.settings.readings.get(&a.id).map_or(1, |r| {
                     r.windows
                         .iter()
@@ -204,6 +207,8 @@ impl Popover {
 }
 
 const MIN_HEIGHT: f32 = 240.0;
+/// Height of a compact account row including its gap.
+const COMPACT_ROW: f32 = 44.0;
 
 impl Render for Popover {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -232,39 +237,29 @@ impl Render for Popover {
         let mut body = div().flex().flex_col();
         if s.settings.accounts.iter().all(|a| a.hidden) {
             body = body.child(empty_state(s, &t));
-        }
-        for provider in ProviderKind::ALL {
-            let accs: Vec<&Account> = s
-                .settings
-                .accounts
-                .iter()
-                .filter(|a| a.provider == provider && !a.hidden)
-                .collect();
-            if accs.is_empty() {
-                continue;
-            }
+        } else if popover_groups(s).is_empty() {
             body = body.child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_1()
-                    .pt_3()
-                    .pb_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(provider_name(provider)),
-                    )
-                    .child(icon(
-                        Icon::Provider(provider),
-                        14.0,
-                        provider_color(provider, t.muted),
-                    )),
+                    .py_6()
+                    .px_2()
+                    .text_xs()
+                    .text_color(t.muted)
+                    .text_center()
+                    .child("All providers are hidden from the popover. Show them again in Settings → Appearance."),
             );
+        }
+        for (provider, accs) in popover_groups(s) {
+            let folded = d.collapsed_providers.contains(&provider);
+            body = body.child(provider_heading(provider, &accs, folded, s, &t, self.state.clone()));
+            if folded {
+                continue;
+            }
             for acc in accs {
-                body = body.child(account_card(acc, s, &t, self.state.clone(), manage.clone()));
+                if d.popover_compact && !s.popover_expanded.contains(&acc.id) {
+                    body = body.child(compact_row(acc, s, &t, self.state.clone()));
+                } else {
+                    body = body.child(account_card(acc, s, &t, self.state.clone(), manage.clone()));
+                }
             }
         }
 
@@ -684,14 +679,14 @@ fn account_card(
             .clip("card-label", acc.label.clone()),
     );
     if d.show_plan
-        && let Some(plan) = s.settings.plans.get(&acc.id)
+        && let Some(plan) = s.settings.plan_label(acc.id)
     {
         let (bg, fg): (Hsla, Hsla) = if t.dark {
             (gpui::rgb(0x2b3550).into(), gpui::rgb(0xa9c1ff).into())
         } else {
             (gpui::rgb(0xe0e9ff).into(), gpui::rgb(0x1d4ed8).into())
         };
-        head = head.child(pill(plan.clone(), bg, fg));
+        head = head.child(pill(plan.to_string(), bg, fg));
     }
     if let Some(g) = &acc.group {
         head = head.child(pill(g.clone(), t.surface_hover, t.muted));
@@ -751,6 +746,27 @@ fn account_card(
                 .on_click(move |_, _, cx| {
                     st.update(cx, |s, cx| {
                         s.toggle_taskbar_favorite(id);
+                        cx.notify();
+                    })
+                }),
+        );
+    }
+    if d.popover_compact {
+        // Compact mode opened this card: back to its one-line row.
+        let id = acc.id;
+        let st = state_for_star.clone();
+        head = head.child(
+            div()
+                .id(SharedString::from(format!("less-{id}")))
+                .px(px(4.0))
+                .cursor_pointer()
+                .child(icon(Icon::ChevronUp, 14.0, t.faint))
+                .tooltip(|window, cx| {
+                    gpui_component::tooltip::Tooltip::new("Show less").build(window, cx)
+                })
+                .on_click(move |_, _, cx| {
+                    st.update(cx, |s, cx| {
+                        s.popover_expanded.remove(&id);
                         cx.notify();
                     })
                 }),
@@ -1451,4 +1467,238 @@ fn empty_state(s: &AppState, t: &Tokens) -> impl IntoElement {
                 .text_center()
                 .child(hint),
         )
+}
+
+/// Providers shown in the popover, in the user's order (Appearance → Providers), without hidden
+/// providers, hidden accounts and providers left without accounts.
+fn popover_groups(s: &AppState) -> Vec<(ProviderKind, Vec<&Account>)> {
+    let d = s.display();
+    d.ordered_providers()
+        .into_iter()
+        .filter(|p| !d.hidden_providers.contains(p))
+        .map(|p| {
+            let accs: Vec<&Account> = s
+                .settings
+                .accounts
+                .iter()
+                .filter(|a| a.provider == p && !a.hidden)
+                .collect();
+            (p, accs)
+        })
+        .filter(|(_, accs)| !accs.is_empty())
+        .collect()
+}
+
+/// The window that limits an account right now: the lower of its two main windows (5-hour and
+/// weekly, or its own first two).
+fn binding_window(acc: &Account, s: &AppState) -> Option<AllowanceWindow> {
+    let ((_, a), (_, b)) = crate::taskbar::badge_windows(s, acc);
+    [a, b]
+        .into_iter()
+        .flatten()
+        .min_by(|x, y| x.remaining_percent().total_cmp(&y.remaining_percent()))
+}
+
+/// The account with the most room left among fresh readings, for a folded provider heading.
+fn most_room<'a>(accs: &[&'a Account], s: &AppState) -> Option<(&'a Account, AllowanceWindow)> {
+    accs.iter()
+        .filter(|a| !s.is_stale(a.id))
+        .filter_map(|a| binding_window(a, s).map(|w| (*a, w)))
+        .max_by(|(_, x), (_, y)| x.remaining_percent().total_cmp(&y.remaining_percent()))
+}
+
+/// Provider heading; a click folds or unfolds the provider (saved). Folded, it says how many
+/// accounts there are and which has the most room.
+fn provider_heading(
+    provider: ProviderKind,
+    accs: &[&Account],
+    folded: bool,
+    s: &AppState,
+    t: &Tokens,
+    state: Entity<AppState>,
+) -> impl IntoElement {
+    let summary = folded.then(|| {
+        let best = most_room(accs, s)
+            .map(|(a, w)| format!("{}, {}", a.label, format::usage(&w, s.display())));
+        match (accs.len(), best) {
+            (1, Some(b)) => b,
+            (1, None) => "1 account".to_string(),
+            (n, Some(b)) => format!("{n} accounts · most room: {b}"),
+            (n, None) => format!("{n} accounts"),
+        }
+    });
+    div()
+        .id(SharedString::from(format!("prov-{}", provider.name())))
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_1()
+        .pt_3()
+        .pb_2()
+        .cursor_pointer()
+        .child(icon(
+            if folded {
+                Icon::ChevronRight
+            } else {
+                Icon::ChevronDown
+            },
+            12.0,
+            t.faint,
+        ))
+        .child(
+            div()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(provider_name(provider)),
+        )
+        .child(icon(
+            Icon::Provider(provider),
+            14.0,
+            provider_color(provider, t.muted),
+        ))
+        .when_some(summary, |d, text| {
+            d.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .justify_end()
+                    .text_xs()
+                    .text_color(t.muted)
+                    .clip("prov-summary", text),
+            )
+        })
+        .tooltip(move |window, cx| {
+            gpui_component::tooltip::Tooltip::new(if folded {
+                "Show this provider's accounts"
+            } else {
+                "Fold this provider"
+            })
+            .build(window, cx)
+        })
+        .on_click(move |_, _, cx| {
+            state.update(cx, |s, cx| {
+                let list = &mut s.settings.display.collapsed_providers;
+                subhub_core::settings::DisplaySettings::toggle_provider(list, provider, !folded);
+                s.save();
+                cx.notify();
+            })
+        })
+}
+
+/// Compact mode: one line per account with its two main limits; a click opens the full card.
+fn compact_row(
+    acc: &Account,
+    s: &AppState,
+    t: &Tokens,
+    state: Entity<AppState>,
+) -> impl IntoElement {
+    let d = s.display();
+    let stale = s.is_stale(acc.id);
+    let id = acc.id;
+    let mut row = div()
+        .id(SharedString::from(format!("compact-{id}")))
+        .flex()
+        .items_center()
+        .gap_3()
+        .mb(px(6.0))
+        .px(px(12.0))
+        .py(px(8.0))
+        .rounded(px(10.0))
+        .bg(t.surface)
+        .border_1()
+        .border_color(t.border)
+        .cursor_pointer()
+        .hover(|d| d.bg(t.surface_hover))
+        .when(stale, |d| d.opacity(0.7))
+        .child(
+            div()
+                .w(px(112.0))
+                .flex_none()
+                .min_w_0()
+                .text_sm()
+                .font_weight(FontWeight::SEMIBOLD)
+                .clip("compact-label", acc.label.clone()),
+        );
+    if s.settings.readings.contains_key(&acc.id) {
+        let (a, b) = crate::taskbar::badge_windows(s, acc);
+        for (label, w) in [a, b] {
+            let mut cell = div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .items_center()
+                .gap(px(6.0));
+            if let Some(w) = w {
+                let color = if stale {
+                    t.faint
+                } else {
+                    t.level(w.remaining_percent())
+                };
+                let value_color = if stale || color == t.accent {
+                    t.text
+                } else {
+                    color
+                };
+                cell = cell
+                    .child(
+                        div()
+                            .w(px(18.0))
+                            .flex_none()
+                            .text_xs()
+                            .text_color(t.muted)
+                            .child(label),
+                    )
+                    .child(
+                        div().flex_1().h(px(5.0)).rounded_full().bg(t.track).child(
+                            div()
+                                .h_full()
+                                .rounded_full()
+                                .bg(color)
+                                .w(gpui::relative(
+                                    format::gauge_fraction(&w, d).clamp(0.0, 1.0),
+                                )),
+                        ),
+                    )
+                    .child(
+                        div()
+                            .w(px(34.0))
+                            .flex_none()
+                            .flex()
+                            .justify_end()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(value_color)
+                            .child(format::percent(&w, d)),
+                    );
+            }
+            row = row.child(cell);
+        }
+    } else {
+        let msg = s
+            .status
+            .get(&acc.id)
+            .map(|st| st.message.clone())
+            .filter(|m| !m.is_empty())
+            .unwrap_or_else(|| waiting_message(acc, s, Utc::now()));
+        row = row.child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_xs()
+                .text_color(t.faint)
+                .clip("compact-msg", msg),
+        );
+    }
+    if needs_attention(acc, s) {
+        // Sign in / Retry live on the full card; the dot says there is something to do.
+        row = row.child(div().flex_none().size(px(6.0)).rounded_full().bg(t.warn));
+    }
+    row.child(icon(Icon::ChevronDown, 12.0, t.faint))
+        .on_click(move |_, _, cx| {
+            state.update(cx, |s, cx| {
+                s.popover_expanded.insert(id);
+                cx.notify();
+            })
+        })
 }

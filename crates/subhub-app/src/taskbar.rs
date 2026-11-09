@@ -255,12 +255,12 @@ pub fn shown_ids(s: &AppState) -> Vec<uuid::Uuid> {
     shown(s).iter().map(|a| a.id).collect()
 }
 
-type BadgeRow = (String, Option<AllowanceWindow>);
+pub(crate) type BadgeRow = (String, Option<AllowanceWindow>);
 
 /// The two rows of an account's badge: "5h" and "W" (first match each). An account with neither
 /// (Copilot's monthly credits) shows its own first two windows with a short label ("M"); a
 /// missing second one leaves the row out (empty label).
-fn badge_windows(s: &AppState, a: &Account) -> (BadgeRow, BadgeRow) {
+pub(crate) fn badge_windows(s: &AppState, a: &Account) -> (BadgeRow, BadgeRow) {
     let five_w = || (("5h".to_string(), None), ("W".to_string(), None));
     let Some(r) = s.settings.readings.get(&a.id) else {
         return five_w();

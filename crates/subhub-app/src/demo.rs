@@ -114,6 +114,30 @@ pub fn theme(args: &[String]) -> Option<subhub_core::settings::ThemeMode> {
     }
 }
 
+/// `--demo-compact` (compact popover) and `--demo-fold Codex,Cursor` (folded providers): popover
+/// states for screenshots that would otherwise need clicks.
+pub fn popover_flags(args: &[String]) -> (bool, Vec<subhub_core::model::ProviderKind>) {
+    if !on() {
+        return (false, vec![]);
+    }
+    let compact = args.iter().any(|a| a == "--demo-compact");
+    let fold = args
+        .iter()
+        .position(|a| a == "--demo-fold")
+        .and_then(|i| args.get(i + 1))
+        .map(|list| {
+            subhub_core::model::ProviderKind::ALL
+                .into_iter()
+                .filter(|p| {
+                    list.split(',')
+                        .any(|n| n.trim().eq_ignore_ascii_case(p.name()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    (compact, fold)
+}
+
 /// Sets demo mode up. Must run first in `main`, while the process has a single thread (it
 /// changes environment variables). An error means no demo: the caller must exit rather than
 /// run on the real data.

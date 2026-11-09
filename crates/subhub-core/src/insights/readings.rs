@@ -1,10 +1,11 @@
-//! Reading history -> weekly cycles and 5-hour windows per account (plan "Analysis", owner
-//! 2026-11-07). Readings of one window are grouped by `resets_at`; providers move it by a few
+//! Reading history -> weekly (or monthly) cycles and 5-hour windows per account (plan
+//! "Analysis", owner 2026-11-07; monthly cycles for Copilot and Cursor's legacy plans, owner
+//! 2026-11-09). Readings of one window are grouped by `resets_at`; providers move it by a few
 //! seconds between readings, so a group takes every reset within [`SAME_RESET`] of its first one
 //! (the plan says "minute precision"; a tolerance also survives a minute boundary).
 use std::collections::{BTreeMap, HashSet};
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, Months, Utc};
 use uuid::Uuid;
 
 use crate::history::HistoryLine;
@@ -18,6 +19,11 @@ pub const HIT_PERCENT: f64 = 99.5;
 pub const END_SEEN_HOURS: i64 = 2;
 /// A weekly cycle counts once ended with readings on at least this many of its 7 days.
 pub const CYCLE_MIN_DAYS: usize = 3;
+/// A monthly cycle counts once ended with readings on at least this share of its days (18 of
+/// 30): a month has room for a week away, but a verdict from a few days would be a guess.
+pub const MONTH_MIN_DAY_SHARE: f64 = 0.6;
+/// Cursor's plan cycle is weekly up to this many days, else monthly (as `cursor::cycle_label`).
+pub const WEEKLY_MAX_DAYS: i64 = 10;
 
 pub const SESSION_LEN_H: i64 = 5;
 pub const WEEK_LEN_D: i64 = 7;
@@ -40,45 +46,122 @@ impl Obs {
     }
 }
 
-/// An account's readings of its 5-hour and its all-models weekly window, oldest first.
+/// How long an account's main long window runs: a week (Claude, Codex, Antigravity, Cursor's
+/// current plans) or a calendar month (Copilot, Cursor's legacy plans).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CycleLen {
+    #[default]
+    Week,
+    Month,
+}
+
+impl CycleLen {
+    /// Days of a cycle `len_days` long that need a reading for it to count.
+    pub fn min_days(self, len_days: i64) -> usize {
+        match self {
+            CycleLen::Week => CYCLE_MIN_DAYS,
+            CycleLen::Month => (len_days as f64 * MONTH_MIN_DAY_SHARE).ceil() as usize,
+        }
+    }
+
+    /// Where a cycle that resets at `reset` started, when its previous reset was not seen.
+    pub fn back(self, reset: DateTime<Utc>) -> DateTime<Utc> {
+        match self {
+            CycleLen::Week => reset - Duration::days(WEEK_LEN_D),
+            CycleLen::Month => reset
+                .checked_sub_months(Months::new(1))
+                .unwrap_or(reset - Duration::days(30)),
+        }
+    }
+
+    /// The reset one cycle after `reset`.
+    pub fn next(self, reset: DateTime<Utc>) -> DateTime<Utc> {
+        match self {
+            CycleLen::Week => reset + Duration::days(WEEK_LEN_D),
+            CycleLen::Month => reset
+                .checked_add_months(Months::new(1))
+                .unwrap_or(reset + Duration::days(30)),
+        }
+    }
+}
+
+/// An account's readings of its 5-hour and its main long window (the all-models weekly one,
+/// Copilot's monthly credits, Cursor's plan total), oldest first.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AccountObs {
     pub session: Vec<Obs>,
+    /// The main long window (named when it was always weekly).
     pub weekly: Vec<Obs>,
+    /// Its length.
+    pub cycle: CycleLen,
     /// Whether a 5-hour window was ever seen (Codex plans without one have none).
     pub has_session: bool,
     pub first_at: Option<DateTime<Utc>>,
 }
 
-/// What a history window key is: the 5-hour or the all-models weekly window. Codex keys
+/// What a history window key is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    Session,
+    Long(CycleLen),
+}
+
+/// What a history window key is: the 5-hour or the main long window. Codex keys
 /// (`codex:primary` / `codex:secondary`) carry no length, so it is read from how far ahead their
 /// resets lie: at most 5 h (+10 min) is a 5-hour window, a day or more is weekly; a Codex plan
-/// whose primary window is weekly thus has no 5-hour window.
-pub(crate) fn kind_of(key: &str, lines: &[&HistoryLine]) -> Option<bool> {
-    if is_session_window(key) {
-        return Some(true);
+/// whose primary window is weekly thus has no 5-hour window. Antigravity's first group
+/// (`agy:5h`, `agy:weekly`) is its main pair, Copilot's credits (`copilot:premium`) are monthly,
+/// Cursor's plan total (`cursor:plan`) is weekly or monthly ([`cursor_cycle`]). Per-model and
+/// per-pool windows never count.
+pub(crate) fn kind_of(key: &str, lines: &[&HistoryLine]) -> Option<Kind> {
+    if is_session_window(key) || key == "agy:5h" {
+        return Some(Kind::Session);
     }
-    if is_weekly_window(key) {
-        return Some(false);
+    if is_weekly_window(key) || key == "agy:weekly" {
+        return Some(Kind::Long(CycleLen::Week));
     }
-    if key != "codex:primary" && key != "codex:secondary" {
-        return None;
+    match key {
+        "copilot:premium" => return Some(Kind::Long(CycleLen::Month)),
+        "cursor:plan" => return Some(Kind::Long(cursor_cycle(lines))),
+        "codex:primary" | "codex:secondary" => {}
+        _ => return None,
     }
     let ahead = lines
         .iter()
         .filter_map(|l| Some(l.resets_at? - l.fetched_at))
         .max()?;
     if ahead <= Duration::minutes(SESSION_LEN_H * 60 + 10) {
-        Some(true)
+        Some(Kind::Session)
     } else if ahead >= Duration::days(1) {
-        Some(false)
+        Some(Kind::Long(CycleLen::Week))
     } else {
         None
     }
 }
 
-/// Groups history lines per account into 5-hour and weekly readings. Non-finite values and other
-/// windows are skipped; used % is clamped to 0..=100.
+/// Cursor's plan cycle from its readings: monthly when a reset ever lay more than
+/// [`WEEKLY_MAX_DAYS`] ahead or two resets in a row lie further apart than that (readings late
+/// in a month alone look weekly), else weekly. `analyze` prefers the latest reading's label
+/// ("Weekly" / "Monthly") when there is one.
+fn cursor_cycle(lines: &[&HistoryLine]) -> CycleLen {
+    let max = Duration::days(WEEKLY_MAX_DAYS);
+    let far_ahead = lines
+        .iter()
+        .filter_map(|l| Some(l.resets_at? - l.fetched_at))
+        .any(|d| d > max);
+    let mut resets: Vec<DateTime<Utc>> = lines.iter().filter_map(|l| l.resets_at).collect();
+    resets.sort();
+    resets.dedup_by(|later, first| (*later - *first).num_seconds() <= SAME_RESET);
+    let min_gap = resets.windows(2).map(|w| w[1] - w[0]).min();
+    if far_ahead || min_gap.is_some_and(|g| g > max) {
+        CycleLen::Month
+    } else {
+        CycleLen::Week
+    }
+}
+
+/// Groups history lines per account into 5-hour and main long-window readings. Non-finite values
+/// and other windows are skipped; used % is clamped to 0..=100.
 pub fn by_account(lines: &[HistoryLine]) -> BTreeMap<Uuid, AccountObs> {
     let mut keys: BTreeMap<(Uuid, &str), Vec<&HistoryLine>> = BTreeMap::new();
     for l in lines.iter().filter(|l| l.used_percent.is_finite()) {
@@ -89,19 +172,23 @@ pub fn by_account(lines: &[HistoryLine]) -> BTreeMap<Uuid, AccountObs> {
     let mut out: BTreeMap<Uuid, AccountObs> = BTreeMap::new();
     let mut taken: HashSet<(Uuid, bool)> = HashSet::new();
     for ((account, key), ls) in &keys {
-        let Some(session) = kind_of(key, ls) else {
+        let Some(kind) = kind_of(key, ls) else {
             continue;
         };
         // One window per kind and account (the first key in order wins).
-        if !taken.insert((*account, session)) {
+        if !taken.insert((*account, kind == Kind::Session)) {
             continue;
         }
         let a = out.entry(*account).or_default();
-        let list = if session {
-            a.has_session = true;
-            &mut a.session
-        } else {
-            &mut a.weekly
+        let list = match kind {
+            Kind::Session => {
+                a.has_session = true;
+                &mut a.session
+            }
+            Kind::Long(len) => {
+                a.cycle = len;
+                &mut a.weekly
+            }
         };
         list.extend(ls.iter().map(|l| Obs {
             at: l.fetched_at,
@@ -161,29 +248,48 @@ fn group(obs: &[Obs]) -> Vec<(DateTime<Utc>, Vec<Obs>)> {
     out
 }
 
-/// One weekly cycle of an account.
+/// One cycle of an account's main long window: weekly, or monthly for Copilot and Cursor's
+/// legacy plans (the name is from when all were weekly).
 #[derive(Debug, Clone, PartialEq)]
 pub struct WeeklyCycle {
     pub start: DateTime<Utc>,
     pub resets_at: DateTime<Utc>,
     /// Highest % used seen: the cycle's use.
     pub peak: f64,
-    /// Of the cycle's 7 days, how many have a reading.
+    /// Of the cycle's days, how many have a reading.
     pub days: usize,
     pub ended: bool,
-    /// Ended and read on at least [`CYCLE_MIN_DAYS`] days.
+    /// Ended and read on enough days ([`CycleLen::min_days`]).
     pub counted: bool,
 }
 
+/// Weekly cycles.
 pub fn cycles(weekly: &[Obs], now: DateTime<Utc>) -> Vec<WeeklyCycle> {
-    group(weekly)
+    cycles_of(weekly, CycleLen::Week, now)
+}
+
+/// Cycles of a long window. A weekly cycle starts 7 days before its reset; a monthly one at the
+/// previous reset when that was seen 20 to 35 days earlier (billing days move a little), else a
+/// calendar month before.
+pub fn cycles_of(obs: &[Obs], len: CycleLen, now: DateTime<Utc>) -> Vec<WeeklyCycle> {
+    let mut prev: Option<DateTime<Utc>> = None;
+    group(obs)
         .into_iter()
         .map(|(reset, obs)| {
-            let start = reset - Duration::days(WEEK_LEN_D);
+            let start = match (len, prev) {
+                (CycleLen::Month, Some(p))
+                    if (Duration::days(20)..=Duration::days(35)).contains(&(reset - p)) =>
+                {
+                    p
+                }
+                _ => len.back(reset),
+            };
+            prev = Some(reset);
+            let len_days = ((reset - start).num_seconds() as f64 / 86_400.0).round() as i64;
             let mut days: Vec<i64> = obs
                 .iter()
                 .map(|o| (o.at - start).num_seconds().div_euclid(86_400))
-                .filter(|d| (0..WEEK_LEN_D).contains(d))
+                .filter(|d| (0..len_days).contains(d))
                 .collect();
             days.sort();
             days.dedup();
@@ -194,7 +300,7 @@ pub fn cycles(weekly: &[Obs], now: DateTime<Utc>) -> Vec<WeeklyCycle> {
                 peak: obs.iter().map(|o| o.used).fold(0.0, f64::max),
                 days: days.len(),
                 ended,
-                counted: ended && days.len() >= CYCLE_MIN_DAYS,
+                counted: ended && days.len() >= len.min_days(len_days),
             }
         })
         .collect()
@@ -425,6 +531,88 @@ mod tests {
     }
 
     #[test]
+    fn monthly_cycles_count_with_sixty_percent_of_their_days() {
+        // Copilot: resets on the 1st; the October cycle runs Oct 1 - Nov 1 (31 days, 19 needed).
+        let reset = "2026-11-01T00:00:00Z";
+        let read = |days: i64| -> Vec<Obs> {
+            (0..days)
+                .map(|d| Obs {
+                    at: t("2026-10-01T09:00:00Z") + Duration::days(d),
+                    used: 2.0 * d as f64,
+                    resets_at: Some(t(reset)),
+                })
+                .collect()
+        };
+        let now = t("2026-11-03T00:00:00Z");
+        let c = cycles_of(&read(18), CycleLen::Month, now);
+        assert_eq!(c[0].start, t("2026-10-01T00:00:00Z"));
+        assert_eq!((c[0].days, c[0].ended, c[0].counted), (18, true, false));
+        let c = cycles_of(&read(19), CycleLen::Month, now);
+        assert_eq!((c[0].days, c[0].counted, c[0].peak), (19, true, 36.0));
+        // The previous reset, when seen, is where the next cycle starts (Cursor's billing day).
+        let mut two = read(19);
+        two.push(Obs {
+            at: t("2026-11-02T09:00:00Z"),
+            used: 5.0,
+            resets_at: Some(t("2026-11-29T00:00:00Z")),
+        });
+        let c = cycles_of(&two, CycleLen::Month, now);
+        assert_eq!(c[1].start, t("2026-11-01T00:00:00Z"));
+        assert!(!c[1].ended && !c[1].counted);
+    }
+
+    #[test]
+    fn app_login_windows_have_their_kinds() {
+        let at = "2026-11-02T10:00:00Z";
+        let lines = [
+            line(1, at, "copilot:premium", 40.0, Some("2026-12-01T00:00:00Z")),
+            line(1, at, "copilot:chat", 10.0, Some("2026-12-01T00:00:00Z")),
+            line(2, at, "agy:5h", 30.0, Some("2026-11-02T13:00:00Z")),
+            line(2, at, "agy:weekly", 20.0, Some("2026-11-06T00:00:00Z")),
+            line(
+                2,
+                at,
+                "agy:claude-gpt:5h",
+                90.0,
+                Some("2026-11-02T12:00:00Z"),
+            ),
+            // Cursor weekly (reset 4 days ahead) and legacy monthly (20 days ahead).
+            line(3, at, "cursor:plan", 41.0, Some("2026-11-06T10:00:00Z")),
+            line(3, at, "cursor:auto", 41.0, Some("2026-11-06T10:00:00Z")),
+            line(4, at, "cursor:plan", 25.0, Some("2026-11-22T10:00:00Z")),
+        ];
+        let m = by_account(&lines);
+        let a = |n| &m[&Uuid::from_u128(n)];
+        assert_eq!(
+            (a(1).cycle, a(1).weekly.len(), a(1).has_session),
+            (CycleLen::Month, 1, false)
+        );
+        assert!(a(2).has_session && a(2).session[0].used == 30.0 && a(2).cycle == CycleLen::Week);
+        assert_eq!((a(3).cycle, a(3).weekly.len()), (CycleLen::Week, 1));
+        assert_eq!(a(4).cycle, CycleLen::Month);
+        // Late in a legacy month the reset is near, but resets a month apart still say monthly.
+        let late = [
+            line(
+                5,
+                "2026-10-28T10:00:00Z",
+                "cursor:plan",
+                80.0,
+                Some("2026-10-31T10:00:00Z"),
+            ),
+            line(
+                5,
+                "2026-11-02T10:00:00Z",
+                "cursor:plan",
+                5.0,
+                Some("2026-11-30T10:00:00Z"),
+            ),
+        ];
+        let refs: Vec<&HistoryLine> = late.iter().collect();
+        assert_eq!(cursor_cycle(&refs[..1]), CycleLen::Week);
+        assert_eq!(cursor_cycle(&refs), CycleLen::Month);
+    }
+
+    #[test]
     fn free_needs_a_close_reading_with_room() {
         let at = t("2026-11-02T12:00:00Z");
         let obs = |mins: i64, used: f64| Obs {
@@ -437,6 +625,7 @@ mod tests {
             weekly: vec![obs(-20, 50.0)],
             has_session: true,
             first_at: None,
+            cycle: CycleLen::Week,
         };
         assert!(free_at(&a, at));
         // Too far away.

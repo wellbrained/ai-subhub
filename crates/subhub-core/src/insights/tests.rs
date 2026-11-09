@@ -1,6 +1,7 @@
 //! `analyze` over generated reading histories: the plan's rules end to end and its edge cases
 //! (no history, PC-off gaps, an account added mid-cycle, unknown plan, benched hub login, resets
-//! moving by seconds, Codex without a 5-hour window, logs without cwd or title).
+//! moving by seconds, Codex without a 5-hour window, logs without cwd or title), and the app
+//! logins' own plan fit (monthly Copilot, Cursor's weekly ladder, Antigravity chosen by hand).
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -18,6 +19,9 @@ const C: Uuid = Uuid::from_u128(0xc); // Claude Pro, benched hub login, idle
 const D: Uuid = Uuid::from_u128(0xd); // Codex Plus with only a weekly window
 const E: Uuid = Uuid::from_u128(0xe); // Claude, unknown plan
 const F: Uuid = Uuid::from_u128(0xf); // Claude Pro added on Wed Nov 4
+const G: Uuid = Uuid::from_u128(0x10); // Copilot Pro, monthly credits
+const H: Uuid = Uuid::from_u128(0x11); // Cursor Premium, weekly plan
+const I: Uuid = Uuid::from_u128(0x12); // Antigravity, Ultra 5x chosen by hand
 
 fn t(s: &str) -> DateTime<Utc> {
     s.parse().unwrap()
@@ -571,4 +575,247 @@ fn where_usage_goes_from_the_scan() {
     assert!(o.usage.threads.iter().all(|t| t.title.is_none()));
     // Builds & tests over 20 %: an insight tip.
     assert!(o.tips.iter().any(|t| t.id == "task:builds-tests"));
+}
+
+/// Copilot's monthly credits: a reading at 10:00 UTC on weekdays from `from`, climbing to
+/// `peak(reset)` by the end of each month; resets on the 1st, 00:00 UTC.
+fn copilot_lines(id: Uuid, from: &str, peak: impl Fn(DateTime<Utc>) -> f64) -> Vec<HistoryLine> {
+    let mut out = vec![];
+    let mut day = date(from);
+    while day < now().date_naive() {
+        if weekday(day) {
+            let at = day.and_hms_opt(10, 0, 0).unwrap().and_utc();
+            let first = day.with_day(1).unwrap();
+            let reset = first
+                .checked_add_months(chrono::Months::new(1))
+                .unwrap()
+                .and_hms_opt(0, 0, 0)
+                .unwrap()
+                .and_utc();
+            out.push(HistoryLine {
+                account: id,
+                fetched_at: at,
+                window: "copilot:premium".into(),
+                used_percent: (peak(reset) * day.day() as f64 / 31.0).round(),
+                resets_at: Some(reset),
+            });
+        }
+        day = day.succ_opt().unwrap();
+    }
+    out
+}
+
+/// The fixture plus a Copilot Pro at 97 % of its October credits by its last weekday, a Cursor Premium around 20 %
+/// of its week and an Antigravity account set to Ultra 5x by hand around 15 % of its week.
+fn with_app_logins(f: &Fixture) -> Fixture {
+    let mut f = Fixture {
+        settings: f.settings.clone(),
+        history: f.history.clone(),
+        plans: f.plans.clone(),
+    };
+    let start = now() - Duration::days(29);
+    let none = |_: NaiveDate| vec![];
+    let light = |d: NaiveDate| {
+        if weekday(d) { vec![(9, 6.0)] } else { vec![] }
+    };
+    let cursor_week = by_cycle([18.0, 20.0, 19.0, 10.0]);
+    let agy_week = by_cycle([12.0, 15.0, 14.0, 5.0]);
+    for g in [
+        Gen {
+            id: H,
+            session_key: None,
+            weekly_key: "cursor:plan",
+            from: start,
+            windows: &none,
+            weekly: &cursor_week,
+            extra: vec![],
+        },
+        Gen {
+            id: I,
+            session_key: Some("agy:5h"),
+            weekly_key: "agy:weekly",
+            from: start,
+            windows: &light,
+            weekly: &agy_week,
+            extra: vec![],
+        },
+    ] {
+        f.history.extend(g.lines());
+    }
+    f.history.extend(copilot_lines(G, "2026-09-25", |_| 100.0));
+    f.settings.accounts.extend([
+        account(G, ProviderKind::Copilot, None),
+        account(H, ProviderKind::Cursor, None),
+        account(I, ProviderKind::Antigravity, None),
+    ]);
+    f.plans.insert(G, "Pro".into());
+    f.plans.insert(H, "Premium".into());
+    f.settings.manual_plans.insert(I, "Ultra 5x".into());
+    f
+}
+
+#[test]
+fn app_logins_get_their_own_plan_fit() {
+    let f = with_app_logins(&fixture());
+    let o = run(&f, None, InsightRange::FourWeeks);
+    let fit = |id| o.account(id).unwrap().fit.ready().cloned().unwrap();
+    // Copilot: one ended month (October, read on its 22 weekdays) is enough; 97 % is at the
+    // limit, Pro+ for $29 more. No 5-hour window, so no hits.
+    let g = o.account(G).unwrap();
+    assert_eq!(
+        (g.cycle, g.tier),
+        (CycleLen::Month, Some(PlanTier::CopilotPro))
+    );
+    let gf = fit(G);
+    assert_eq!(
+        (gf.verdict, gf.cycles, gf.hits_per_week),
+        (FitVerdict::AtLimit, 1, 0.0)
+    );
+    assert_eq!(
+        (gf.suggested, gf.price_change),
+        (Some(PlanTier::CopilotProPlus), Some(29.0))
+    );
+    // Cursor: weekly resets, so "Premium" is the current lineup; 20 % fits Plus at 80 %.
+    let h = o.account(H).unwrap();
+    assert_eq!(
+        (h.cycle, h.tier),
+        (CycleLen::Week, Some(PlanTier::CursorPremium))
+    );
+    let hf = fit(H);
+    assert_eq!(
+        (hf.verdict, hf.suggested, hf.price_change),
+        (
+            FitVerdict::Downgrade,
+            Some(PlanTier::CursorPlus),
+            Some(-22.0)
+        )
+    );
+    // Antigravity: the plan chosen by hand is its label and tier; the advice has no price.
+    let i = o.account(I).unwrap();
+    assert_eq!(i.plan.as_deref(), Some("Ultra 5x"));
+    assert!(i.has_session_window && !i.plan_conflict);
+    let x = fit(I);
+    assert_eq!(
+        (x.verdict, x.suggested, x.price_change),
+        (FitVerdict::Downgrade, Some(PlanTier::AgyPro), None)
+    );
+    // No what-if: one login per PC.
+    assert!(g.what_if.is_none() && h.what_if.is_none() && i.what_if.is_none());
+}
+
+#[test]
+fn app_logins_stay_out_of_the_totals() {
+    let base = run(&fixture(), None, InsightRange::FourWeeks);
+    let o = run(&with_app_logins(&fixture()), None, InsightRange::FourWeeks);
+    // Same headline, numbers, 5-hour analysis, warm-up and tips as without them.
+    assert_eq!(o.header, base.header);
+    assert_eq!(o.windows, base.windows);
+    assert_eq!(o.tips, base.tips);
+    for id in [G, H, I] {
+        assert!(!o.tips.iter().any(|t| t.account == Some(id)));
+        let v = &o.header.verdict;
+        assert!(
+            ![&v.unused, &v.at_limit, &v.downgrade]
+                .iter()
+                .any(|l| l.contains(&id))
+        );
+    }
+    // Alone, they leave the header collecting (no Claude or Codex verdict to give).
+    let alone = Fixture {
+        settings: Settings {
+            accounts: o
+                .accounts
+                .iter()
+                .filter(|a| !in_totals(a.provider))
+                .map(|a| account(a.account, a.provider, None))
+                .collect(),
+            ..with_app_logins(&fixture()).settings
+        },
+        ..with_app_logins(&fixture())
+    };
+    let o = run(&alone, None, InsightRange::FourWeeks);
+    assert_eq!(o.header.weekly_avg, None);
+    assert_eq!(o.header.verdict, Verdict::default());
+    assert!(o.windows.ready_on().is_some() && o.tips.is_empty());
+    assert!(o.account(G).unwrap().fit.ready().is_some());
+}
+
+#[test]
+fn monthly_plan_fit_waits_for_one_ended_month() {
+    let mut f = with_app_logins(&fixture());
+    // Added on Oct 20: October was read on 9 days only, so it does not count; November can
+    // still be read on enough days, so the first verdict comes with its reset on Dec 1.
+    f.history.retain(|l| l.account != G);
+    f.history.extend(copilot_lines(G, "2026-10-20", |_| 50.0));
+    let o = run(&f, None, InsightRange::FourWeeks);
+    let g = o.account(G).unwrap();
+    assert!(g.cycles.iter().all(|c| !c.counted));
+    assert_eq!(g.fit.ready_on(), Some(date("2026-12-01")));
+    // Without any reading: a month from now.
+    f.history.retain(|l| l.account != G);
+    let o = run(&f, None, InsightRange::FourWeeks);
+    assert_eq!(
+        o.account(G).unwrap().fit.ready_on(),
+        Some(date("2026-12-07"))
+    );
+}
+
+#[test]
+fn a_paid_antigravity_choice_on_a_free_reading_gives_no_verdict() {
+    let mut f = with_app_logins(&fixture());
+    // The latest reading has only the weekly window (the Free plan's shape).
+    f.settings.readings.insert(
+        I,
+        Reading {
+            fetched_at: now() - Duration::minutes(5),
+            windows: vec![AllowanceWindow {
+                key: "agy:weekly".into(),
+                label: "Weekly".into(),
+                used_percent: 10.0,
+                resets_at: Some(now() + Duration::days(2)),
+            }],
+        },
+    );
+    f.plans.insert(I, "Free".into());
+    let o = run(&f, None, InsightRange::FourWeeks);
+    let i = o.account(I).unwrap();
+    // The choice still names the plan, but there is no verdict.
+    assert_eq!(i.plan.as_deref(), Some("Ultra 5x"));
+    assert!(i.plan_conflict && i.fit.ready().is_none());
+    // Not set: the reported plan, no tier, a verdict without advice.
+    f.settings.manual_plans.clear();
+    let o = run(&f, None, InsightRange::FourWeeks);
+    let i = o.account(I).unwrap();
+    assert_eq!(
+        (i.plan.as_deref(), i.tier, i.plan_conflict),
+        (Some("Free"), None, false)
+    );
+    assert!(i.fit.ready().is_some_and(|x| x.suggested.is_none()));
+}
+
+#[test]
+fn cursor_names_are_read_in_the_ladder_of_their_cycle() {
+    let mut f = with_app_logins(&fixture());
+    // The same history labelled monthly by the latest reading: "Premium" is no legacy plan.
+    f.settings.readings.insert(
+        H,
+        Reading {
+            fetched_at: now() - Duration::minutes(5),
+            windows: vec![AllowanceWindow {
+                key: "cursor:plan".into(),
+                label: "Monthly".into(),
+                used_percent: 10.0,
+                resets_at: Some(now() + Duration::days(20)),
+            }],
+        },
+    );
+    let o = run(&f, None, InsightRange::FourWeeks);
+    assert_eq!(o.account(H).unwrap().cycle, CycleLen::Month);
+    assert_eq!(o.account(H).unwrap().tier, None);
+    f.plans.insert(H, "Ultra".into());
+    let o = run(&f, None, InsightRange::FourWeeks);
+    assert_eq!(
+        o.account(H).unwrap().tier,
+        Some(PlanTier::CursorLegacyUltra)
+    );
 }
