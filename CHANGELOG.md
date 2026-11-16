@@ -2,6 +2,10 @@
 
 Patch notes shown after an update (embedded in the exe). Each release gets `## X.Y.Z – date` and 3-6 short bullets. Work in progress goes under `## Unreleased` and is renamed when a version is released (`scripts/release.ps1` refuses a version without a section).
 
+## Unreleased
+
+- The taskbar badges also step aside for a fullscreen video on one monitor while you work on the other.
+
 ## 0.1.11 – 2026-11-09
 
 - Tokens & cost now includes GitHub Copilot CLI sessions (counted when a session ends).

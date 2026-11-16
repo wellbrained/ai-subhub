@@ -209,16 +209,94 @@ pub fn fullscreen_app_in_front() -> bool {
 }
 
 /// True when a fullscreen app is in front on the monitor that `window` is on (the taskbar
-/// display steps aside on that monitor only).
+/// display steps aside on that monitor only). Focused or not: a video left fullscreen on one
+/// monitor while the owner works on the other still counts (owner, 2026-11-16).
 pub fn fullscreen_app_over(window: &Window) -> bool {
     use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
-    let Some(mon) = fullscreen_foreground() else {
-        return false;
-    };
     let Some(own) = hwnd(window) else {
         return false;
     };
-    unsafe { MonitorFromWindow(own, MONITOR_DEFAULTTONEAREST) == mon }
+    let own_mon = unsafe { MonitorFromWindow(own, MONITOR_DEFAULTTONEAREST) };
+    fullscreen_foreground() == Some(own_mon) || fullscreen_on_top(own_mon)
+}
+
+/// Whether the uppermost ordinary window on monitor `mon` covers that whole monitor, walking
+/// the z-order from the top. Skipped: SubHub's own windows, hidden, minimized or cloaked
+/// windows (other virtual desktops), click-through overlays, tool windows (tooltips, bubbles),
+/// always-on-top windows (overlays, picture-in-picture; a focused fullscreen one is caught by
+/// the foreground check), windows on other monitors and Windows' own shell windows.
+fn fullscreen_on_top(mon: windows::Win32::Graphics::Gdi::HMONITOR) -> bool {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromWindow,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GW_HWNDNEXT, GWL_EXSTYLE, GetClassNameW, GetTopWindow, GetWindow, GetWindowLongW,
+        GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    };
+    unsafe {
+        let mut info = MONITORINFO {
+            cbSize: size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(mon, &mut info).as_bool() {
+            return false;
+        }
+        let m = info.rcMonitor;
+        let own_pid = std::process::id();
+        let mut next = GetTopWindow(None).ok();
+        // Bounded: the z-order can change while it is walked.
+        for _ in 0..2000 {
+            let Some(h) = next else { break };
+            next = GetWindow(h, GW_HWNDNEXT).ok();
+            if !IsWindowVisible(h).as_bool() || IsIconic(h).as_bool() {
+                continue;
+            }
+            let ex = GetWindowLongW(h, GWL_EXSTYLE) as u32;
+            if ex & (WS_EX_TOOLWINDOW.0 | WS_EX_TOPMOST.0 | WS_EX_TRANSPARENT.0) != 0 {
+                continue;
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(h, Some(&mut pid));
+            if pid == own_pid {
+                continue;
+            }
+            let mut cloaked = 0u32;
+            if DwmGetWindowAttribute(
+                h,
+                DWMWA_CLOAKED,
+                &mut cloaked as *mut u32 as *mut _,
+                size_of::<u32>() as u32,
+            )
+            .is_ok()
+                && cloaked != 0
+            {
+                continue;
+            }
+            if MonitorFromWindow(h, MONITOR_DEFAULTTONULL) != mon {
+                continue;
+            }
+            let mut r = RECT::default();
+            if GetWindowRect(h, &mut r).is_err() || r.right <= r.left || r.bottom <= r.top {
+                continue;
+            }
+            let mut buf = [0u16; 128];
+            let n = GetClassNameW(h, &mut buf) as usize;
+            let class = String::from_utf16_lossy(&buf[..n]);
+            if NOT_FULLSCREEN_APPS.contains(&class.as_str()) {
+                continue;
+            }
+            // The first real window on this monitor decides.
+            return is_fullscreen_app(
+                &class,
+                (r.left, r.top, r.right, r.bottom),
+                (m.left, m.top, m.right, m.bottom),
+            );
+        }
+        false
+    }
 }
 
 /// Shows or hides without activating (used to step aside for fullscreen apps).
