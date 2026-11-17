@@ -4,7 +4,9 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 
 ## 0.1.13 – 2026-11-17
 
-- The taskbar badges no longer cover other apps' widgets on the taskbar (e.g. WirelessBattery); they move aside.
+- The taskbar badges no longer cover other apps' widgets on the taskbar, such as WirelessBattery's battery display; they move aside.
+- When such a widget gets wider or goes away, the badges follow within a second.
+- Badges you dragged to a spot yourself stay where you put them.
 
 ## 0.1.12 – 2026-11-17
 
