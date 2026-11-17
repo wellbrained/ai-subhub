@@ -36,7 +36,9 @@ pub enum LoginHealth {
     /// The hub could not renew the login (e.g. `invalid grant`): sign in again.
     LoggedOut,
     /// Usage limit or cooldown; the hub tries again at `until` when it says.
-    Limited { until: Option<chrono::DateTime<Utc>> },
+    Limited {
+        until: Option<chrono::DateTime<Utc>>,
+    },
     /// Unavailable for another reason (kept short: the hub's own message is not shown).
     Failing,
 }
@@ -45,25 +47,23 @@ pub enum LoginHealth {
 /// `unavailable` and `next_retry_after` (CLIProxyAPI, checked against a live hub 2026-11-17).
 fn health_of(f: &Value) -> LoginHealth {
     let status = first_str(f, &["status"]).unwrap_or("").to_ascii_lowercase();
-    let unavailable = f.get("unavailable").and_then(Value::as_bool).unwrap_or(false);
+    let unavailable = f
+        .get("unavailable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     if status != "error" && !unavailable {
         return LoginHealth::Ok;
     }
     let message = first_str(f, &["status_message"])
         .unwrap_or("")
         .to_ascii_lowercase();
-    let logged_out = [
-        "invalid grant",
-        "invalid_grant",
-        "unauthorized",
-        "revoked",
-        "invalid_token",
-        "refresh token",
-    ];
+    // Only messages that mean the refresh token itself is gone; a passing 401 or a failed
+    // refresh call (timeout, 5xx) must not count as logged out.
+    let logged_out = ["invalid grant", "invalid_grant", "revoked", "invalid_token"];
     if logged_out.iter().any(|m| message.contains(m)) {
         return LoginHealth::LoggedOut;
     }
-    if ["rate_limit", "rate limit", "429", "quota", "usage limit"]
+    if ["rate_limit", "rate limit", "quota", "usage limit"]
         .iter()
         .any(|m| message.contains(m))
     {
@@ -245,7 +245,9 @@ pub fn replaced_by_new_login(list: &[HubAccount], old: &str) -> Option<String> {
             h.file_name != old
                 && h.provider == dead.provider
                 && h.health != LoginHealth::LoggedOut
-                && h.email.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(email))
+                && h.email
+                    .as_deref()
+                    .is_some_and(|e| e.eq_ignore_ascii_case(email))
         })
         .then(|| email.to_string())
 }
@@ -958,7 +960,9 @@ mod tests {
         assert_eq!(health(json!({"status": "active"})), LoginHealth::Ok);
         assert_eq!(health(json!({})), LoginHealth::Ok);
         assert_eq!(
-            health(json!({"status": "error", "status_message": "invalid grant (retrying)", "unavailable": true})),
+            health(
+                json!({"status": "error", "status_message": "invalid grant (retrying)", "unavailable": true})
+            ),
             LoginHealth::LoggedOut
         );
         assert_eq!(
@@ -980,5 +984,16 @@ mod tests {
             health(json!({"unavailable": true, "status_message": "upstream 500"})),
             LoginHealth::Failing
         );
+        // A failed refresh call or a passing 401 is not a logout.
+        for m in [
+            "failed to refresh token: dial tcp timeout",
+            "upstream returned 401 unauthorized",
+        ] {
+            assert_eq!(
+                health(json!({"status": "error", "status_message": m, "unavailable": true})),
+                LoginHealth::Failing,
+                "{m}"
+            );
+        }
     }
 }

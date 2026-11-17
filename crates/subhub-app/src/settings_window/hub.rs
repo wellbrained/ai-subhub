@@ -8,14 +8,14 @@ fn health_tag(h: Option<&LoginHealth>) -> Option<(String, bool)> {
     match h? {
         LoginHealth::Ok => None,
         LoginHealth::LoggedOut => Some(("Logged out".into(), false)),
-        LoginHealth::Limited { until: Some(u) } => Some((
+        LoginHealth::Limited { until: Some(u) } if *u > chrono::Utc::now() => Some((
             format!(
                 "Limit until {}",
                 u.with_timezone(&chrono::Local).format("%H:%M")
             ),
             true,
         )),
-        LoginHealth::Limited { until: None } => Some(("Limit reached".into(), true)),
+        LoginHealth::Limited { .. } => Some(("Limit reached".into(), true)),
         LoginHealth::Failing => Some(("Not working".into(), false)),
     }
 }
@@ -53,12 +53,17 @@ impl SettingsWindow {
             let logged_out = health == Some(LoginHealth::LoggedOut);
             let removing = s.hub_removing.contains(&file);
             let confirming = self.confirm_hub_remove == Some(id);
-            let action = if logged_out && !removing && !confirming {
-                // Expired login: sign in again (the expired file goes once the new one is in).
+            // Expired login: Sign in again next to Remove (the expired file goes once the new
+            // login is in; Remove stays for an account given up).
+            let renew = (logged_out && !removing && !confirming).then(|| {
                 let waiting = s.hub_login.is_some();
                 button(
                     ("hub-renew", id.as_u128() as u64 as usize),
-                    if waiting { "Waiting…" } else { "Sign in again" },
+                    if waiting {
+                        "Waiting…"
+                    } else {
+                        "Sign in again"
+                    },
                     t,
                     true,
                 )
@@ -69,8 +74,8 @@ impl SettingsWindow {
                         }
                     });
                 }))
-                .into_any_element()
-            } else if removing {
+            });
+            let action = if removing {
                 div()
                     .text_xs()
                     .text_color(t.muted)
@@ -143,6 +148,7 @@ impl SettingsWindow {
                     .when_some(health_tag(health.as_ref()), |d, (text, warn)| {
                         d.child(tag(&text, if warn { t.warn } else { t.danger }, t))
                     })
+                    .when_some(renew, |d, b| d.child(b))
                     .child(action),
             );
         }
@@ -167,7 +173,8 @@ impl SettingsWindow {
                 let pick = |kind: ProviderKind, id: &'static str, label: &'static str| {
                     icon_button(id, Icon::Provider(kind), label, t).on_click(cx.listener(
                         move |this, _, _, cx| {
-                            this.state.update(cx, |s, cx| s.start_hub_login(kind, cx));
+                            this.state
+                                .update(cx, |s, cx| s.start_hub_login(kind, None, cx));
                         },
                     ))
                 };

@@ -84,9 +84,6 @@ pub struct AppState {
     pub hub_removing: HashSet<String>,
     /// What the hub reported about each login (file name) in the last listing. Not persisted.
     pub hub_health: HashMap<String, LoginHealth>,
-    /// The logged-out login a running sign-in replaces (its file name); removed once the new
-    /// login for the same email is in the hub.
-    hub_login_replacing: Option<String>,
     /// Compact popover: accounts opened to their full card (this session only).
     pub popover_expanded: HashSet<Uuid>,
     /// Last steering failure, shown in Settings → Hub.
@@ -183,7 +180,6 @@ impl AppState {
             hub_login: None,
             hub_removing: HashSet::new(),
             hub_health: HashMap::new(),
-            hub_login_replacing: None,
             popover_expanded: HashSet::new(),
             steering_error: None,
             hub_cooldown: HashMap::new(),
@@ -840,7 +836,14 @@ impl AppState {
 
     /// Adds a login to the hub: the hub starts its sign-in, the browser opens it, and SubHub
     /// waits (up to 10 min) until the hub reports it done, then lists the hub again.
-    pub fn start_hub_login(&mut self, provider: ProviderKind, cx: &mut Context<Self>) {
+    /// `replacing`: the expired login (file name) this sign-in renews; it is removed in the hub
+    /// once a working login for the same email is there.
+    pub fn start_hub_login(
+        &mut self,
+        provider: ProviderKind,
+        replacing: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if crate::demo::on() {
             self.message_for_user = Some(crate::demo::NOT_AVAILABLE.into());
             cx.notify();
@@ -931,10 +934,6 @@ impl AppState {
                     Err(_) => continue,
                 }
             };
-            let replacing = this
-                .update(cx, |s, _| s.hub_login_replacing.take())
-                .ok()
-                .flatten();
             let mut cleaned = None;
             if let (Ok(()), Some(old)) = (&outcome, replacing) {
                 let b = base_url.clone();
@@ -966,7 +965,6 @@ impl AppState {
 
     /// Stops waiting for a hub sign-in and tells the hub to drop it.
     pub fn cancel_hub_login(&mut self, cx: &mut Context<Self>) {
-        self.hub_login_replacing = None;
         let Some((_, state)) = self.hub_login.take() else {
             return;
         };
@@ -1042,9 +1040,10 @@ impl AppState {
                 .collect();
             // A tray notice once per login that turns logged out (owner, 2026-11-17); a click
             // opens the popover, whose card offers Sign in to hub.
-            for (file, h) in &health {
+            for h in list {
+                let file = &h.file_name;
                 let was_out = self.hub_health.get(file) == Some(&LoginHealth::LoggedOut);
-                if *h == LoginHealth::LoggedOut && !was_out {
+                if h.health == LoginHealth::LoggedOut && !was_out && !h.disabled {
                     let label = self
                         .settings
                         .accounts
@@ -1086,8 +1085,7 @@ impl AppState {
         if self.hub_login.is_some() {
             return;
         }
-        self.hub_login_replacing = file;
-        self.start_hub_login(provider, cx);
+        self.start_hub_login(provider, file, cx);
     }
 
     fn due_accounts(&mut self, force: bool, only: Option<&HashSet<Uuid>>) -> Vec<Account> {
@@ -1983,11 +1981,21 @@ fn hub_text(e: HubError) -> String {
 }
 
 /// After a renewed sign-in: removes the expired login `old` from the hub when a working login
-/// for the same email is there now. Returns that email when it removed it.
+/// for the same email is there now. Returns that email when it removed it. The hub may list the
+/// new login a moment after reporting the sign-in done, so it looks up to 5 times, 2 s apart.
 fn remove_replaced_login(base_url: String, old: &str) -> Option<String> {
     let client = hub_client(base_url).ok()?;
-    let list = client.list_accounts().ok()?;
-    let email = subhub_core::hub::replaced_by_new_login(&list, old)?;
-    client.remove_login(old).ok()?;
-    Some(email)
+    for attempt in 0..5 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+        let Ok(list) = client.list_accounts() else {
+            continue;
+        };
+        if let Some(email) = subhub_core::hub::replaced_by_new_login(&list, old) {
+            client.remove_login(old).ok()?;
+            return Some(email);
+        }
+    }
+    None
 }

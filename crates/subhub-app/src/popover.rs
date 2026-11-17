@@ -250,7 +250,14 @@ impl Render for Popover {
         }
         for (provider, accs) in popover_groups(s) {
             let folded = d.collapsed_providers.contains(&provider);
-            body = body.child(provider_heading(provider, &accs, folded, s, &t, self.state.clone()));
+            body = body.child(provider_heading(
+                provider,
+                &accs,
+                folded,
+                s,
+                &t,
+                self.state.clone(),
+            ));
             if folded {
                 continue;
             }
@@ -1246,7 +1253,7 @@ fn small_button(
 }
 
 /// Sign in (login not accepted, accounts with a profile) and Retry (this account only) with the
-/// last action's note. Hub-only accounts cannot sign in from SubHub.
+/// last action's note; an expired hub login adds Sign in to hub (renews it through the hub).
 fn recovery_row(
     acc: &Account,
     s: &AppState,
@@ -1262,14 +1269,19 @@ fn recovery_row(
     let mut row = div().flex().items_center().gap_2().pt_1();
     // The hub's login expired (its usage may still read fine through the CLI profile): sign it
     // in again through the hub (owner, 2026-11-17).
-    if s.hub_logged_out(id) {
+    let benched = acc.hub.as_ref().is_some_and(|h| h.benched);
+    if s.hub_logged_out(id) && !benched {
         let st = state.clone();
         let busy = s.hub_login.is_some();
-        return Some(
-            row.child(
+        row = row
+            .child(
                 small_button(
                     SharedString::from(format!("hub-signin-{id}")),
-                    if busy { "Waiting for browser…" } else { "Sign in to hub" },
+                    if busy {
+                        "Cancel hub sign-in"
+                    } else {
+                        "Sign in to hub"
+                    },
                     Icon::LogIn,
                     true,
                     t,
@@ -1286,13 +1298,10 @@ fn recovery_row(
             )
             .child(
                 div()
-                    .flex_1()
-                    .min_w_0()
                     .text_xs()
                     .text_color(t.danger)
                     .child("Hub login expired"),
-            ),
-        );
+            );
     }
     if needs_attention(acc, s) {
         let sign_in_state = last_state(s, id) == Some(UsageState::SignInRequired);
@@ -1659,12 +1668,7 @@ fn compact_row(
     if s.settings.readings.contains_key(&acc.id) {
         let (a, b) = crate::taskbar::badge_windows(s, acc);
         for (label, w) in [a, b] {
-            let mut cell = div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .items_center()
-                .gap(px(6.0));
+            let mut cell = div().flex_1().min_w_0().flex().items_center().gap(px(6.0));
             if let Some(w) = w {
                 let color = if stale {
                     t.faint
@@ -1685,17 +1689,11 @@ fn compact_row(
                             .text_color(t.muted)
                             .child(label),
                     )
-                    .child(
-                        div().flex_1().h(px(5.0)).rounded_full().bg(t.track).child(
-                            div()
-                                .h_full()
-                                .rounded_full()
-                                .bg(color)
-                                .w(gpui::relative(
-                                    format::gauge_fraction(&w, d).clamp(0.0, 1.0),
-                                )),
-                        ),
-                    )
+                    .child(div().flex_1().h(px(5.0)).rounded_full().bg(t.track).child(
+                        div().h_full().rounded_full().bg(color).w(gpui::relative(
+                            format::gauge_fraction(&w, d).clamp(0.0, 1.0),
+                        )),
+                    ))
                     .child(
                         div()
                             .w(px(34.0))
