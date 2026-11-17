@@ -1,5 +1,5 @@
 //! Pure placement decisions for the taskbar display and hover cards: which monitors' taskbars
-//! get a display, and where a hover card goes. The app supplies the monitors and rectangles
+//! get a display, where a hover card goes, and stepping past other apps' taskbar widgets. The app supplies the monitors and rectangles
 //! (Win32); nothing here touches the OS.
 use crate::settings::TaskbarMonitors;
 
@@ -73,9 +73,45 @@ pub fn card_origin(anchor: Rect, w: f32, h: f32, work: Rect, margin: f32, gap: f
     (x, y)
 }
 
+/// Left edge for a `w`-wide strip wanted at `x` that does not overlap any of `taken` (left,
+/// right spans, e.g. another app's widget on the taskbar), keeping `gap` from them. It moves
+/// further left (`leftward`, the side away from the tray) or right until it fits.
+pub fn step_aside(x: f32, w: f32, gap: f32, taken: &[(f32, f32)], leftward: bool) -> f32 {
+    let mut x = x;
+    // Each pass clears at least one span, so this ends within `taken.len()` passes.
+    for _ in 0..=taken.len() {
+        let hit = taken
+            .iter()
+            .filter(|(l, r)| r > l && x < r + gap && x + w > l - gap)
+            .copied()
+            .reduce(|a, b| if leftward == (b.0 < a.0) { b } else { a });
+        match hit {
+            Some((l, _)) if leftward => x = l - gap - w,
+            Some((_, r)) => x = r + gap,
+            None => break,
+        }
+    }
+    x
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn step_aside_passes_widgets_next_to_the_tray() {
+        // Free spot: stays.
+        assert_eq!(step_aside(100.0, 50.0, 8.0, &[(300.0, 400.0)], true), 100.0);
+        // A widget left of the tray (WirelessBattery): moves left of it.
+        assert_eq!(step_aside(1750.0, 416.0, 8.0, &[(2039.0, 2172.0)], true), 1615.0);
+        // Two adjacent widgets: clears both.
+        let two = [(2039.0, 2172.0), (1900.0, 2030.0)];
+        assert_eq!(step_aside(1750.0, 416.0, 8.0, &two, true), 1476.0);
+        // Rightward from the widgets button.
+        assert_eq!(step_aside(60.0, 100.0, 8.0, &[(100.0, 200.0)], false), 208.0);
+        // Empty spans are ignored.
+        assert_eq!(step_aside(10.0, 50.0, 8.0, &[(20.0, 20.0)], true), 10.0);
+    }
 
     fn mon(id: &str, is_main: bool, has_taskbar: bool) -> MonitorInfo {
         MonitorInfo {

@@ -697,10 +697,107 @@ fn tray_area_left() -> Option<i32> {
     }
 }
 
+/// Space kept between the badges and another app's widget on the taskbar (logical px).
+const WIDGET_GAP: f32 = 8.0;
+
+/// Other apps' windows on this taskbar, as (left, right) in physical px: windows they embed in
+/// the taskbar (e.g. WirelessBattery's `WirelessBatteryWidget` right of the running apps) and
+/// small top-level windows that sit entirely on it (owner, 2026-11-17: the badges covered one).
+/// Explorer's own parts and our windows are not counted.
+fn foreign_spans(bar: windows::Win32::Foundation::HWND) -> Vec<(i32, i32)> {
+    use windows::Win32::Foundation::{HWND, LPARAM, RECT};
+    use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumChildWindows, EnumWindows, GetClassNameW, GetWindowRect, GetWindowThreadProcessId,
+        IsWindowVisible,
+    };
+    struct Ctx {
+        bar_rect: RECT,
+        skip: [u32; 2],
+        out: Vec<(i32, i32)>,
+    }
+    fn pid(h: HWND) -> u32 {
+        let mut p = 0u32;
+        unsafe { GetWindowThreadProcessId(h, Some(&mut p)) };
+        p
+    }
+    fn rect(h: HWND) -> Option<RECT> {
+        let mut r = RECT::default();
+        unsafe { GetWindowRect(h, &mut r).ok()? };
+        (r.right > r.left && r.bottom > r.top).then_some(r)
+    }
+    /// Other virtual desktops' windows, tooltips and menus pass over the taskbar but are no
+    /// widgets (counting them would make the badges jump for a moment).
+    fn passing(h: HWND) -> bool {
+        let mut cloaked = 0u32;
+        let is_cloaked = unsafe {
+            DwmGetWindowAttribute(
+                h,
+                DWMWA_CLOAKED,
+                &mut cloaked as *mut u32 as *mut _,
+                size_of::<u32>() as u32,
+            )
+        }
+        .is_ok()
+            && cloaked != 0;
+        let mut buf = [0u16; 64];
+        let n = unsafe { GetClassNameW(h, &mut buf) }.max(0) as usize;
+        let class = String::from_utf16_lossy(&buf[..n]);
+        is_cloaked || matches!(class.as_str(), "tooltips_class32" | "#32768")
+    }
+    unsafe extern "system" fn in_bar(h: HWND, l: LPARAM) -> windows::core::BOOL {
+        let c = unsafe { &mut *(l.0 as *mut Ctx) };
+        // Any depth: a widget may be parented into one of Explorer's own parts, and Explorer's
+        // parts themselves are skipped by process.
+        if unsafe { IsWindowVisible(h) }.as_bool()
+            && !c.skip.contains(&pid(h))
+            && let Some(r) = rect(h)
+            && (r.right - r.left) * 2 < c.bar_rect.right - c.bar_rect.left
+        {
+            c.out.push((r.left, r.right));
+        }
+        true.into()
+    }
+    unsafe extern "system" fn over_bar(h: HWND, l: LPARAM) -> windows::core::BOOL {
+        let c = unsafe { &mut *(l.0 as *mut Ctx) };
+        let b = c.bar_rect;
+        if unsafe { IsWindowVisible(h) }.as_bool()
+            && !c.skip.contains(&pid(h))
+            && !passing(h)
+            && let Some(r) = rect(h)
+            // Entirely within the taskbar's band and narrower than half of it: a widget, not a
+            // maximized window whose edge pokes over the taskbar.
+            && r.top >= b.top - 2
+            && r.bottom <= b.bottom + 2
+            && r.left < b.right
+            && r.right > b.left
+            && (r.right - r.left) * 2 < b.right - b.left
+        {
+            c.out.push((r.left, r.right));
+        }
+        true.into()
+    }
+    let Some(bar_rect) = rect(bar) else {
+        return Vec::new();
+    };
+    let mut ctx = Ctx {
+        bar_rect,
+        skip: [pid(bar), std::process::id()],
+        out: Vec::new(),
+    };
+    let l = LPARAM(&mut ctx as *mut Ctx as isize);
+    unsafe {
+        let _ = EnumChildWindows(Some(bar), Some(in_bar), l);
+        let _ = EnumWindows(Some(over_bar), l);
+    }
+    ctx.out
+}
+
 /// Logical bounds over this monitor's taskbar for the current settings.
 fn bounds_for(s: &AppState, monitor: &str) -> Option<Bounds<gpui::Pixels>> {
-    let ((r, scale, is_main), layout) = taskbar_for(monitor)?;
-    let layout = layout.unwrap_or_default();
+    let m = crate::monitors::find(monitor)?;
+    let (r, scale, is_main) = (m.taskbar_rect()?, m.scale, m.is_main);
+    let layout = m.taskbar.and_then(crate::taskbar_layout::get).unwrap_or_default();
     let height_phys = r.bottom - r.top;
     if height_phys <= 0 || (r.right - r.left) < (r.bottom - r.top) * 3 {
         return None; // vertical or hidden taskbar: not supported
@@ -712,10 +809,9 @@ fn bounds_for(s: &AppState, monitor: &str) -> Option<Bounds<gpui::Pixels>> {
     let h = (height_phys as f32 / scale - TOP_GAP).clamp(28.0, 64.0);
     let top = r.top as f32 / scale + TOP_GAP;
     let right = r.right as f32 / scale;
-    let x = match (
-        s.display().taskbar_offset_for(monitor, is_main),
-        s.display().taskbar_position,
-    ) {
+    let position = s.display().taskbar_position;
+    let dragged = s.display().taskbar_offset_for(monitor, is_main);
+    let x = match (dragged, position) {
         // Dragged by the user: keep the same distance from the taskbar's right edge.
         (Some(offset), _) => right - offset - w,
         // Right of the widgets button (weather): measured (owner, 2026-11-08: a 44 px icon on
@@ -735,6 +831,19 @@ fn bounds_for(s: &AppState, monitor: &str) -> Option<Bounds<gpui::Pixels>> {
                 None => right - 160.0 - w,
             }
         }
+    };
+    // Automatic spot: step past other apps' widgets on the taskbar (a dragged spot is the
+    // owner's choice and stays).
+    let x = match (dragged, m.taskbar) {
+        (None, Some(bar)) => {
+            let taken: Vec<(f32, f32)> = foreign_spans(bar)
+                .into_iter()
+                .map(|(left, right)| (left as f32 / scale, right as f32 / scale))
+                .collect();
+            let leftward = position == TaskbarPosition::Right;
+            subhub_core::placement::step_aside(x, w, WIDGET_GAP, &taken, leftward)
+        }
+        _ => x,
     };
     let x = x.clamp(r.left as f32 / scale, right - w);
     Some(Bounds {
