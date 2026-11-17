@@ -1183,7 +1183,9 @@ fn needs_attention(acc: &Account, s: &AppState) -> bool {
     if acc.hub.as_ref().is_some_and(|h| h.benched) && acc.profile_dir.is_none() {
         return false;
     }
-    s.is_stale(acc.id) || last_state(s, acc.id).is_some_and(|st| st != UsageState::Ready)
+    s.is_stale(acc.id)
+        || last_state(s, acc.id).is_some_and(|st| st != UsageState::Ready)
+        || s.hub_logged_out(acc.id)
 }
 
 fn retry_possible(acc: &Account, s: &AppState, now: chrono::DateTime<Utc>) -> bool {
@@ -1258,6 +1260,40 @@ fn recovery_row(
     }
     let id = acc.id;
     let mut row = div().flex().items_center().gap_2().pt_1();
+    // The hub's login expired (its usage may still read fine through the CLI profile): sign it
+    // in again through the hub (owner, 2026-11-17).
+    if s.hub_logged_out(id) {
+        let st = state.clone();
+        let busy = s.hub_login.is_some();
+        return Some(
+            row.child(
+                small_button(
+                    SharedString::from(format!("hub-signin-{id}")),
+                    if busy { "Waiting for browser…" } else { "Sign in to hub" },
+                    Icon::LogIn,
+                    true,
+                    t,
+                )
+                .on_click(move |_, _, cx| {
+                    st.update(cx, |s, cx| {
+                        if s.hub_login.is_some() {
+                            s.cancel_hub_login(cx)
+                        } else {
+                            s.renew_hub_login(id, cx)
+                        }
+                    })
+                }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(t.danger)
+                    .child("Hub login expired"),
+            ),
+        );
+    }
     if needs_attention(acc, s) {
         let sign_in_state = last_state(s, id) == Some(UsageState::SignInRequired);
         if sign_in_state {

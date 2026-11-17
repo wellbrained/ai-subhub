@@ -1,5 +1,25 @@
 use super::*;
 
+use subhub_core::hub::LoginHealth;
+
+/// The hub's state of a login as a tag: text and whether it is only a warning (comes back by
+/// itself). None when the login works.
+fn health_tag(h: Option<&LoginHealth>) -> Option<(String, bool)> {
+    match h? {
+        LoginHealth::Ok => None,
+        LoginHealth::LoggedOut => Some(("Logged out".into(), false)),
+        LoginHealth::Limited { until: Some(u) } => Some((
+            format!(
+                "Limit until {}",
+                u.with_timezone(&chrono::Local).format("%H:%M")
+            ),
+            true,
+        )),
+        LoginHealth::Limited { until: None } => Some(("Limit reached".into(), true)),
+        LoginHealth::Failing => Some(("Not working".into(), false)),
+    }
+}
+
 impl SettingsWindow {
     /// The hub's logins with Remove (second click confirms), then Add (sign in through the hub).
     fn hub_logins(&self, t: &Tokens, cx: &mut Context<Self>) -> impl IntoElement {
@@ -29,9 +49,28 @@ impl SettingsWindow {
                 .map(|h| h.file_name.clone())
                 .unwrap_or_default();
             let benched = a.hub.as_ref().is_some_and(|h| h.benched);
+            let health = s.hub_health_of(id).cloned();
+            let logged_out = health == Some(LoginHealth::LoggedOut);
             let removing = s.hub_removing.contains(&file);
             let confirming = self.confirm_hub_remove == Some(id);
-            let action = if removing {
+            let action = if logged_out && !removing && !confirming {
+                // Expired login: sign in again (the expired file goes once the new one is in).
+                let waiting = s.hub_login.is_some();
+                button(
+                    ("hub-renew", id.as_u128() as u64 as usize),
+                    if waiting { "Waiting…" } else { "Sign in again" },
+                    t,
+                    true,
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    this.state.update(cx, |s, cx| {
+                        if s.hub_login.is_none() {
+                            s.renew_hub_login(id, cx)
+                        }
+                    });
+                }))
+                .into_any_element()
+            } else if removing {
                 div()
                     .text_xs()
                     .text_color(t.muted)
@@ -101,6 +140,9 @@ impl SettingsWindow {
                             ))),
                     )
                     .when(benched, |d| d.child(tag("Benched", t.muted, t)))
+                    .when_some(health_tag(health.as_ref()), |d, (text, warn)| {
+                        d.child(tag(&text, if warn { t.warn } else { t.danger }, t))
+                    })
                     .child(action),
             );
         }

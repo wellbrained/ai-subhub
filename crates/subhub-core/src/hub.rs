@@ -23,6 +23,56 @@ pub struct HubAccount {
     pub account_id: Option<String>,
     /// Credential priority from `auth-files`, when the hub reports one.
     pub priority: Option<i64>,
+    /// Whether the hub can use this login right now (from its `status` fields).
+    pub health: LoginHealth,
+}
+
+/// What the hub reports about one login. A logged-out login needs a new sign-in; a limited one
+/// comes back by itself (owner, 2026-11-17: two logins died and nothing showed it).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum LoginHealth {
+    #[default]
+    Ok,
+    /// The hub could not renew the login (e.g. `invalid grant`): sign in again.
+    LoggedOut,
+    /// Usage limit or cooldown; the hub tries again at `until` when it says.
+    Limited { until: Option<chrono::DateTime<Utc>> },
+    /// Unavailable for another reason (kept short: the hub's own message is not shown).
+    Failing,
+}
+
+/// Reads a login's health from its `auth-files` entry: `status`, `status_message`,
+/// `unavailable` and `next_retry_after` (CLIProxyAPI, checked against a live hub 2026-11-17).
+fn health_of(f: &Value) -> LoginHealth {
+    let status = first_str(f, &["status"]).unwrap_or("").to_ascii_lowercase();
+    let unavailable = f.get("unavailable").and_then(Value::as_bool).unwrap_or(false);
+    if status != "error" && !unavailable {
+        return LoginHealth::Ok;
+    }
+    let message = first_str(f, &["status_message"])
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let logged_out = [
+        "invalid grant",
+        "invalid_grant",
+        "unauthorized",
+        "revoked",
+        "invalid_token",
+        "refresh token",
+    ];
+    if logged_out.iter().any(|m| message.contains(m)) {
+        return LoginHealth::LoggedOut;
+    }
+    if ["rate_limit", "rate limit", "429", "quota", "usage limit"]
+        .iter()
+        .any(|m| message.contains(m))
+    {
+        let until = first_str(f, &["next_retry_after"])
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.with_timezone(&Utc));
+        return LoginHealth::Limited { until };
+    }
+    LoginHealth::Failing
 }
 
 #[derive(Debug)]
@@ -176,9 +226,28 @@ pub(crate) fn parse_auth_files(body: &Value) -> Vec<HubAccount> {
                     p.as_i64()
                         .or_else(|| p.as_f64().filter(|x| x.is_finite()).map(|x| x as i64))
                 }),
+                health: health_of(f),
             })
         })
         .collect()
+}
+
+/// After a new sign-in meant to replace the logged-out login `old`: its email when `old` is
+/// still logged out and another login for the same email now works, so `old` can go. None when
+/// the hub reused the file, or the new login is for another account.
+pub fn replaced_by_new_login(list: &[HubAccount], old: &str) -> Option<String> {
+    let dead = list
+        .iter()
+        .find(|h| h.file_name == old && h.health == LoginHealth::LoggedOut)?;
+    let email = dead.email.as_deref()?;
+    list.iter()
+        .any(|h| {
+            h.file_name != old
+                && h.provider == dead.provider
+                && h.health != LoginHealth::LoggedOut
+                && h.email.as_deref().is_some_and(|e| e.eq_ignore_ascii_case(email))
+        })
+        .then(|| email.to_string())
 }
 
 /// JSON body of the one allowed hub write: `{"name": <file>, "priority": <n or null>}`.
@@ -836,11 +905,80 @@ mod tests {
             disabled: false,
             account_id: None,
             priority: None,
+            health: LoginHealth::Ok,
         };
         let r = c.read_usage(&acc);
         assert_eq!(
             (r.state, r.source),
             (UsageState::Unavailable, ReadSource::Hub)
+        );
+    }
+
+    fn health(entry: Value) -> LoginHealth {
+        let mut f = json!({"type": "claude", "name": "claude-x.json"});
+        f.as_object_mut()
+            .unwrap()
+            .extend(entry.as_object().unwrap().clone());
+        parse_auth_files(&json!({ "files": [f] }))[0].health.clone()
+    }
+
+    #[test]
+    fn a_renewed_login_replaces_only_the_dead_file_of_the_same_email() {
+        let login = |file: &str, email: &str, health: LoginHealth| HubAccount {
+            provider: ProviderKind::Claude,
+            email: Some(email.into()),
+            file_name: file.into(),
+            auth_index: Value::Null,
+            disabled: false,
+            account_id: None,
+            priority: None,
+            health,
+        };
+        let dead = login("old.json", "a@example.test", LoginHealth::LoggedOut);
+        let fresh = login("new.json", "A@example.test", LoginHealth::Ok);
+        let other = login("b.json", "b@example.test", LoginHealth::Ok);
+        assert_eq!(
+            replaced_by_new_login(&[dead.clone(), fresh.clone()], "old.json"),
+            Some("a@example.test".into())
+        );
+        // Signed in as someone else: the dead login stays.
+        assert_eq!(
+            replaced_by_new_login(&[dead.clone(), other], "old.json"),
+            None
+        );
+        // The hub reused the file (it works again) or it is already gone.
+        let revived = login("old.json", "a@example.test", LoginHealth::Ok);
+        assert_eq!(replaced_by_new_login(&[revived], "old.json"), None);
+        assert_eq!(replaced_by_new_login(&[fresh], "old.json"), None);
+    }
+
+    #[test]
+    fn login_health_reads_the_hub_status_fields() {
+        // Shapes seen on a live hub, 2026-11-17.
+        assert_eq!(health(json!({"status": "active"})), LoginHealth::Ok);
+        assert_eq!(health(json!({})), LoginHealth::Ok);
+        assert_eq!(
+            health(json!({"status": "error", "status_message": "invalid grant (retrying)", "unavailable": true})),
+            LoginHealth::LoggedOut
+        );
+        assert_eq!(
+            health(json!({
+                "status": "error",
+                "status_message": "{\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\"}}",
+                "unavailable": true,
+                "next_retry_after": "2026-11-17T23:00:05.0103285+01:00"
+            })),
+            LoginHealth::Limited {
+                until: Some("2026-11-17T22:00:05.0103285Z".parse().unwrap())
+            }
+        );
+        assert_eq!(
+            health(json!({"status": "error", "status_message": "rate limited"})),
+            LoginHealth::Limited { until: None }
+        );
+        assert_eq!(
+            health(json!({"unavailable": true, "status_message": "upstream 500"})),
+            LoginHealth::Failing
         );
     }
 }

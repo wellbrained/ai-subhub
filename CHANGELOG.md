@@ -4,6 +4,9 @@ Patch notes shown after an update (embedded in the exe). Each release gets `## X
 
 ## Unreleased
 
+- A hub login that expired (the hub can no longer renew it) now shows: a tray notice, "Hub login expired" with **Sign in to hub** on its card, and "Logged out" with **Sign in again** in Settings → Hub. Signing in again replaces the expired login in the hub.
+- Settings → Hub also shows when a login has hit its limit and until when.
+- Auto steering skips logins the hub can no longer use.
 - The taskbar badges also step aside for a fullscreen video on one monitor while you work on the other.
 
 ## 0.1.11 – 2026-11-09

@@ -441,6 +441,7 @@ mod tests {
                 disabled: false,
                 account_id: None,
                 priority: None,
+                health: Default::default(),
             },
             crate::hub::HubAccount {
                 provider: ProviderKind::Claude,
@@ -450,6 +451,7 @@ mod tests {
                 disabled: false,
                 account_id: None,
                 priority: None,
+                health: Default::default(),
             },
         ];
         crate::merge::apply_hub_accounts(&mut accounts, &hub);

@@ -8,7 +8,7 @@ use gpui::{Context, WeakEntity};
 use subhub_core::billing;
 use subhub_core::detect::{self, Attach, DetectedProfile, ImportReport};
 use subhub_core::history::{self, History};
-use subhub_core::hub::{HubAccount, HubClient, HubError};
+use subhub_core::hub::{HubAccount, HubClient, HubError, LoginHealth};
 use subhub_core::launch::{self, DesktopApps, LaunchEnv, LoginCompletion, Target};
 use subhub_core::model::{Account, ProviderKind, ReadSource, UsageResult, UsageState};
 use subhub_core::profile::ProfileEnv;
@@ -82,6 +82,11 @@ pub struct AppState {
     pub hub_login: Option<(ProviderKind, String)>,
     /// Hub logins (file names) whose removal is running.
     pub hub_removing: HashSet<String>,
+    /// What the hub reported about each login (file name) in the last listing. Not persisted.
+    pub hub_health: HashMap<String, LoginHealth>,
+    /// The logged-out login a running sign-in replaces (its file name); removed once the new
+    /// login for the same email is in the hub.
+    hub_login_replacing: Option<String>,
     /// Compact popover: accounts opened to their full card (this session only).
     pub popover_expanded: HashSet<Uuid>,
     /// Last steering failure, shown in Settings → Hub.
@@ -177,6 +182,8 @@ impl AppState {
             steering_busy: false,
             hub_login: None,
             hub_removing: HashSet::new(),
+            hub_health: HashMap::new(),
+            hub_login_replacing: None,
             popover_expanded: HashSet::new(),
             steering_error: None,
             hub_cooldown: HashMap::new(),
@@ -723,7 +730,8 @@ impl AppState {
             &self.settings,
             &self.settings.accounts,
             &self.settings.readings,
-            &|id| self.is_stale(id),
+            // A logged-out hub login cannot serve threads: never steer to it.
+            &|id| self.is_stale(id) || self.hub_logged_out(id),
             now,
         );
         let (changes, originals) =
@@ -923,13 +931,30 @@ impl AppState {
                     Err(_) => continue,
                 }
             };
+            let replacing = this
+                .update(cx, |s, _| s.hub_login_replacing.take())
+                .ok()
+                .flatten();
+            let mut cleaned = None;
+            if let (Ok(()), Some(old)) = (&outcome, replacing) {
+                let b = base_url.clone();
+                cleaned = cx
+                    .background_executor()
+                    .spawn(async move { remove_replaced_login(b, &old) })
+                    .await;
+            }
             let _ = this.update(cx, |s, cx| {
                 s.hub_login = None;
                 s.message_for_user = Some(match outcome {
-                    Ok(()) => format!(
-                        "Signed in. The new {} login shows up in a moment.",
-                        provider_name(provider)
-                    ),
+                    Ok(()) => match cleaned {
+                        Some(email) => format!(
+                            "Signed in. The hub uses the new login for {email} and dropped the expired one."
+                        ),
+                        None => format!(
+                            "Signed in. The new {} login shows up in a moment.",
+                            provider_name(provider)
+                        ),
+                    },
                     Err(e) => format!("The sign-in did not finish: {e}"),
                 });
                 s.refresh(true, cx);
@@ -941,6 +966,7 @@ impl AppState {
 
     /// Stops waiting for a hub sign-in and tells the hub to drop it.
     pub fn cancel_hub_login(&mut self, cx: &mut Context<Self>) {
+        self.hub_login_replacing = None;
         let Some((_, state)) = self.hub_login.take() else {
             return;
         };
@@ -1010,7 +1036,58 @@ impl AppState {
             if report != merge::MergeReport::default() {
                 self.save();
             }
+            let health: HashMap<String, LoginHealth> = list
+                .iter()
+                .map(|h| (h.file_name.clone(), h.health.clone()))
+                .collect();
+            // A tray notice once per login that turns logged out (owner, 2026-11-17); a click
+            // opens the popover, whose card offers Sign in to hub.
+            for (file, h) in &health {
+                let was_out = self.hub_health.get(file) == Some(&LoginHealth::LoggedOut);
+                if *h == LoginHealth::LoggedOut && !was_out {
+                    let label = self
+                        .settings
+                        .accounts
+                        .iter()
+                        .find(|a| a.hub.as_ref().is_some_and(|l| &l.file_name == file))
+                        .map(|a| a.label.clone())
+                        .unwrap_or_else(|| file.clone());
+                    self.pending_notices.push((
+                        format!("{label}: hub login expired"),
+                        "The hub can no longer use this account. Click to sign in again.".into(),
+                    ));
+                }
+            }
+            self.hub_health = health;
         }
+    }
+
+    /// The hub reports this account's login as logged out (needs a new sign-in).
+    pub fn hub_logged_out(&self, id: Uuid) -> bool {
+        self.account(id)
+            .and_then(|a| a.hub.as_ref())
+            .and_then(|h| self.hub_health.get(&h.file_name))
+            == Some(&LoginHealth::LoggedOut)
+    }
+
+    /// The hub's health for this account's login, when it has one in the last listing.
+    pub fn hub_health_of(&self, id: Uuid) -> Option<&LoginHealth> {
+        let file = &self.account(id)?.hub.as_ref()?.file_name;
+        self.hub_health.get(file)
+    }
+
+    /// Signs the account's logged-out hub login in again: the normal hub sign-in, and once the
+    /// new login for the same email is in the hub, the dead one is removed there.
+    pub fn renew_hub_login(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        let Some(acc) = self.account(id) else {
+            return;
+        };
+        let (provider, file) = (acc.provider, acc.hub.as_ref().map(|h| h.file_name.clone()));
+        if self.hub_login.is_some() {
+            return;
+        }
+        self.hub_login_replacing = file;
+        self.start_hub_login(provider, cx);
     }
 
     fn due_accounts(&mut self, force: bool, only: Option<&HashSet<Uuid>>) -> Vec<Account> {
@@ -1903,4 +1980,14 @@ fn hub_client(base_url: String) -> Result<HubClient, String> {
 
 fn hub_text(e: HubError) -> String {
     e.to_string()
+}
+
+/// After a renewed sign-in: removes the expired login `old` from the hub when a working login
+/// for the same email is there now. Returns that email when it removed it.
+fn remove_replaced_login(base_url: String, old: &str) -> Option<String> {
+    let client = hub_client(base_url).ok()?;
+    let list = client.list_accounts().ok()?;
+    let email = subhub_core::hub::replaced_by_new_login(&list, old)?;
+    client.remove_login(old).ok()?;
+    Some(email)
 }

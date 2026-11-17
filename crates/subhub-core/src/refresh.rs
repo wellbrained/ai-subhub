@@ -33,6 +33,7 @@ pub fn read_account(
                 disabled: link.benched,
                 account_id: link.account_id.clone(),
                 priority: link.priority,
+                health: Default::default(),
             };
             let result = client.read_usage(&login);
             if result.state == UsageState::Ready

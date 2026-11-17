@@ -272,6 +272,7 @@ mod tests {
             disabled,
             account_id: None,
             priority: None,
+            health: Default::default(),
         }
     }
 
